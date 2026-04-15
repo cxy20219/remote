@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -163,4 +164,97 @@ func (s *Server) handleAPITaskDetail(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, task)
+}
+
+// OpenClawRequest OpenClaw 会话请求
+type OpenClawRequest struct {
+	ClientID  string `json:"client_id"`
+	UserID    string `json:"user_id"`
+	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+	Timeout   int    `json:"timeout"`
+}
+
+// handleOpenClaw OpenClaw 会话接口
+// @Summary OpenClaw 会话接口
+// @Description 通过 OpenClaw agent 发送会话消息
+// @Tags openclaw
+// @Accept json
+// @Produce json
+// @Param request body server.OpenClawRequest true "会话请求"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Router /api/openclaw [post]
+func (s *Server) handleOpenClaw(c *gin.Context) {
+	var req OpenClawRequest
+
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if req.ClientID == "" || req.UserID == "" || req.SessionID == "" || req.Message == "" {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "client_id, user_id, session_id, message are required"})
+		return
+	}
+
+	if req.Timeout == 0 {
+		req.Timeout = 30
+	}
+
+	// 组合 session-id: user_id_session_id
+	sessionID := req.UserID + "_" + req.SessionID
+
+	// 生成命令
+	command := fmt.Sprintf("openclaw agent --session-id %s --message '%s'", sessionID, req.Message)
+
+	// Generate task ID
+	taskID := generateUUID()
+
+	// Create task
+	task := &Task{
+		TaskID:   taskID,
+		ClientID: req.ClientID,
+		Command:  command,
+		Timeout:  req.Timeout,
+	}
+	s.tasks.Create(task)
+
+	// Send command to client
+	client, ok := s.clients.Get(req.ClientID)
+	if !ok {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "client not found or offline"})
+		return
+	}
+
+	payload := common.ExecPayload{
+		TaskID:  taskID,
+		Command: command,
+		Timeout: req.Timeout,
+	}
+	payloadJSON, _ := json.Marshal(payload)
+	err = client.Conn.WriteJSON(common.Message{
+		Type:    "exec",
+		Payload: payloadJSON,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to send command"})
+		return
+	}
+
+	s.tasks.Update(taskID, StatusRunning)
+
+	// 返回包含 session_id
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"task_id":    taskID,
+		"session_id": sessionID,
+		"status":     "pending",
+	})
 }

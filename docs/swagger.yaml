@@ -24,6 +24,19 @@ definitions:
       timeout:
         type: integer
     type: object
+  server.OpenClawRequest:
+    properties:
+      client_id:
+        type: string
+      message:
+        type: string
+      session_id:
+        type: string
+      timeout:
+        type: integer
+      user_id:
+        type: string
+    type: object
   server.Task:
     properties:
       client_id:
@@ -135,6 +148,41 @@ paths:
       summary: 向指定客户端下发命令
       tags:
       - exec
+  /api/openclaw:
+    post:
+      consumes:
+      - application/json
+      description: 通过 OpenClaw agent 发送会话消息
+      parameters:
+      - description: 会话请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.OpenClawRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: OpenClaw 会话接口
+      tags:
+      - openclaw
   /api/tasks:
     get:
       description: 获取所有任务列表

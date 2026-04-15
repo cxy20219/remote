@@ -77,6 +77,7 @@ func (s *Server) Start() error {
 	s.engine.GET("/api/clients", s.handleAPIClients)
 	s.engine.GET("/api/clients/:id", s.handleAPIClientDetail)
 	s.engine.POST("/api/exec", s.handleAPIExec)
+	s.engine.POST("/api/openclaw", s.handleOpenClaw)
 	s.engine.GET("/api/tasks", s.handleAPITasks)
 	s.engine.GET("/api/tasks/:id", s.handleAPITaskDetail)
 	s.engine.GET("/health", s.handleHealth)
