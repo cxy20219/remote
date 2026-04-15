@@ -1,0 +1,5 @@
+- **[服务端设计文档](./docs/server-design.md)** - 服务端架构、消息协议、接口设计
+- **[客户端设计文档](./docs/agent-design.md)** - 客户端架构、命令执行、重连机制
+- **[服务端测试方案](./docs/server-test.md)** - 服务端单元/集成/端到端测试
+- **[客户端测试方案](./docs/agent-test.md)** - 客户端单元/集成/端到端测试
+- **[项目结构](./docs/project-structure.md)** - 项目目录结构、文件说明
