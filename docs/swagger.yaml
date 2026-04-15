@@ -1,0 +1,192 @@
+definitions:
+  server.Client:
+    properties:
+      client_id:
+        type: string
+      hostname:
+        type: string
+      last_ping:
+        type: string
+      os:
+        type: string
+      reg_time:
+        type: string
+      status:
+        description: online/offline
+        type: string
+    type: object
+  server.ExecRequest:
+    properties:
+      client_id:
+        type: string
+      command:
+        type: string
+      timeout:
+        type: integer
+    type: object
+  server.Task:
+    properties:
+      client_id:
+        type: string
+      command:
+        type: string
+      create_at:
+        type: string
+      end_at:
+        type: string
+      result:
+        $ref: '#/definitions/server.TaskResult'
+      start_at:
+        type: string
+      status:
+        type: string
+      task_id:
+        type: string
+      timeout:
+        description: timeout in seconds
+        type: integer
+    type: object
+  server.TaskResult:
+    properties:
+      error:
+        type: string
+      exit_code:
+        type: integer
+      stderr:
+        type: string
+      stdout:
+        type: string
+    type: object
+info:
+  contact: {}
+paths:
+  /api/clients:
+    get:
+      description: 获取所有当前在线的客户端列表
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 获取在线客户端列表
+      tags:
+      - clients
+  /api/clients/{id}:
+    get:
+      description: 根据客户端ID获取详细信息
+      parameters:
+      - description: 客户端ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.Client'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 获取客户端详情
+      tags:
+      - clients
+  /api/exec:
+    post:
+      consumes:
+      - application/json
+      description: 向指定客户端下发待执行的命令
+      parameters:
+      - description: 执行请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.ExecRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 向指定客户端下发命令
+      tags:
+      - exec
+  /api/tasks:
+    get:
+      description: 获取所有任务列表
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 获取任务列表
+      tags:
+      - tasks
+  /api/tasks/{id}:
+    get:
+      description: 根据任务ID获取任务详细信息
+      parameters:
+      - description: 任务ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.Task'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 获取任务详情
+      tags:
+      - tasks
+  /health:
+    get:
+      description: 服务健康状态检查
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 健康检查
+      tags:
+      - health
+swagger: "2.0"

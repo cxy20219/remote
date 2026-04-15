@@ -195,22 +195,24 @@ project/
 │   ├── server/
 │   │   └── main.go        # 服务端入口
 │   └── agent/
-│       └── main.go       # 客户端入口
+│       └── main.go        # 客户端入口
 ├── internal/
-│   ├── server/           # 服务端实现 (见 server-design.md)
-│   ├── agent/            # 客户端实现 (见 agent-design.md)
+│   ├── server/            # 服务端实现 (Gin + WebSocket)
+│   ├── agent/             # 客户端实现 (见 agent-design.md)
 │   └── common/
 │       ├── message.go     # 消息定义
-│       └── util.go       # 工具函数
+│       └── util.go        # 工具函数
 ├── docs/
-│   ├── plan.md           # 本概览文档
-│   ├── server-design.md  # 服务端详细设计
-│   ├── agent-design.md   # 客户端详细设计
-│   ├── server-test.md    # 服务端测试方案
-│   └── agent-test.md     # 客户端测试方案
+│   ├── docs.go            # Swagger 文档生成代码
+│   ├── swagger.json       # Swagger JSON 文档
+│   ├── swagger.yaml       # Swagger YAML 文档
+│   ├── server-design.md   # 服务端详细设计
+│   ├── agent-design.md    # 客户端详细设计
+│   ├── server-test.md     # 服务端测试方案
+│   └── agent-test.md      # 客户端测试方案
 ├── config/
-│   ├── server.yaml       # 服务端配置示例
-│   └── agent.yaml        # 客户端配置示例
+│   ├── server.yaml        # 服务端配置示例
+│   └── agent.yaml         # 客户端配置示例
 ├── go.mod
 └── go.sum
 ```

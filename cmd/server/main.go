@@ -3,13 +3,21 @@ package main
 import (
 	"flag"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/gin-gonic/gin"
+
 	"goremote/internal/server"
+
+	_ "goremote/docs"
 )
+
+func init() {
+	// Disable Gin colored output
+	gin.DisableConsoleColor()
+}
 
 func main() {
 	configPath := flag.String("config", "config/server.yaml", "path to config file")
@@ -41,7 +49,7 @@ func main() {
 
 	// Start server
 	slog.Info("server starting")
-	if err := srv.Start(); err != nil && err != http.ErrServerClosed {
+	if err := srv.Start(); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}

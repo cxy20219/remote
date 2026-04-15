@@ -16,16 +16,16 @@
 C:\work\GoRemote\
 ├── cmd/
 │   ├── server/main.go       # 服务端入口
-│   └── agent/main.go       # 客户端入口
+│   └── agent/main.go        # 客户端入口
 ├── internal/
-│   ├── common/             # 公共定义（消息结构）
-│   ├── server/             # 服务端实现
-│   │   ├── server.go       # WebSocket 服务
+│   ├── common/              # 公共定义（消息结构）
+│   ├── server/              # 服务端实现 (Gin + WebSocket)
+│   │   ├── server.go       # Gin 引擎与路由
 │   │   ├── client.go       # 客户端管理
 │   │   ├── handler.go      # 消息处理
 │   │   ├── task.go         # 任务管理
-│   │   ├── upload.go       # 文件上传管理
-│   │   ├── api.go          # HTTP API
+│   │   ├── upload.go       # 文件传输管理
+│   │   ├── api.go          # HTTP API (Gin handlers)
 │   │   ├── config.go       # 配置加载
 │   │   └── logger.go       # 日志配置
 │   └── agent/              # 客户端实现
@@ -37,9 +37,12 @@ C:\work\GoRemote\
 │       ├── config.go       # 配置加载
 │       └── logger.go       # 日志配置
 ├── config/
-│   ├── server.yaml         # 服务端配置
-│   └── agent.yaml         # 客户端配置
+│   ├── server.yaml          # 服务端配置
+│   └── agent.yaml          # 客户端配置
 ├── docs/                   # 设计文档
+│   ├── docs.go             # Swagger 文档生成代码
+│   ├── swagger.json        # Swagger JSON 文档
+│   └── swagger.yaml        # Swagger YAML 文档
 ├── go.mod
 └── README.md
 ```
@@ -97,7 +100,15 @@ auth:
 ./bin/agent.exe --config config/agent.yaml
 ```
 
-### 4. API 接口
+### 4. Swagger UI 接口文档
+
+启动服务后，可通过浏览器访问 Swagger UI 查看和测试所有 API 接口：
+
+```
+http://localhost:8080/swagger/index.html
+```
+
+### 5. API 接口
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
@@ -107,8 +118,9 @@ auth:
 | `/api/tasks` | GET | 查看任务列表 |
 | `/api/tasks/:id` | GET | 查看任务详情 |
 | `/api/exec` | POST | 向客户端下发命令 |
+| `/swagger/*` | GET | Swagger UI 接口文档 |
 
-### 5. 下发命令示例
+### 6. 下发命令示例
 
 ```bash
 # 查看客户端列表，获取 client_id

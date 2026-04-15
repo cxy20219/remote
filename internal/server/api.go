@@ -3,69 +3,83 @@ package server
 import (
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
-	"strings"
+
+	"github.com/gin-gonic/gin"
 
 	"goremote/internal/common"
 )
 
-// API handlers
-
-func (s *Server) handleAPIClients(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		clients := s.clients.List()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"clients": clients,
-			"total":   len(clients),
-		})
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
+// handleAPIClients 获取在线客户端列表
+// @Summary 获取在线客户端列表
+// @Description 获取所有当前在线的客户端列表
+// @Tags clients
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router /api/clients [get]
+func (s *Server) handleAPIClients(c *gin.Context) {
+	clients := s.clients.List()
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"clients": clients,
+		"total":   len(clients),
+	})
 }
 
-func (s *Server) handleAPIClientDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract client ID from path: /api/clients/:id
-	path := strings.TrimPrefix(r.URL.Path, "/api/clients/")
-	clientID := strings.TrimSuffix(path, "/")
+// handleAPIClientDetail 获取客户端详情
+// @Summary 获取客户端详情
+// @Description 根据客户端ID获取详细信息
+// @Tags clients
+// @Produce json
+// @Param id path string true "客户端ID"
+// @Success 200 {object} Client
+// @Failure 404 {object} map[string]string
+// @Router /api/clients/{id} [get]
+func (s *Server) handleAPIClientDetail(c *gin.Context) {
+	clientID := c.Param("id")
 
 	client, ok := s.clients.Get(clientID)
 	if !ok {
-		http.Error(w, "client not found", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, map[string]string{"error": "client not found"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(client)
+	c.JSON(http.StatusOK, client)
 }
 
-func (s *Server) handleAPIExec(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+// ExecRequest 执行命令请求
+type ExecRequest struct {
+	ClientID string `json:"client_id"`
+	Command  string `json:"command"`
+	Timeout  int    `json:"timeout"`
+}
 
-	var req struct {
-		ClientID string `json:"client_id"`
-		Command  string `json:"command"`
-		Timeout  int    `json:"timeout"`
-	}
+// handleAPIExec 向指定客户端下发命令
+// @Summary 向指定客户端下发命令
+// @Description 向指定客户端下发待执行的命令
+// @Tags exec
+// @Accept json
+// @Produce json
+// @Param request body server.ExecRequest true "执行请求"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Router /api/exec [post]
+func (s *Server) handleAPIExec(c *gin.Context) {
+	var req ExecRequest
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
 		return
 	}
 
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
 
 	if req.ClientID == "" || req.Command == "" {
-		http.Error(w, "client_id and command are required", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "client_id and command are required"})
 		return
 	}
 
@@ -88,7 +102,7 @@ func (s *Server) handleAPIExec(w http.ResponseWriter, r *http.Request) {
 	// Send command to client
 	client, ok := s.clients.Get(req.ClientID)
 	if !ok {
-		http.Error(w, "client not found or offline", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, map[string]string{"error": "client not found or offline"})
 		return
 	}
 
@@ -103,45 +117,50 @@ func (s *Server) handleAPIExec(w http.ResponseWriter, r *http.Request) {
 		Payload: payloadJSON,
 	})
 	if err != nil {
-		slog.Error("failed to send command", "error", err)
-		http.Error(w, "failed to send command", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to send command"})
 		return
 	}
 
 	s.tasks.Update(taskID, StatusRunning)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	c.JSON(http.StatusOK, map[string]string{
 		"task_id": taskID,
 		"status":  "pending",
 	})
 }
 
-func (s *Server) handleAPITasks(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		tasks := s.tasks.List()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"tasks": tasks,
-			"total": len(tasks),
-		})
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
+// handleAPITasks 获取任务列表
+// @Summary 获取任务列表
+// @Description 获取所有任务列表
+// @Tags tasks
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router /api/tasks [get]
+func (s *Server) handleAPITasks(c *gin.Context) {
+	tasks := s.tasks.List()
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"tasks": tasks,
+		"total": len(tasks),
+	})
 }
 
-func (s *Server) handleAPITaskDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract task ID from path: /api/tasks/:id
-	path := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
-	taskID := strings.TrimSuffix(path, "/")
+// handleAPITaskDetail 获取任务详情
+// @Summary 获取任务详情
+// @Description 根据任务ID获取任务详细信息
+// @Tags tasks
+// @Produce json
+// @Param id path string true "任务ID"
+// @Success 200 {object} Task
+// @Failure 404 {object} map[string]string
+// @Router /api/tasks/{id} [get]
+func (s *Server) handleAPITaskDetail(c *gin.Context) {
+	taskID := c.Param("id")
 
 	task := s.tasks.Get(taskID)
 	if task == nil {
-		http.Error(w, "task not found", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, map[string]string{"error": "task not found"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(task)
+	c.JSON(http.StatusOK, task)
 }

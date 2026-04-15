@@ -223,31 +223,33 @@ register_ok  register_fail
 
 ## 5. 详细设计
 
-### 5.1 WebSocket Server
+### 5.1 Gin Web Server
+
+使用 Gin 框架提供 HTTP 管理 API 和 WebSocket 端点：
 
 ```go
 type Server struct {
-    addr       string
+    Addr       string
     tlsEnabled bool
     tlsCert    string
     tlsKey     string
 
-    authKey    string
+    config     *Config
 
-    clients    *ClientManager
-    tasks      *TaskStore
-    handler    *Handler
+    clients       *ClientManager
+    tasks         *TaskStore
+    handler       *Handler
+    uploadManager *UploadManager
 
-    upgrader   websocket.Upgrader
-    hbInterval time.Duration  // 心跳检测间隔
-    hbTimeout  time.Duration   // 心跳超时时间
+    upgrader websocket.Upgrader
+    engine   *gin.Engine
 }
 ```
 
 **主要方法**：
-- `Start()` - 启动服务
+- `Start()` - 启动 Gin 引擎
 - `Stop()` - 停止服务
-- `handleConn()` - 处理新连接
+- `handleConn()` - 处理 WebSocket 连接（Gin handler）
 
 ### 5.2 Client Manager
 
@@ -536,6 +538,7 @@ log:
 | POST | /api/upload | 上传文件到指定客户端 |
 | GET | /api/download/:client_id/:filepath | 从客户端下载文件 |
 | GET | /health | 健康检查 |
+| GET | /swagger/* | Swagger UI 接口文档 |
 
 ### 7.2 API 详细设计
 
@@ -587,6 +590,16 @@ internal/server/
 ├── handler.go     # 消息处理
 ├── task.go        # TaskStore 任务管理
 ├── api.go         # HTTP管理接口
+├── upload.go      # 文件传输管理
 ├── config.go      # 配置加载
 └── logger.go      # 日志配置
+
+docs/
+├── docs.go        # Swagger文档生成代码
+├── swagger.json   # Swagger JSON文档
+└── swagger.yaml  # Swagger YAML文档
 ```
+
+## 11. Swagger UI
+
+服务集成 Swagger UI，可通过浏览器访问：`http://localhost:8080/swagger/index.html`
