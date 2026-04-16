@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"goremote/internal/common"
@@ -66,6 +67,8 @@ func (h *Handler) Handle(msg *common.Message) error {
 		return h.handleDownloadData(msg)
 	case "download_complete":
 		return h.handleDownloadComplete(msg)
+	case "download":
+		return h.handleDownload(msg)
 	default:
 		return fmt.Errorf("unknown message type: %s", msg.Type)
 	}
@@ -120,6 +123,12 @@ func (h *Handler) handleUpload(msg *common.Message) error {
 	var payload common.UploadPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return err
+	}
+
+	// Ensure parent directory exists
+	dir := filepath.Dir(payload.Filename)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return h.agent.SendUploadComplete(payload.FileID, false, err.Error())
 	}
 
 	// Create local file to receive data
@@ -204,6 +213,92 @@ func (h *Handler) handleUploadComplete(msg *common.Message) error {
 	}
 
 	return nil
+}
+
+// handleDownload handles server request to download file from agent
+func (h *Handler) handleDownload(msg *common.Message) error {
+	var payload common.DownloadPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return err
+	}
+
+	slog.Info("download requested", "file_id", payload.FileID, "filename", payload.Filename)
+
+	// Open file for reading
+	file, err := os.Open(payload.Filename)
+	if err != nil {
+		h.agent.SendDownloadComplete(payload.FileID, false, err.Error())
+		return err
+	}
+
+	stat, _ := file.Stat()
+
+	h.mu.Lock()
+	h.uploads[payload.FileID] = &UploadTask{
+		FileID:   payload.FileID,
+		Filename: payload.Filename,
+		File:     file,
+		Offset:   payload.Offset,
+	}
+	h.mu.Unlock()
+
+	// Send file in chunks
+	go h.sendFileData(payload.FileID, file, stat.Size())
+
+	return nil
+}
+
+// sendFileData sends file data to server
+func (h *Handler) sendFileData(fileID string, file *os.File, totalSize int64) {
+	chunkSize := 64 * 1024 // 64KB
+	buffer := make([]byte, chunkSize)
+	offset := int64(0)
+
+	for {
+		n, err := file.Read(buffer)
+		if n > 0 {
+			data := base64.StdEncoding.EncodeToString(buffer[:n])
+			eof := offset+int64(n) >= totalSize
+
+			downloadDataPayload := common.DownloadDataPayload{
+				FileID: fileID,
+				Offset: offset,
+				Data:   data,
+				EOF:    eof,
+			}
+			payloadJSON, _ := json.Marshal(downloadDataPayload)
+			err := h.agent.connector.Send(&common.Message{
+				Type:    "download_data",
+				Payload: payloadJSON,
+			})
+			if err != nil {
+				slog.Error("failed to send download data", "file_id", fileID, "error", err)
+				file.Close()
+				h.mu.Lock()
+				delete(h.uploads, fileID)
+				h.mu.Unlock()
+				return
+			}
+			offset += int64(n)
+		}
+
+		if err == io.EOF {
+			file.Close()
+			h.mu.Lock()
+			delete(h.uploads, fileID)
+			h.mu.Unlock()
+			slog.Info("file sent for download", "file_id", fileID)
+			return
+		}
+		if err != nil {
+			slog.Error("failed to read file for download", "file_id", fileID, "error", err)
+			file.Close()
+			h.mu.Lock()
+			delete(h.uploads, fileID)
+			h.mu.Unlock()
+			return
+		}
+	}
 }
 
 // handleDownloadData handles download data from server

@@ -18,6 +18,7 @@ type UploadFile struct {
 	ClientID    string
 	Status      string // in_progress/completed/failed
 	CreatedAt   time.Time
+	IsDownload  bool   // true if this is a download (server receiving from client)
 }
 
 // UploadManager manages ongoing file uploads
@@ -34,14 +35,17 @@ func NewUploadManager() *UploadManager {
 }
 
 // Add adds a new upload
-func (m *UploadManager) Add(upload *UploadFile) error {
-	// Create file for writing
-	file, err := os.Create(upload.Filename)
-	if err != nil {
-		return err
+// If isDownload is true, the file is not created here (server will write to it later)
+func (m *UploadManager) Add(upload *UploadFile, isDownload bool) error {
+	if !isDownload {
+		// Create file for writing (upload mode: server sends file to client)
+		file, err := os.Create(upload.Filename)
+		if err != nil {
+			return err
+		}
+		upload.File = file
 	}
 
-	upload.File = file
 	upload.Status = "in_progress"
 	upload.CreatedAt = time.Now()
 

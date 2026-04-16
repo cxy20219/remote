@@ -15,6 +15,17 @@ definitions:
         description: online/offline
         type: string
     type: object
+  server.DownloadRequest:
+    properties:
+      client_id:
+        type: string
+      client_path:
+        description: 客户端要下载的文件路径
+        type: string
+      server_path:
+        description: 服务器保存路径，不填则使用默认路径
+        type: string
+    type: object
   server.ExecRequest:
     properties:
       client_id:
@@ -112,6 +123,43 @@ paths:
       summary: 获取客户端详情
       tags:
       - clients
+  /api/download:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        从指定客户端下载文件到服务器
+        从指定客户端下载文件到服务器
+      parameters:
+      - description: 下载请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.DownloadRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 从指定客户端下载文件
+      tags:
+      - file
   /api/exec:
     post:
       consumes:
@@ -222,6 +270,76 @@ paths:
       summary: 获取任务详情
       tags:
       - tasks
+  /api/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      - application/json
+      description: 将文件上传到指定客户端，支持 multipart/form-data 或 JSON
+      parameters:
+      - description: 要上传的文件
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: 客户端ID
+        in: formData
+        name: client_id
+        required: true
+        type: string
+      - description: 客户端保存路径
+        in: formData
+        name: client_path
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 向指定客户端上传文件
+      tags:
+      - file
+  /api/upload/{file_id}:
+    get:
+      description: 根据文件ID获取上传或下载状态
+      parameters:
+      - description: 文件ID
+        in: path
+        name: file_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 获取文件传输状态
+      tags:
+      - file
   /health:
     get:
       description: 服务健康状态检查

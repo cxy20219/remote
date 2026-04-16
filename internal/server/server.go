@@ -80,6 +80,9 @@ func (s *Server) Start() error {
 	s.engine.POST("/api/openclaw", s.handleOpenClaw)
 	s.engine.GET("/api/tasks", s.handleAPITasks)
 	s.engine.GET("/api/tasks/:id", s.handleAPITaskDetail)
+	s.engine.POST("/api/upload", s.handleAPIUpload)
+	s.engine.GET("/api/upload/:file_id", s.handleAPIUploadStatus)
+	s.engine.POST("/api/download", s.handleAPIDownload)
 	s.engine.GET("/health", s.handleHealth)
 
 	// Swagger UI

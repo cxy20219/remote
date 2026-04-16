@@ -16,3 +16,7 @@ heartbeat:
 log:
   level: "info"     # debug/info/warn/error
   file: ""          # empty for stdout, or path to log file
+
+file_transfer:
+  upload_path: "C:/work/go-remote/uploads"     # default path for uploads (server sends to client)
+  download_path: "C:/work/go-remote/downloads"   # default path for downloads (server receives from client)

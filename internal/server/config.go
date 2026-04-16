@@ -9,10 +9,17 @@ import (
 
 // Config holds server configuration
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Auth      AuthConfig      `yaml:"auth"`
-	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
-	Log       LogConfig       `yaml:"log"`
+	Server      ServerConfig      `yaml:"server"`
+	Auth        AuthConfig        `yaml:"auth"`
+	Heartbeat   HeartbeatConfig   `yaml:"heartbeat"`
+	Log         LogConfig         `yaml:"log"`
+	FileTransfer FileTransferConfig `yaml:"file_transfer"`
+}
+
+// FileTransferConfig holds file transfer default paths
+type FileTransferConfig struct {
+	UploadPath   string `yaml:"upload_path"`   // default path for uploads (server sends to client)
+	DownloadPath string `yaml:"download_path"` // default path for downloads (server receives from client)
 }
 
 // ServerConfig holds WebSocket server configuration
@@ -73,6 +80,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Log.Level == "" {
 		config.Log.Level = "info"
+	}
+	if config.FileTransfer.UploadPath == "" {
+		config.FileTransfer.UploadPath = "./uploads"
+	}
+	if config.FileTransfer.DownloadPath == "" {
+		config.FileTransfer.DownloadPath = "./downloads"
 	}
 
 	return &config, nil

@@ -74,6 +74,59 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/download": {
+            "post": {
+                "description": "从指定客户端下载文件到服务器\n从指定客户端下载文件到服务器",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "file"
+                ],
+                "summary": "从指定客户端下载文件",
+                "parameters": [
+                    {
+                        "description": "下载请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.DownloadRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/exec": {
             "post": {
                 "description": "向指定客户端下发待执行的命令",
@@ -241,6 +294,110 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/upload": {
+            "post": {
+                "description": "将文件上传到指定客户端，支持 multipart/form-data 或 JSON",
+                "consumes": [
+                    "multipart/form-data",
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "file"
+                ],
+                "summary": "向指定客户端上传文件",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "要上传的文件",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "客户端ID",
+                        "name": "client_id",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "客户端保存路径",
+                        "name": "client_path",
+                        "in": "formData"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/upload/{file_id}": {
+            "get": {
+                "description": "根据文件ID获取上传或下载状态",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "file"
+                ],
+                "summary": "获取文件传输状态",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "文件ID",
+                        "name": "file_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/health": {
             "get": {
                 "description": "服务健康状态检查",
@@ -286,6 +443,22 @@ const docTemplate = `{
                 },
                 "status": {
                     "description": "online/offline",
+                    "type": "string"
+                }
+            }
+        },
+        "server.DownloadRequest": {
+            "type": "object",
+            "properties": {
+                "client_id": {
+                    "type": "string"
+                },
+                "client_path": {
+                    "description": "客户端要下载的文件路径",
+                    "type": "string"
+                },
+                "server_path": {
+                    "description": "服务器保存路径，不填则使用默认路径",
                     "type": "string"
                 }
             }

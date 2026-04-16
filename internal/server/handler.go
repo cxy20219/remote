@@ -40,6 +40,8 @@ func (h *Handler) Handle(client *Client, msg *common.Message) error {
 		return h.handleUploadComplete(client, msg)
 	case "download":
 		return h.handleDownload(client, msg)
+	case "download_data":
+		return h.handleDownloadData(client, msg)
 	case "download_complete":
 		return h.handleDownloadComplete(client, msg)
 	default:
@@ -161,7 +163,7 @@ func (h *Handler) handleUpload(client *Client, msg *common.Message) error {
 		TaskID:   payload.TaskID,
 		ClientID: client.ClientID,
 	}
-	h.server.uploadManager.Add(upload)
+	h.server.uploadManager.Add(upload, false)
 
 	// Send file in chunks
 	return h.sendFileInChunks(client, payload.FileID, payload.Filename)
@@ -260,9 +262,11 @@ func (h *Handler) handleUploadComplete(client *Client, msg *common.Message) erro
 		slog.Warn("upload failed",
 			"file_id", payload.FileID,
 			"error", payload.Error)
+		h.server.uploadManager.Remove(payload.FileID)
 	} else {
 		slog.Info("upload completed",
 			"file_id", payload.FileID)
+		h.server.uploadManager.Remove(payload.FileID)
 	}
 
 	return nil
@@ -298,6 +302,58 @@ func (h *Handler) handleDownloadComplete(client *Client, msg *common.Message) er
 	} else {
 		slog.Info("download completed",
 			"file_id", payload.FileID)
+	}
+
+	return nil
+}
+
+// handleDownloadData handles file data from client (download)
+func (h *Handler) handleDownloadData(client *Client, msg *common.Message) error {
+	var payload common.DownloadDataPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return err
+	}
+
+	transfer := h.server.uploadManager.Get(payload.FileID)
+	if transfer == nil {
+		return fmt.Errorf("unknown file_id: %s", payload.FileID)
+	}
+
+	// If file not opened yet (download mode), open it now
+	if transfer.File == nil {
+		file, err := os.Create(transfer.Filename)
+		if err != nil {
+			h.server.uploadManager.Remove(payload.FileID)
+			return err
+		}
+		transfer.File = file
+	}
+
+	// Decode data
+	data, err := base64.StdEncoding.DecodeString(payload.Data)
+	if err != nil {
+		transfer.File.Close()
+		h.server.uploadManager.Remove(payload.FileID)
+		return err
+	}
+
+	// Write to file
+	_, err = transfer.File.Write(data)
+	if err != nil {
+		transfer.File.Close()
+		h.server.uploadManager.Remove(payload.FileID)
+		return err
+	}
+
+	transfer.Transferred += int64(len(data))
+
+	if payload.EOF {
+		transfer.Status = "completed"
+		transfer.File.Close()
+		h.server.uploadManager.Remove(payload.FileID)
+		slog.Info("download received completely",
+			"file_id", payload.FileID,
+			"size", transfer.Transferred)
 	}
 
 	return nil
