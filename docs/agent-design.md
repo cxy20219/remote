@@ -59,6 +59,11 @@
 | download | C→S | 下载文件请求（客户端→服务端） |
 | download_data | S→C | 下载文件数据 |
 | download_complete | S→C | 下载完成确认 |
+| tunnel_open | C→S | 申请创建隧道 |
+| tunnel_open_ack | S→C | 隧道创建确认 |
+| tunnel_close | C↔S | 关闭隧道 |
+| tunnel_data | C↔S | 隧道数据（双向） |
+| tunnel_error | S→C | 隧道错误通知 |
 
 ### 3.2 消息格式
 
@@ -116,6 +121,39 @@ type DownloadCompletePayload struct {
     FileID  string `json:"file_id"`
     Success bool   `json:"success"`
     Error   string `json:"error,omitempty"`
+}
+
+// 隧道消息
+type TunnelOpenPayload struct {
+    TunnelID  string `json:"tunnel_id"`  // 隧道唯一ID（Agent生成）
+    LocalAddr string `json:"local_addr"` // 本地地址，如 "127.0.0.1"
+    LocalPort int    `json:"local_port"` // 本地端口，如 22
+    Protocol  string `json:"protocol"`   // "tcp" / "udp"
+}
+
+type TunnelOpenAckPayload struct {
+    TunnelID   string `json:"tunnel_id"`
+    PublicPort int    `json:"public_port"` // 分配的公网端口
+    Success    bool   `json:"success"`
+    Error      string `json:"error,omitempty"`
+}
+
+type TunnelClosePayload struct {
+    TunnelID string `json:"tunnel_id"`
+    ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
+}
+
+type TunnelDataPayload struct {
+    TunnelID string `json:"tunnel_id"`
+    ConnID   string `json:"conn_id"`  // 外部连接的标识，区分同一隧道的多个并发连接
+    Data     string `json:"data"`     // base64 encoded
+    IsEOF    bool   `json:"is_eof"`   // 是否结束，用于短连接协议如 HTTP
+}
+
+type TunnelErrorPayload struct {
+    TunnelID string `json:"tunnel_id"`
+    ConnID   string `json:"conn_id,omitempty"`
+    Error    string `json:"error"`
 }
 ```
 
@@ -201,13 +239,14 @@ func (c *Connector) Receive() (*Message, error)
 
 ```go
 type Agent struct {
-    config     *Config
-    connector  *Connector
-    handler    *Handler
-    executor   *Executor
-    reconnect  *Reconnect
-    hostname   string
-    os         string
+    config       *Config
+    connector    *Connector
+    handler      *Handler
+    executor     *Executor
+    reconnect    *Reconnect
+    tunnelManager *TunnelManager
+    hostname     string
+    os           string
 }
 
 func (a *Agent) Run() error {
@@ -654,6 +693,61 @@ internal/agent/
 ├── handler.go     # 消息处理
 ├── executor.go    # 命令执行
 ├── reconnect.go   # 重连机制
+├── tunnel.go      # 隧道管理（内网穿透）
 ├── config.go      # 配置加载
 └── logger.go      # 日志配置
+```
+
+## 10. 隧道管理（内网穿透）
+
+### 10.1 核心数据结构
+
+```go
+// Tunnel 隧道信息
+type Tunnel struct {
+    TunnelID   string
+    LocalAddr  string
+    LocalPort  int
+    Protocol   string
+    PublicPort int            // 服务端分配的公网端口
+}
+
+// LocalConn 本地连接（按 conn_id 区分）
+type LocalConn struct {
+    ConnID   string
+    TunnelID string
+    Conn     net.Conn        // 连接本地服务的 conn
+}
+
+// TunnelManager 隧道管理器
+type TunnelManager struct {
+    mu         sync.RWMutex
+    tunnels    map[string]*Tunnel     // tunnelID -> Tunnel
+    localConns map[string]*LocalConn // connID -> LocalConn
+    readLoops  map[string]bool       // connID -> 是否已有读取 goroutine
+    agent      *Agent
+}
+```
+
+### 10.2 核心流程
+
+**创建隧道**：
+1. Agent 发送 `tunnel_open` 给 Server
+2. Server 返回 `tunnel_open_ack`（包含 publicPort）
+3. Agent 记录 tunnelID 和 publicPort 的映射
+
+**按需连接本地服务**：
+- Agent **不预先连接**本地服务
+- 收到 `tunnel_data(conn_id=x)` 时，**首次**为该 conn_id 创建到本地服务的连接
+- 将 data 写入 localConn，读取响应后发送 `tunnel_data(conn_id=x, data=响应)`
+
+**连接复用**：
+- 同一 conn_id 的后续 `tunnel_data` 复用已建立的 localConn
+- 收到 `is_eof=true` 时关闭 localConn
+
+### 10.3 配置
+
+```yaml
+tunnel:
+  enabled: true
 ```

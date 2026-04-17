@@ -22,3 +22,6 @@ reconnect:
 log:
   level: "info"     # debug/info/warn/error
   file: ""          # empty for stdout, or path to log file
+
+tunnel:
+  enabled: true

@@ -1,0 +1,439 @@
+# 内网穿透/端口映射功能设计方案
+
+## 1. 概述
+
+### 1.1 功能目标
+
+在现有 go-remote 远程命令执行系统基础上，新增内网穿透/端口映射功能：
+
+- 暴露内网 SSH 端口，让外部能通过服务端端口访问内网 SSH
+- 暴露内网 HTTP 服务，让外部能访问内网 Web 服务
+- 提供 HTTP API 让用户动态创建/删除端口映射
+
+### 1.2 架构模式
+
+采用**反向隧道**模式，Agent 部署在内网，主动连接服务端的 WebSocket：
+
+```
+外部用户  ──▶  [服务端:公网端口]  ──▶  [WebSocket隧道]  ──▶  [Agent:本地端口]
+                (端口映射)          (数据透传)          (内网服务)
+```
+
+**特点**：
+- 利用现有 WebSocket 连接传输隧道数据，无需额外端口
+- Agent 在内网，防火墙友好
+- 支持 SSH、HTTP 等任意 TCP 协议
+
+---
+
+## 2. 消息协议
+
+### 2.1 新增消息类型
+
+| Type | 方向 | 说明 |
+|------|------|------|
+| tunnel_open | C→S | 客户端申请创建隧道 |
+| tunnel_open_ack | S→C | 服务端返回分配的公网端口 |
+| tunnel_close | C↔S | 任一方关闭隧道 |
+| tunnel_data | C↔S | 隧道数据（双向） |
+| tunnel_error | S→C | 隧道错误通知 |
+
+### 2.2 消息格式
+
+```go
+// TunnelOpenPayload - 客户端申请创建隧道
+type TunnelOpenPayload struct {
+    TunnelID  string `json:"tunnel_id"`  // 隧道唯一ID（Agent生成）
+    LocalAddr string `json:"local_addr"` // 本地地址，如 "127.0.0.1"
+    LocalPort int    `json:"local_port"` // 本地端口，如 22
+    Protocol  string `json:"protocol"`   // "tcp" / "udp"
+}
+
+// TunnelOpenAckPayload - 服务端确认隧道创建
+type TunnelOpenAckPayload struct {
+    TunnelID   string `json:"tunnel_id"`
+    PublicPort int    `json:"public_port"` // 分配的公网端口
+    Success    bool   `json:"success"`
+    Error      string `json:"error,omitempty"`
+}
+
+// TunnelClosePayload - 关闭隧道
+type TunnelClosePayload struct {
+    TunnelID string `json:"tunnel_id"`
+    ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
+}
+
+// TunnelDataPayload - 隧道数据传输（双向）
+type TunnelDataPayload struct {
+    TunnelID string `json:"tunnel_id"`
+    ConnID   string `json:"conn_id"`  // 外部连接的标识，区分同一隧道的多个并发连接
+    Data     string `json:"data"`     // base64 encoded
+    IsEOF    bool   `json:"is_eof"`   // 是否结束，用于短连接协议如 HTTP
+}
+
+// TunnelErrorPayload - 隧道错误
+type TunnelErrorPayload struct {
+    TunnelID string `json:"tunnel_id"`
+    ConnID   string `json:"conn_id,omitempty"`
+    Error    string `json:"error"`
+}
+```
+
+### 2.3 数据流说明
+
+**tunnel_data 双向含义**：
+- **Server → Agent**：外部用户的请求数据
+- **Agent → Server**：本地服务的响应数据
+
+**conn_id 的作用**：
+- 同一隧道可能有多并发个外部连接（如 SSH keep-alive）
+- conn_id 用于区分和追踪每个外部连接的生命周期
+
+---
+
+## 3. 服务端设计
+
+### 3.1 数据结构
+
+```go
+// Tunnel 隧道信息
+type Tunnel struct {
+    TunnelID   string
+    ClientID   string
+    Client     *Client        // WebSocket 连接
+    Protocol   string
+    PublicPort int            // 监听的公网端口
+    LocalAddr  string         // 客户端本地地址
+    LocalPort  int
+    CreatedAt  time.Time
+    Status     string         // "active" / "closing"
+}
+
+// ExternalConn 外部连接信息
+type ExternalConn struct {
+    ConnID   string
+    TunnelID string
+    Conn     net.Conn         // TCP 连接
+}
+
+// TunnelManager 隧道管理器
+type TunnelManager struct {
+    mu          sync.RWMutex
+    tunnels     map[string]*Tunnel    // tunnelID -> Tunnel
+    publicPorts map[int]string        // publicPort -> tunnelID
+    extConns    map[string]*ExternalConn // connID -> ExternalConn
+    portStart   int
+    portEnd     int
+    listeners   map[int]net.Listener  // publicPort -> 监听器
+}
+```
+
+### 3.2 端口监听架构
+
+**Server 监听两种端口**：
+
+| 端口类型 | 用途 | 实现方式 |
+|----------|------|----------|
+| Gin HTTP 端口 | WebSocket 连接、HTTP API | Gin 框架（默认 8080） |
+| 公网映射端口 | 隧道流量（外部用户访问入口） | 独立的 `net.Listener` |
+
+```go
+// 创建公网端口监听
+func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
+    listener, err := net.Listen("tcp", fmt.Sprintf(":%d", publicPort))
+    if err != nil {
+        return err
+    }
+    tm.listeners[publicPort] = listener
+    tm.publicPorts[publicPort] = tunnelID
+
+    // 启动 accept goroutine
+    go tm.acceptLoop(publicPort, tunnelID)
+    return nil
+}
+```
+
+### 3.3 核心流程
+
+**创建隧道**：
+1. Agent 发送 `tunnel_open`（包含 localAddr:localPort）
+2. Server 分配公网端口，调用 `Listen()` 启动监听
+3. Server 返回 `tunnel_open_ack`（包含 tunnelID, publicPort）
+
+**数据转发**：
+```
+外部用户 ──TCP连接──▶ [Server:15001] ──accept──┐
+                                                │
+                         ┌───────────────────────┘
+                         │ Server 推送 tunnel_data(conn_id=x, data=请求)
+                         ▼
+                   Agent 收到 tunnel_data
+                         │ 首次收到该 conn_id → 连接本地服务
+                         │ Agent 发送 tunnel_data(conn_id=x, data=响应)
+                         ▼
+                   Server 收到 tunnel_data → 写入外部 TCP 连接
+```
+
+---
+
+## 4. Agent 端设计
+
+### 4.1 数据结构
+
+```go
+// Tunnel 隧道信息
+type Tunnel struct {
+    TunnelID   string
+    LocalAddr  string
+    LocalPort  int
+    Protocol   string
+    publicPort int            // 服务端分配的公网端口
+}
+
+// LocalConn 本地连接（按 conn_id 区分）
+type LocalConn struct {
+    ConnID    string
+    TunnelID  string
+    LocalConn net.Conn        // 连接本地服务的 conn
+}
+
+// TunnelManager 隧道管理器
+type TunnelManager struct {
+    mu        sync.RWMutex
+    tunnels   map[string]*Tunnel     // tunnelID -> Tunnel
+    localConns map[string]*LocalConn // connID -> LocalConn
+    agent     *Agent
+}
+```
+
+### 4.2 核心流程
+
+**创建隧道**：
+1. Agent 生成 tunnelID，发送 `tunnel_open` 给 Server
+2. Server 返回 `tunnel_open_ack`（包含 publicPort）
+3. Agent 记录 tunnelID 和 publicPort 的映射
+
+**按需连接本地服务**：
+- Agent **不预先连接**本地服务
+- 收到 `tunnel_data(conn_id=x)` 时，**首次**为该 conn_id 创建到本地服务的连接
+- 将 data 写入 localConn，读取响应后发送 `tunnel_data(conn_id=x, data=响应)`
+
+**连接复用**：
+- 同一 conn_id 的后续 `tunnel_data` 复用已建立的 localConn
+- 收到 `is_eof=true` 时关闭 localConn
+
+---
+
+## 5. HTTP API 设计
+
+### 5.1 API 端点
+
+| Method | Path | 描述 |
+|--------|------|------|
+| POST | /api/tunnels | 创建端口映射 |
+| GET | /api/tunnels | 列出所有隧道 |
+| GET | /api/tunnels/:tunnel_id | 获取隧道详情 |
+| DELETE | /api/tunnels/:tunnel_id | 删除端口映射 |
+| GET | /api/clients/:client_id/tunnels | 获取指定客户端的隧道 |
+
+### 5.2 API 详情
+
+**POST /api/tunnels** - 创建端口映射
+
+请求：
+```json
+{
+  "client_id": "client-xxx",
+  "local_port": 22,
+  "protocol": "tcp"
+}
+```
+
+响应：
+```json
+{
+  "tunnel_id": "tunnel-xxx",
+  "public_port": 15001,
+  "public_addr": "server.example.com:15001",
+  "status": "active"
+}
+```
+
+**GET /api/tunnels** - 列出所有隧道
+
+响应：
+```json
+{
+  "tunnels": [
+    {
+      "tunnel_id": "tunnel-xxx",
+      "client_id": "client-xxx",
+      "local_addr": "127.0.0.1",
+      "local_port": 22,
+      "public_port": 15001,
+      "protocol": "tcp",
+      "status": "active",
+      "created_at": "2026-04-17T10:00:00Z"
+    }
+  ]
+}
+```
+
+**DELETE /api/tunnels/:tunnel_id** - 删除端口映射
+
+响应：
+```json
+{
+  "success": true
+}
+```
+
+---
+
+## 6. 配置设计
+
+### 6.1 服务端配置
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+tunnel:
+  enabled: true
+  port_range_start: 10000  # 分配的公网端口起始
+  port_range_end: 20000     # 分配的公网端口结束
+  max_tunnels_per_client: 10 # 每个客户端最大隧道数
+
+auth:
+  key: "your-secret-key"
+
+heartbeat:
+  interval: 30
+  timeout: 90
+```
+
+### 6.2 Agent 端配置
+
+```yaml
+server:
+  address: "server.example.com:8080"
+
+tunnel:
+  enabled: true
+  # 可选：预设固定的本地端口映射
+  # mappings:
+  #   - local_port: 22
+  #     protocol: tcp
+  #   - local_port: 80
+  #     protocol: tcp
+
+auth:
+  key: "your-secret-key"
+
+heartbeat:
+  interval: 30
+```
+
+---
+
+## 7. 项目文件修改
+
+### 7.1 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| internal/server/tunnel.go | 服务端隧道管理核心逻辑 |
+| internal/agent/tunnel.go | Agent 端隧道管理核心逻辑 |
+| docs/tunnel-design.md | 本设计文档 |
+
+### 7.2 修改文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| internal/common/message.go | 新增 Tunnel*Payload 结构体 |
+| internal/server/handler.go | 新增 tunnel_* case 处理 |
+| internal/server/server.go | 集成 TunnelManager，启动端口监听 |
+| internal/server/api.go | 新增 /api/tunnels 端点 |
+| internal/agent/handler.go | 新增 tunnel_* case 处理 |
+| internal/agent/agent.go | 集成 TunnelManager |
+| config/server.yaml | 新增 tunnel 配置段 |
+| config/agent.yaml | 新增 tunnel 配置段 |
+| docs/server-design.md | 新增隧道协议章节 |
+| docs/agent-design.md | 新增隧道模块章节 |
+
+---
+
+## 8. 实现顺序
+
+### Phase 1: 协议定义
+1. 修改 internal/common/message.go 添加消息结构
+2. 更新设计文档
+
+### Phase 2: 服务端隧道管理
+1. 新增 internal/server/tunnel.go 实现 TunnelManager
+2. 修改 internal/server/handler.go 添加 tunnel_* 处理
+3. 修改 internal/server/server.go 集成 TunnelManager
+
+### Phase 3: Agent 隧道管理
+1. 新增 internal/agent/tunnel.go 实现 TunnelManager
+2. 修改 internal/agent/handler.go 添加 tunnel_* 处理
+3. 修改 internal/agent/agent.go 集成 TunnelManager
+
+### Phase 4: HTTP API
+1. 修改 internal/server/api.go 添加 /api/tunnels 端点
+
+### Phase 5: 配置和测试
+1. 修改配置文件
+2. 端到端测试 SSH/HTTP 映射
+
+---
+
+## 9. 验证方案
+
+### 9.1 SSH 隧道测试
+
+```bash
+# 1. 通过 API 创建 SSH 隧道
+curl -X POST http://server:8080/api/tunnels \
+  -H "Content-Type: application/json" \
+  -d '{"client_id": "client-xxx", "local_port": 22, "protocol": "tcp"}'
+
+# 返回: {"tunnel_id": "xxx", "public_port": 15001, ...}
+
+# 2. 外部用户连接内网 SSH
+ssh -p 15001 user@server.example.com
+```
+
+### 9.2 HTTP 隧道测试
+
+```bash
+# 1. 创建 HTTP 隧道
+curl -X POST http://server:8080/api/tunnels \
+  -d '{"client_id": "client-xxx", "local_port": 80, "protocol": "tcp"}'
+
+# 返回: {"tunnel_id": "xxx", "public_port": 15002, ...}
+
+# 2. 访问内网 Web 服务
+curl http://server.example.com:15002/
+```
+
+---
+
+## 10. 技术要点
+
+1. **端口监听架构**：Server 需要在 Gin HTTP 服务器（8080）**之外**，使用独立的 `net.Listener` 监听公网映射端口
+
+2. **base64 编码**：复用文件传输的 base64 编码方式，确保 JSON 消息格式正确
+
+3. **Goroutine 管理**：
+   - Server：每个公网端口监听独立 goroutine
+   - Agent：每个 conn_id 的本地连接独立 goroutine
+
+4. **按需连接**：Agent 在收到 `tunnel_data` 之前不连接本地服务，确保有数据消费方
+
+5. **conn_id 设计**：用于区分同一隧道上的多个并发外部连接（如 SSH keep-alive、HTTP keep-alive）
+
+6. **错误处理**：
+   - Agent 本地连接失败：发送 `tunnel_error` 给 Server
+   - Server 关闭隧道：发送 `tunnel_close` 给 Agent，关闭所有外部连接

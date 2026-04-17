@@ -6,6 +6,7 @@
 
 - **远程命令执行** - 服务端向客户端下发命令，客户端执行后返回结果
 - **双向文件传输** - 支持服务端与客户端之间的文件上传下载
+- **内网穿透/端口映射** - 通过 WebSocket 隧道暴露内网服务（SSH、HTTP 等）
 - **心跳保活** - 客户端定期发送心跳，服务端检测超时断开
 - **自动重连** - 客户端支持断线自动重连（指数退避）
 - **跨平台** - 支持 Linux 和 Windows
@@ -25,6 +26,7 @@ C:\work\GoRemote\
 │   │   ├── handler.go      # 消息处理
 │   │   ├── task.go         # 任务管理
 │   │   ├── upload.go       # 文件传输管理
+│   │   ├── tunnel.go       # 隧道管理（内网穿透）
 │   │   ├── api.go          # HTTP API (Gin handlers)
 │   │   ├── config.go       # 配置加载
 │   │   └── logger.go       # 日志配置
@@ -34,6 +36,7 @@ C:\work\GoRemote\
 │       ├── handler.go      # 消息处理
 │       ├── executor.go     # 命令执行
 │       ├── reconnect.go    # 重连机制
+│       ├── tunnel.go       # 隧道管理（内网穿透）
 │       ├── config.go       # 配置加载
 │       └── logger.go       # 日志配置
 ├── config/
@@ -115,9 +118,14 @@ http://localhost:8080/swagger/index.html
 | `/health` | GET | 健康检查 |
 | `/api/clients` | GET | 查看在线客户端列表 |
 | `/api/clients/:id` | GET | 查看客户端详情 |
+| `/api/client-tunnels/:client_id` | GET | 查看指定客户端的隧道 |
 | `/api/tasks` | GET | 查看任务列表 |
 | `/api/tasks/:id` | GET | 查看任务详情 |
 | `/api/exec` | POST | 向客户端下发命令 |
+| `/api/tunnels` | POST | 创建端口映射 |
+| `/api/tunnels` | GET | 查看所有隧道 |
+| `/api/tunnels/:tunnel_id` | GET | 查看隧道详情 |
+| `/api/tunnels/:tunnel_id` | DELETE | 删除端口映射 |
 | `/swagger/*` | GET | Swagger UI 接口文档 |
 
 ### 6. 下发命令示例
@@ -153,6 +161,11 @@ curl -X POST http://localhost:8080/api/exec \
 | download | C→S | 下载文件请求 |
 | download_data | S→C | 下载文件数据 |
 | download_complete | S→C | 下载完成确认 |
+| tunnel_open | C→S | 申请创建隧道 |
+| tunnel_open_ack | S→C | 隧道创建确认 |
+| tunnel_close | C↔S | 关闭隧道 |
+| tunnel_data | C↔S | 隧道数据（双向） |
+| tunnel_error | S→C | 隧道错误通知 |
 
 ## 架构
 
@@ -168,6 +181,11 @@ curl -X POST http://localhost:8080/api/exec \
     │  机器A      │ │  机器B      │ │  机器C      │
     │  (客户端)   │ │  (客户端)   │ │  (客户端)   │
     └─────────────┘ └─────────────┘ └─────────────┘
+
+内网穿透架构：
+
+外部用户 ──▶ [服务端:公网端口] ──▶ [WebSocket隧道] ──▶ [Agent:本地端口]
+            (端口映射)              (数据透传)          (内网服务)
 ```
 
 ## 设计文档

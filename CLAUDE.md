@@ -3,3 +3,4 @@
 - **[服务端测试方案](./docs/server-test.md)** - 服务端单元/集成/端到端测试
 - **[客户端测试方案](./docs/agent-test.md)** - 客户端单元/集成/端到端测试
 - **[项目结构](./docs/project-structure.md)** - 项目目录结构、文件说明
+- **[隧道设计文档](./docs/tunnel-design.md)** - 隧道架构、数据传输、安全机制

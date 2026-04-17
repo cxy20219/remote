@@ -29,6 +29,7 @@ type Server struct {
 	tasks         *TaskStore
 	handler       *Handler
 	uploadManager *UploadManager
+	tunnelManager *TunnelManager
 
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
@@ -49,6 +50,11 @@ func NewServer(config *Config) *Server {
 	}
 
 	s.handler = NewHandler(s)
+
+	// Initialize tunnel manager
+	if config.Tunnel.Enabled {
+		s.tunnelManager = NewTunnelManager(s, config.Tunnel.PortRangeStart, config.Tunnel.PortRangeEnd)
+	}
 
 	s.upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -76,6 +82,7 @@ func (s *Server) Start() error {
 	// API routes
 	s.engine.GET("/api/clients", s.handleAPIClients)
 	s.engine.GET("/api/clients/:id", s.handleAPIClientDetail)
+	s.engine.GET("/api/client-tunnels/:client_id", s.handleAPIListClientTunnels)
 	s.engine.POST("/api/exec", s.handleAPIExec)
 	s.engine.POST("/api/openclaw", s.handleOpenClaw)
 	s.engine.GET("/api/tasks", s.handleAPITasks)
@@ -83,6 +90,11 @@ func (s *Server) Start() error {
 	s.engine.POST("/api/upload", s.handleAPIUpload)
 	s.engine.GET("/api/upload/:file_id", s.handleAPIUploadStatus)
 	s.engine.POST("/api/download", s.handleAPIDownload)
+	// Tunnel API
+	s.engine.POST("/api/tunnels", s.handleAPICreateTunnel)
+	s.engine.GET("/api/tunnels", s.handleAPIListTunnels)
+	s.engine.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
+	s.engine.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
 	s.engine.GET("/health", s.handleHealth)
 
 	// Swagger UI

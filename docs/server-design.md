@@ -163,6 +163,39 @@ type DownloadCompletePayload struct {
     Success bool   `json:"success"`
     Error   string `json:"error,omitempty"`
 }
+
+// 隧道消息
+type TunnelOpenPayload struct {
+    TunnelID  string `json:"tunnel_id"`  // 隧道唯一ID（Agent生成）
+    LocalAddr string `json:"local_addr"` // 本地地址，如 "127.0.0.1"
+    LocalPort int    `json:"local_port"` // 本地端口，如 22
+    Protocol  string `json:"protocol"`   // "tcp" / "udp"
+}
+
+type TunnelOpenAckPayload struct {
+    TunnelID   string `json:"tunnel_id"`
+    PublicPort int    `json:"public_port"` // 分配的公网端口
+    Success    bool   `json:"success"`
+    Error      string `json:"error,omitempty"`
+}
+
+type TunnelClosePayload struct {
+    TunnelID string `json:"tunnel_id"`
+    ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
+}
+
+type TunnelDataPayload struct {
+    TunnelID string `json:"tunnel_id"`
+    ConnID   string `json:"conn_id"`  // 外部连接的标识，区分同一隧道的多个并发连接
+    Data     string `json:"data"`     // base64 encoded
+    IsEOF    bool   `json:"is_eof"`   // 是否结束，用于短连接协议如 HTTP
+}
+
+type TunnelErrorPayload struct {
+    TunnelID string `json:"tunnel_id"`
+    ConnID   string `json:"conn_id,omitempty"`
+    Error    string `json:"error"`
+}
 ```
 
 ## 4. 消息协议
@@ -184,6 +217,11 @@ type DownloadCompletePayload struct {
 | download | C→S | 下载文件请求 |
 | download_data | S→C | 下载文件数据 |
 | download_complete | S→C | 下载完成确认 |
+| tunnel_open | C→S | 申请创建隧道 |
+| tunnel_open_ack | S→C | 隧道创建确认 |
+| tunnel_close | C↔S | 关闭隧道 |
+| tunnel_data | C↔S | 隧道数据（双向） |
+| tunnel_error | S→C | 隧道错误通知 |
 
 ### 4.2 消息流程
 
@@ -532,11 +570,16 @@ log:
 |--------|------|------|
 | GET | /api/clients | 获取在线客户端列表 |
 | GET | /api/clients/:id | 获取客户端详情 |
+| GET | /api/client-tunnels/:client_id | 获取指定客户端的隧道 |
 | POST | /api/exec | 向指定客户端下发命令 |
 | GET | /api/tasks | 获取任务列表 |
 | GET | /api/tasks/:id | 获取任务详情 |
 | POST | /api/upload | 上传文件到指定客户端 |
 | GET | /api/download/:client_id/:filepath | 从客户端下载文件 |
+| POST | /api/tunnels | 创建端口映射 |
+| GET | /api/tunnels | 获取所有隧道 |
+| GET | /api/tunnels/:tunnel_id | 获取隧道详情 |
+| DELETE | /api/tunnels/:tunnel_id | 删除端口映射 |
 | GET | /health | 健康检查 |
 | GET | /swagger/* | Swagger UI 接口文档 |
 
@@ -591,6 +634,7 @@ internal/server/
 ├── task.go        # TaskStore 任务管理
 ├── api.go         # HTTP管理接口
 ├── upload.go      # 文件传输管理
+├── tunnel.go      # 隧道管理（内网穿透）
 ├── config.go      # 配置加载
 └── logger.go      # 日志配置
 
@@ -599,6 +643,83 @@ docs/
 ├── swagger.json   # Swagger JSON文档
 └── swagger.yaml  # Swagger YAML文档
 ```
+
+## 11. 隧道管理（内网穿透）
+
+### 11.1 架构模式
+
+采用**反向隧道**模式，Agent 部署在内网，主动连接服务端的 WebSocket：
+
+```
+外部用户 ──▶ [服务端:公网端口] ──▶ [WebSocket隧道] ──▶ [Agent:本地端口]
+            (端口映射)              (数据透传)          (内网服务)
+```
+
+**特点**：
+- 利用现有 WebSocket 连接传输隧道数据，无需额外端口
+- Agent 在内网，防火墙友好
+- 支持 SSH、HTTP 等任意 TCP 协议
+
+### 11.2 核心数据结构
+
+```go
+// Tunnel 隧道信息
+type Tunnel struct {
+    TunnelID   string
+    ClientID   string
+    Client     *Client        // WebSocket 连接
+    Protocol   string
+    PublicPort int            // 监听的公网端口
+    LocalAddr  string         // 客户端本地地址
+    LocalPort  int
+    CreatedAt  time.Time
+    Status     string         // "active" / "closing"
+}
+
+// TunnelManager 隧道管理器
+type TunnelManager struct {
+    mu          sync.RWMutex
+    tunnels     map[string]*Tunnel    // tunnelID -> Tunnel
+    publicPorts map[int]string        // publicPort -> tunnelID
+    extConns    map[string]*ExternalConn // connID -> ExternalConn
+    portStart   int
+    portEnd     int
+    listeners   map[int]net.Listener  // publicPort -> 监听器
+}
+```
+
+### 11.3 核心流程
+
+**创建隧道**：
+1. Agent 发送 `tunnel_open`（包含 localAddr:localPort）
+2. Server 分配公网端口，调用 `Listen()` 启动监听
+3. Server 返回 `tunnel_open_ack`（包含 tunnelID, publicPort）
+
+**数据转发**：
+```
+外部用户 ──TCP连接──▶ [Server:15001] ──accept──┐
+                                                │
+                         ┌───────────────────────┘
+                         │ Server 推送 tunnel_data(conn_id=x, data=请求)
+                         ▼
+                   Agent 收到 tunnel_data
+                         │ 首次收到该 conn_id → 连接本地服务
+                         │ Agent 发送 tunnel_data(conn_id=x, data=响应)
+                         ▼
+                   Server 收到 tunnel_data → 写入外部 TCP 连接
+```
+
+### 11.4 配置
+
+```yaml
+tunnel:
+  enabled: true
+  port_range_start: 10000  # 分配的公网端口起始
+  port_range_end: 20000    # 分配的公网端口结束
+  max_tunnels_per_client: 10 # 每个客户端最大隧道数
+```
+
+## 12. Swagger UI
 
 ## 11. Swagger UI
 

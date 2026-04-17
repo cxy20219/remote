@@ -648,3 +648,221 @@ func (s *Server) handleAPIUploadStatus(c *gin.Context) {
 		"client_id":   upload.ClientID,
 	})
 }
+
+// TunnelRequest 隧道创建请求
+type TunnelRequest struct {
+	ClientID string `json:"client_id"`
+	LocalPort int    `json:"local_port"`
+	Protocol  string `json:"protocol"`
+}
+
+// handleAPICreateTunnel 创建端口映射
+// @Summary 创建端口映射
+// @Description 为指定客户端创建端口映射隧道
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param request body server.TunnelRequest true "隧道创建请求"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Router /api/tunnels [post]
+func (s *Server) handleAPICreateTunnel(c *gin.Context) {
+	if s.tunnelManager == nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "tunnel is not enabled"})
+		return
+	}
+
+	var req TunnelRequest
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if req.ClientID == "" || req.LocalPort == 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "client_id and local_port are required"})
+		return
+	}
+
+	if req.Protocol == "" {
+		req.Protocol = "tcp"
+	}
+
+	// 获取客户端
+	client, ok := s.clients.Get(req.ClientID)
+	if !ok {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "client not found or offline"})
+		return
+	}
+
+	// 分配公网端口
+	publicPort, err := s.tunnelManager.AllocatePort()
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "no available ports"})
+		return
+	}
+
+	// 生成 tunnelID
+	tunnelID := generateUUID()
+
+	// 创建隧道
+	if err := s.tunnelManager.CreateTunnel(
+		tunnelID,
+		req.ClientID,
+		client,
+		req.Protocol,
+		"127.0.0.1",
+		req.LocalPort,
+		publicPort,
+	); err != nil {
+		s.tunnelManager.ReleasePort(publicPort)
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// 启动端口监听
+	if err := s.tunnelManager.Listen(publicPort, tunnelID); err != nil {
+		s.tunnelManager.CloseTunnel(tunnelID)
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// 通知 Agent 创建隧道
+	tunnelOpenPayload := common.TunnelOpenPayload{
+		TunnelID:  tunnelID,
+		LocalAddr: "127.0.0.1",
+		LocalPort: req.LocalPort,
+		Protocol:  req.Protocol,
+	}
+	payloadJSON, _ := json.Marshal(tunnelOpenPayload)
+	err = client.Conn.WriteJSON(common.Message{
+		Type:    "tunnel_open",
+		Payload: payloadJSON,
+	})
+	if err != nil {
+		s.tunnelManager.CloseTunnel(tunnelID)
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to send tunnel_open to agent"})
+		return
+	}
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"tunnel_id":   tunnelID,
+		"public_port": publicPort,
+		"public_addr":  fmt.Sprintf("localhost:%d", publicPort),
+		"status":      "active",
+	})
+}
+
+// handleAPIListTunnels 列出所有隧道
+// @Summary 列出所有隧道
+// @Description 获取所有隧道的列表
+// @Tags tunnel
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router /api/tunnels [get]
+func (s *Server) handleAPIListTunnels(c *gin.Context) {
+	if s.tunnelManager == nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "tunnel is not enabled"})
+		return
+	}
+
+	tunnels := s.tunnelManager.ListTunnels()
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"tunnels": tunnels,
+		"total":   len(tunnels),
+	})
+}
+
+// handleAPIGetTunnel 获取隧道详情
+// @Summary 获取隧道详情
+// @Description 根据隧道ID获取隧道详细信息
+// @Tags tunnel
+// @Produce json
+// @Param tunnel_id path string true "隧道ID"
+// @Success 200 {object} Tunnel
+// @Failure 404 {object} map[string]string
+// @Router /api/tunnels/{tunnel_id} [get]
+func (s *Server) handleAPIGetTunnel(c *gin.Context) {
+	if s.tunnelManager == nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "tunnel is not enabled"})
+		return
+	}
+
+	tunnelID := c.Param("tunnel_id")
+	tunnel, ok := s.tunnelManager.GetTunnel(tunnelID)
+	if !ok {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "tunnel not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, tunnel)
+}
+
+// handleAPIDeleteTunnel 删除端口映射
+// @Summary 删除端口映射
+// @Description 根据隧道ID删除端口映射
+// @Tags tunnel
+// @Produce json
+// @Param tunnel_id path string true "隧道ID"
+// @Success 200 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Router /api/tunnels/{tunnel_id} [delete]
+func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
+	if s.tunnelManager == nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "tunnel is not enabled"})
+		return
+	}
+
+	tunnelID := c.Param("tunnel_id")
+	tunnel, ok := s.tunnelManager.GetTunnel(tunnelID)
+	if !ok {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "tunnel not found"})
+		return
+	}
+
+	// 通知 Agent 关闭隧道
+	tunnelClosePayload := common.TunnelClosePayload{
+		TunnelID: tunnelID,
+	}
+	payloadJSON, _ := json.Marshal(tunnelClosePayload)
+	tunnel.Client.Conn.WriteJSON(common.Message{
+		Type:    "tunnel_close",
+		Payload: payloadJSON,
+	})
+
+	// 关闭隧道
+	if err := s.tunnelManager.CloseTunnel(tunnelID); err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, map[string]string{"success": "true"})
+}
+
+// handleAPIListClientTunnels 获取指定客户端的隧道
+// @Summary 获取指定客户端的隧道
+// @Description 获取指定客户端的所有隧道
+// @Tags tunnel
+// @Produce json
+// @Param client_id path string true "客户端ID"
+// @Success 200 {object} map[string]interface{}
+// @Router /api/clients/{client_id}/tunnels [get]
+func (s *Server) handleAPIListClientTunnels(c *gin.Context) {
+	if s.tunnelManager == nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "tunnel is not enabled"})
+		return
+	}
+
+	clientID := c.Param("client_id")
+	tunnels := s.tunnelManager.ListTunnelsByClient(clientID)
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"tunnels": tunnels,
+		"total":   len(tunnels),
+	})
+}

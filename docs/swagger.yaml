@@ -81,6 +81,41 @@ definitions:
       stdout:
         type: string
     type: object
+  server.Tunnel:
+    properties:
+      client:
+        allOf:
+        - $ref: '#/definitions/server.Client'
+        description: WebSocket 连接
+      clientID:
+        type: string
+      createdAt:
+        type: string
+      localAddr:
+        description: 客户端本地地址
+        type: string
+      localPort:
+        type: integer
+      protocol:
+        type: string
+      publicPort:
+        description: 监听的公网端口
+        type: integer
+      status:
+        description: '"active" / "closing"'
+        type: string
+      tunnelID:
+        type: string
+    type: object
+  server.TunnelRequest:
+    properties:
+      client_id:
+        type: string
+      local_port:
+        type: integer
+      protocol:
+        type: string
+    type: object
 info:
   contact: {}
 paths:
@@ -98,6 +133,26 @@ paths:
       summary: 获取在线客户端列表
       tags:
       - clients
+  /api/clients/{client_id}/tunnels:
+    get:
+      description: 获取指定客户端的所有隧道
+      parameters:
+      - description: 客户端ID
+        in: path
+        name: client_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 获取指定客户端的隧道
+      tags:
+      - tunnel
   /api/clients/{id}:
     get:
       description: 根据客户端ID获取详细信息
@@ -270,6 +325,105 @@ paths:
       summary: 获取任务详情
       tags:
       - tasks
+  /api/tunnels:
+    get:
+      description: 获取所有隧道的列表
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 列出所有隧道
+      tags:
+      - tunnel
+    post:
+      consumes:
+      - application/json
+      description: 为指定客户端创建端口映射隧道
+      parameters:
+      - description: 隧道创建请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.TunnelRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 创建端口映射
+      tags:
+      - tunnel
+  /api/tunnels/{tunnel_id}:
+    delete:
+      description: 根据隧道ID删除端口映射
+      parameters:
+      - description: 隧道ID
+        in: path
+        name: tunnel_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 删除端口映射
+      tags:
+      - tunnel
+    get:
+      description: 根据隧道ID获取隧道详细信息
+      parameters:
+      - description: 隧道ID
+        in: path
+        name: tunnel_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.Tunnel'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: 获取隧道详情
+      tags:
+      - tunnel
   /api/upload:
     post:
       consumes:

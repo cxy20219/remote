@@ -20,3 +20,9 @@ log:
 file_transfer:
   upload_path: "C:/work/go-remote/uploads"     # default path for uploads (server sends to client)
   download_path: "C:/work/go-remote/downloads"   # default path for downloads (server receives from client)
+
+tunnel:
+  enabled: true
+  port_range_start: 10000  # 分配的公网端口起始
+  port_range_end: 20000    # 分配的公网端口结束
+  max_tunnels_per_client: 10 # 每个客户端最大隧道数

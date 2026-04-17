@@ -14,12 +14,21 @@ type Config struct {
 	Heartbeat   HeartbeatConfig   `yaml:"heartbeat"`
 	Log         LogConfig         `yaml:"log"`
 	FileTransfer FileTransferConfig `yaml:"file_transfer"`
+	Tunnel      TunnelConfig      `yaml:"tunnel"`
 }
 
 // FileTransferConfig holds file transfer default paths
 type FileTransferConfig struct {
 	UploadPath   string `yaml:"upload_path"`   // default path for uploads (server sends to client)
 	DownloadPath string `yaml:"download_path"` // default path for downloads (server receives from client)
+}
+
+// TunnelConfig holds tunnel configuration
+type TunnelConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	PortRangeStart    int  `yaml:"port_range_start"`    // 分配的公网端口起始
+	PortRangeEnd      int  `yaml:"port_range_end"`      // 分配的公网端口结束
+	MaxTunnelsPerClient int `yaml:"max_tunnels_per_client"` // 每个客户端最大隧道数
 }
 
 // ServerConfig holds WebSocket server configuration
@@ -86,6 +95,17 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.FileTransfer.DownloadPath == "" {
 		config.FileTransfer.DownloadPath = "./downloads"
+	}
+
+	// Tunnel defaults
+	if config.Tunnel.PortRangeStart == 0 {
+		config.Tunnel.PortRangeStart = 10000
+	}
+	if config.Tunnel.PortRangeEnd == 0 {
+		config.Tunnel.PortRangeEnd = 20000
+	}
+	if config.Tunnel.MaxTunnelsPerClient == 0 {
+		config.Tunnel.MaxTunnelsPerClient = 10
 	}
 
 	return &config, nil

@@ -86,3 +86,40 @@ type DownloadCompletePayload struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
 }
+
+// TunnelOpenPayload - 客户端申请创建隧道
+type TunnelOpenPayload struct {
+	TunnelID  string `json:"tunnel_id"`  // 隧道唯一ID（Agent生成）
+	LocalAddr string `json:"local_addr"` // 本地地址，如 "127.0.0.1"
+	LocalPort int    `json:"local_port"` // 本地端口，如 22
+	Protocol  string `json:"protocol"`   // "tcp" / "udp"
+}
+
+// TunnelOpenAckPayload - 服务端确认隧道创建
+type TunnelOpenAckPayload struct {
+	TunnelID   string `json:"tunnel_id"`
+	PublicPort int    `json:"public_port"` // 分配的公网端口
+	Success    bool   `json:"success"`
+	Error      string `json:"error,omitempty"`
+}
+
+// TunnelClosePayload - 关闭隧道
+type TunnelClosePayload struct {
+	TunnelID string `json:"tunnel_id"`
+	ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
+}
+
+// TunnelDataPayload - 隧道数据传输（双向）
+type TunnelDataPayload struct {
+	TunnelID string `json:"tunnel_id"`
+	ConnID   string `json:"conn_id"`  // 外部连接的标识，区分同一隧道的多个并发连接
+	Data     string `json:"data"`     // base64 encoded
+	IsEOF    bool   `json:"is_eof"`   // 是否结束，用于短连接协议如 HTTP
+}
+
+// TunnelErrorPayload - 隧道错误
+type TunnelErrorPayload struct {
+	TunnelID string `json:"tunnel_id"`
+	ConnID   string `json:"conn_id,omitempty"`
+	Error    string `json:"error"`
+}

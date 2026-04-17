@@ -25,6 +25,36 @@
                 }
             }
         },
+        "/api/clients/{client_id}/tunnels": {
+            "get": {
+                "description": "获取指定客户端的所有隧道",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tunnel"
+                ],
+                "summary": "获取指定客户端的隧道",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "客户端ID",
+                        "name": "client_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/clients/{id}": {
             "get": {
                 "description": "根据客户端ID获取详细信息",
@@ -269,6 +299,155 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/server.Task"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tunnels": {
+            "get": {
+                "description": "获取所有隧道的列表",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tunnel"
+                ],
+                "summary": "列出所有隧道",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "为指定客户端创建端口映射隧道",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tunnel"
+                ],
+                "summary": "创建端口映射",
+                "parameters": [
+                    {
+                        "description": "隧道创建请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.TunnelRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tunnels/{tunnel_id}": {
+            "get": {
+                "description": "根据隧道ID获取隧道详细信息",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tunnel"
+                ],
+                "summary": "获取隧道详情",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "隧道ID",
+                        "name": "tunnel_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.Tunnel"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "根据隧道ID删除端口映射",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tunnel"
+                ],
+                "summary": "删除端口映射",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "隧道ID",
+                        "name": "tunnel_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
                         }
                     },
                     "404": {
@@ -532,6 +711,60 @@
                     "type": "string"
                 },
                 "stdout": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.Tunnel": {
+            "type": "object",
+            "properties": {
+                "client": {
+                    "description": "WebSocket 连接",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/server.Client"
+                        }
+                    ]
+                },
+                "clientID": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "localAddr": {
+                    "description": "客户端本地地址",
+                    "type": "string"
+                },
+                "localPort": {
+                    "type": "integer"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "publicPort": {
+                    "description": "监听的公网端口",
+                    "type": "integer"
+                },
+                "status": {
+                    "description": "\"active\" / \"closing\"",
+                    "type": "string"
+                },
+                "tunnelID": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.TunnelRequest": {
+            "type": "object",
+            "properties": {
+                "client_id": {
+                    "type": "string"
+                },
+                "local_port": {
+                    "type": "integer"
+                },
+                "protocol": {
                     "type": "string"
                 }
             }

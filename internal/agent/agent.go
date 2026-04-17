@@ -12,16 +12,17 @@ import (
 
 // Agent is the main agent controller
 type Agent struct {
-	config     *Config
-	connector  *Connector
-	handler    *Handler
-	executor   *Executor
-	reconnect  *Reconnect
-	hostname   string
-	os         string
-	clientID   string
-	mu         sync.RWMutex
-	stopped    bool
+	config       *Config
+	connector    *Connector
+	handler      *Handler
+	executor     *Executor
+	reconnect    *Reconnect
+	tunnelManager *TunnelManager
+	hostname     string
+	os           string
+	clientID     string
+	mu           sync.RWMutex
+	stopped      bool
 }
 
 // NewAgent creates a new Agent
@@ -53,9 +54,13 @@ func NewAgent(config *Config) *Agent {
 			config.Reconnect.MaxAttempts,
 			config.Reconnect.MaxInterval,
 		),
+		tunnelManager: NewTunnelManager(nil),
 		hostname: hostname,
 		os:       os,
 	}
+
+	// 设置 tunnelManager 的 agent 引用
+	agent.tunnelManager.agent = agent
 
 	agent.handler = NewHandler(agent)
 

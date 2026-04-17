@@ -15,6 +15,7 @@ type Config struct {
 	Heartbeat  HeartbeatConfig `yaml:"heartbeat"`
 	Reconnect  ReconnectConfig  `yaml:"reconnect"`
 	Log        LogConfig        `yaml:"log"`
+	Tunnel     TunnelConfig     `yaml:"tunnel"`
 }
 
 // ServerConfig holds server connection configuration
@@ -56,6 +57,11 @@ type ReconnectConfig struct {
 type LogConfig struct {
 	Level string `yaml:"level"` // debug/info/warn/error
 	File  string `yaml:"file"`  // empty for stdout
+}
+
+// TunnelConfig holds tunnel configuration
+type TunnelConfig struct {
+	Enabled  bool `yaml:"enabled"`
 }
 
 // LoadConfig loads configuration from a YAML file

@@ -44,6 +44,14 @@ func (h *Handler) Handle(client *Client, msg *common.Message) error {
 		return h.handleDownloadData(client, msg)
 	case "download_complete":
 		return h.handleDownloadComplete(client, msg)
+	case "tunnel_open":
+		return h.handleTunnelOpen(client, msg)
+	case "tunnel_close":
+		return h.handleTunnelClose(client, msg)
+	case "tunnel_data":
+		return h.handleTunnelData(client, msg)
+	case "tunnel_error":
+		return h.handleTunnelError(client, msg)
 	default:
 		return fmt.Errorf("unknown message type: %s", msg.Type)
 	}
@@ -390,4 +398,139 @@ func (h *Handler) sendUploadComplete(client *Client, fileID string, success bool
 		Type:    "upload_complete",
 		Payload: payloadJSON,
 	})
+}
+
+// handleTunnelOpen 处理隧道创建请求
+func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
+	var payload common.TunnelOpenPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return err
+	}
+
+	// 分配公网端口
+	publicPort, err := h.server.tunnelManager.AllocatePort()
+	if err != nil {
+		// 返回错误
+		ackPayload := common.TunnelOpenAckPayload{
+			TunnelID: payload.TunnelID,
+			Success:  false,
+			Error:    err.Error(),
+		}
+		payloadJSON, _ := json.Marshal(ackPayload)
+		return client.Conn.WriteJSON(common.Message{
+			Type:    "tunnel_open_ack",
+			Payload: payloadJSON,
+		})
+	}
+
+	// 创建隧道记录
+	if err := h.server.tunnelManager.CreateTunnel(
+		payload.TunnelID,
+		client.ClientID,
+		client,
+		payload.Protocol,
+		payload.LocalAddr,
+		payload.LocalPort,
+		publicPort,
+	); err != nil {
+		h.server.tunnelManager.ReleasePort(publicPort)
+		ackPayload := common.TunnelOpenAckPayload{
+			TunnelID: payload.TunnelID,
+			Success:  false,
+			Error:    err.Error(),
+		}
+		payloadJSON, _ := json.Marshal(ackPayload)
+		return client.Conn.WriteJSON(common.Message{
+			Type:    "tunnel_open_ack",
+			Payload: payloadJSON,
+		})
+	}
+
+	// 启动端口监听
+	if err := h.server.tunnelManager.Listen(publicPort, payload.TunnelID); err != nil {
+		h.server.tunnelManager.CloseTunnel(payload.TunnelID)
+		ackPayload := common.TunnelOpenAckPayload{
+			TunnelID: payload.TunnelID,
+			Success:  false,
+			Error:    err.Error(),
+		}
+		payloadJSON, _ := json.Marshal(ackPayload)
+		return client.Conn.WriteJSON(common.Message{
+			Type:    "tunnel_open_ack",
+			Payload: payloadJSON,
+		})
+	}
+
+	// 返回成功响应
+	ackPayload := common.TunnelOpenAckPayload{
+		TunnelID:   payload.TunnelID,
+		PublicPort: publicPort,
+		Success:    true,
+	}
+	payloadJSON, _ := json.Marshal(ackPayload)
+	return client.Conn.WriteJSON(common.Message{
+		Type:    "tunnel_open_ack",
+		Payload: payloadJSON,
+	})
+}
+
+// handleTunnelClose 处理隧道关闭请求
+func (h *Handler) handleTunnelClose(client *Client, msg *common.Message) error {
+	var payload common.TunnelClosePayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return err
+	}
+
+	tunnel, ok := h.server.tunnelManager.GetTunnel(payload.TunnelID)
+	if !ok {
+		return nil
+	}
+
+	// 验证客户端拥有该隧道
+	if tunnel.ClientID != client.ClientID {
+		return fmt.Errorf("tunnel does not belong to this client")
+	}
+
+	return h.server.tunnelManager.CloseTunnel(payload.TunnelID)
+}
+
+// handleTunnelData 处理隧道数据
+func (h *Handler) handleTunnelData(client *Client, msg *common.Message) error {
+	var payload common.TunnelDataPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return err
+	}
+
+	// 验证隧道属于该客户端
+	tunnel, ok := h.server.tunnelManager.GetTunnel(payload.TunnelID)
+	if !ok || tunnel.ClientID != client.ClientID {
+		return fmt.Errorf("tunnel not found or not owned by client")
+	}
+
+	// 解码数据
+	data, err := base64.StdEncoding.DecodeString(payload.Data)
+	if err != nil {
+		return err
+	}
+
+	// 转发到外部连接
+	return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, data, payload.IsEOF)
+}
+
+// handleTunnelError 处理隧道错误
+func (h *Handler) handleTunnelError(client *Client, msg *common.Message) error {
+	var payload common.TunnelErrorPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return err
+	}
+
+	// 记录错误日志
+	slog.Warn("tunnel error from agent",
+		"tunnel_id", payload.TunnelID,
+		"conn_id", payload.ConnID,
+		"error", payload.Error)
+
+	// 如果是严重错误，关闭隧道
+	// 这里可以根据 Error 类型决定是否关闭
+	return nil
 }
