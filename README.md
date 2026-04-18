@@ -77,6 +77,10 @@ server:
   host: "0.0.0.0"
   port: 8080
 
+tunnel:
+  public_host: "server.example.com"  # optional host returned in public_addr
+  default_local_addr: "127.0.0.1"    # default agent-side target address
+
 auth:
   key: "your-secret-key"  # 修改为你的密钥
 ```
@@ -141,6 +145,25 @@ curl -X POST http://localhost:8080/api/exec \
     "client_id": "客户端ID",
     "command": "ls -la",
     "timeout": 30
+  }'
+
+# Create a tunnel using default_local_addr
+curl -X POST http://localhost:8080/api/tunnels \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "client-id",
+    "local_port": 22,
+    "protocol": "tcp"
+  }'
+
+# Create a tunnel to a specific target address on the agent
+curl -X POST http://localhost:8080/api/tunnels \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "client-id",
+    "local_addr": "192.168.1.10",
+    "local_port": 8081,
+    "protocol": "tcp"
   }'
 ```
 

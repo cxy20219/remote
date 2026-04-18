@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"sync"
 	"time"
 
@@ -34,10 +37,10 @@ type Connector struct {
 	tlsCA      string
 	authKey    string
 
-	conn    *websocket.Conn
-	mu      sync.Mutex
-	done    chan struct{}
-	closed  bool
+	conn   *websocket.Conn
+	mu     sync.Mutex
+	done   chan struct{}
+	closed bool
 }
 
 // NewConnector creates a new Connector
@@ -71,8 +74,12 @@ func (c *Connector) Connect() error {
 		WriteBufferSize: 1024,
 	}
 
-	if c.tlsEnabled && c.tlsCA != "" {
-		// TODO: Configure TLS with CA certificate
+	if c.tlsEnabled {
+		tlsConfig, err := c.buildTLSConfig()
+		if err != nil {
+			return err
+		}
+		dialer.TLSClientConfig = tlsConfig
 	}
 
 	conn, _, err := dialer.Dial(u.String(), nil)
@@ -80,11 +87,40 @@ func (c *Connector) Connect() error {
 		return fmt.Errorf("failed to dial: %w", err)
 	}
 
-	c.conn = conn
-	c.closed = false
+	c.resetConnectionState(conn)
 
 	slog.Info("connected to server", "addr", c.serverAddr)
 	return nil
+}
+
+func (c *Connector) resetConnectionState(conn *websocket.Conn) {
+	c.conn = conn
+	c.done = make(chan struct{})
+	c.closed = false
+}
+
+func (c *Connector) buildTLSConfig() (*tls.Config, error) {
+	if c.tlsCA == "" {
+		return &tls.Config{}, nil
+	}
+
+	caCertPEM, err := os.ReadFile(c.tlsCA)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read TLS CA certificate %q: %w", c.tlsCA, err)
+	}
+
+	rootCAs, err := x509.SystemCertPool()
+	if err != nil || rootCAs == nil {
+		rootCAs = x509.NewCertPool()
+	}
+
+	if ok := rootCAs.AppendCertsFromPEM(caCertPEM); !ok {
+		return nil, fmt.Errorf("failed to parse TLS CA certificate %q", c.tlsCA)
+	}
+
+	return &tls.Config{
+		RootCAs: rootCAs,
+	}, nil
 }
 
 // Close closes the connection
@@ -100,7 +136,9 @@ func (c *Connector) Close() error {
 	close(c.done)
 
 	if c.conn != nil {
-		return c.conn.Close()
+		err := c.conn.Close()
+		c.conn = nil
+		return err
 	}
 	return nil
 }

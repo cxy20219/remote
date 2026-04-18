@@ -604,6 +604,33 @@ log:
 }
 ```
 
+**POST /api/tunnels**
+
+请求：
+```json
+{
+  "client_id": "client-xxx",
+  "local_addr": "127.0.0.1",
+  "local_port": 22,
+  "protocol": "tcp"
+}
+```
+
+说明：
+- `local_addr` 可选；不传时使用 `tunnel.default_local_addr`
+- `public_addr` 优先使用 `tunnel.public_host`，否则回退到当前请求 Host
+
+响应：
+```json
+{
+  "tunnel_id": "tunnel-xxx",
+  "public_port": 15001,
+  "public_addr": "server.example.com:15001",
+  "local_addr": "127.0.0.1",
+  "status": "active"
+}
+```
+
 ## 8. 错误处理
 
 | 错误类型 | 处理方式 |
@@ -714,6 +741,8 @@ type TunnelManager struct {
 ```yaml
 tunnel:
   enabled: true
+  public_host: "server.example.com"   # API 返回给外部调用方的主机名/IP
+  default_local_addr: "127.0.0.1"     # 未显式传入 local_addr 时的默认目标地址
   port_range_start: 10000  # 分配的公网端口起始
   port_range_end: 20000    # 分配的公网端口结束
   max_tunnels_per_client: 10 # 每个客户端最大隧道数

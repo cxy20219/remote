@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -10,13 +11,15 @@ import (
 
 // Client represents a connected agent
 type Client struct {
-	ClientID string           `json:"client_id"`
-	Hostname string           `json:"hostname"`
-	OS       string           `json:"os"`
-	Conn     *websocket.Conn  `json:"-"`
-	RegTime  time.Time        `json:"reg_time"`
-	LastPing time.Time        `json:"last_ping"`
-	Status   string           `json:"status"` // online/offline
+	ClientID string          `json:"client_id"`
+	Hostname string          `json:"hostname"`
+	OS       string          `json:"os"`
+	Conn     *websocket.Conn `json:"-"`
+	RegTime  time.Time       `json:"reg_time"`
+	LastPing time.Time       `json:"last_ping"`
+	Status   string          `json:"status"` // online/offline
+
+	writeMu sync.Mutex
 }
 
 // ClientManager manages connected clients
@@ -82,7 +85,7 @@ func (m *ClientManager) Broadcast(data []byte) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, client := range m.clients {
-		if err := client.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		if err := client.WriteMessage(websocket.TextMessage, data); err != nil {
 			slog.Warn("failed to broadcast to client", "client_id", client.ClientID, "error", err)
 		}
 	}
@@ -97,5 +100,29 @@ func (m *ClientManager) SendTo(clientID string, data []byte) error {
 	if !ok {
 		return nil
 	}
-	return client.Conn.WriteMessage(websocket.TextMessage, data)
+	return client.WriteMessage(websocket.TextMessage, data)
+}
+
+// WriteJSON serializes websocket writes to avoid concurrent write panics.
+func (c *Client) WriteJSON(v interface{}) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if c.Conn == nil {
+		return fmt.Errorf("client connection is nil")
+	}
+
+	return c.Conn.WriteJSON(v)
+}
+
+// WriteMessage serializes raw websocket writes to avoid concurrent write panics.
+func (c *Client) WriteMessage(messageType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if c.Conn == nil {
+		return fmt.Errorf("client connection is nil")
+	}
+
+	return c.Conn.WriteMessage(messageType, data)
 }

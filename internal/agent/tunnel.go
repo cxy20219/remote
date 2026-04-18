@@ -13,32 +13,36 @@ import (
 	"goremote/internal/common"
 )
 
-// Tunnel 隧道信息
+// Tunnel tracks agent-side tunnel metadata.
 type Tunnel struct {
 	TunnelID   string
 	LocalAddr  string
 	LocalPort  int
 	Protocol   string
-	PublicPort int // 服务端分配的公网端口
+	PublicPort int
 }
 
-// LocalConn 本地连接（按 conn_id 区分）
+// LocalConn represents one proxied local connection keyed by conn_id.
 type LocalConn struct {
 	ConnID   string
 	TunnelID string
-	Conn     net.Conn // 连接本地服务的 conn
+	Conn     net.Conn
 }
 
-// TunnelManager 隧道管理器
+// TunnelManager manages local tunnel state on the agent.
 type TunnelManager struct {
 	mu         sync.RWMutex
-	tunnels    map[string]*Tunnel     // tunnelID -> Tunnel
-	localConns map[string]*LocalConn // connID -> LocalConn
-	readLoops  map[string]bool       // connID -> 是否已有读取 goroutine
+	tunnels    map[string]*Tunnel
+	localConns map[string]*LocalConn
+	readLoops  map[string]bool
 	agent      *Agent
 }
 
-// NewTunnelManager creates a new TunnelManager
+func localServiceAddr(host string, port int) string {
+	return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+}
+
+// NewTunnelManager creates a new TunnelManager.
 func NewTunnelManager(agent *Agent) *TunnelManager {
 	return &TunnelManager{
 		tunnels:    make(map[string]*Tunnel),
@@ -48,7 +52,7 @@ func NewTunnelManager(agent *Agent) *TunnelManager {
 	}
 }
 
-// CreateTunnel 创建隧道记录
+// CreateTunnel stores tunnel metadata.
 func (tm *TunnelManager) CreateTunnel(tunnelID, localAddr string, localPort int, protocol string, publicPort int) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -68,7 +72,7 @@ func (tm *TunnelManager) CreateTunnel(tunnelID, localAddr string, localPort int,
 		"public_port", publicPort)
 }
 
-// GetTunnel 获取隧道
+// GetTunnel returns tunnel metadata by ID.
 func (tm *TunnelManager) GetTunnel(tunnelID string) (*Tunnel, bool) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -76,10 +80,11 @@ func (tm *TunnelManager) GetTunnel(tunnelID string) (*Tunnel, bool) {
 	return tunnel, ok
 }
 
-// ListTunnels 返回所有隧道
+// ListTunnels returns all known tunnels.
 func (tm *TunnelManager) ListTunnels() []*Tunnel {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
+
 	tunnels := make([]*Tunnel, 0, len(tm.tunnels))
 	for _, t := range tm.tunnels {
 		tunnels = append(tunnels, t)
@@ -87,7 +92,7 @@ func (tm *TunnelManager) ListTunnels() []*Tunnel {
 	return tunnels
 }
 
-// CloseTunnel 关闭隧道
+// CloseTunnel removes a tunnel and closes any related local connections.
 func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -96,7 +101,6 @@ func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
 
-	// 关闭所有本地连接
 	for connID, lc := range tm.localConns {
 		if lc.TunnelID == tunnelID {
 			lc.Conn.Close()
@@ -110,21 +114,18 @@ func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 	return nil
 }
 
-// GetOrCreateLocalConn 获取或创建到本地服务的连接
+// GetOrCreateLocalConn returns the local service connection for connID.
 func (tm *TunnelManager) GetOrCreateLocalConn(connID, tunnelID string) (net.Conn, error) {
 	tm.mu.RLock()
 	lc, ok := tm.localConns[connID]
 	tm.mu.RUnlock()
-
 	if ok {
 		return lc.Conn, nil
 	}
 
-	// 需要创建新连接
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	// 再次检查（防止并发）
 	if lc, ok := tm.localConns[connID]; ok {
 		return lc.Conn, nil
 	}
@@ -134,8 +135,7 @@ func (tm *TunnelManager) GetOrCreateLocalConn(connID, tunnelID string) (net.Conn
 		return nil, fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
 
-	// 连接到本地服务
-	addr := fmt.Sprintf("%s:%d", tunnel.LocalAddr, tunnel.LocalPort)
+	addr := localServiceAddr(tunnel.LocalAddr, tunnel.LocalPort)
 	conn, err := net.DialTimeout(tunnel.Protocol, addr, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to local service: %w", err)
@@ -156,7 +156,7 @@ func (tm *TunnelManager) GetOrCreateLocalConn(connID, tunnelID string) (net.Conn
 	return conn, nil
 }
 
-// CloseLocalConn 关闭本地连接
+// CloseLocalConn closes a proxied local connection by connID.
 func (tm *TunnelManager) CloseLocalConn(connID string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -168,11 +168,10 @@ func (tm *TunnelManager) CloseLocalConn(connID string) {
 	}
 }
 
-// HandleData 处理来自服务端的隧道数据，转发到本地服务
+// HandleData forwards data from the server to the local service.
 func (tm *TunnelManager) HandleData(connID, tunnelID string, data []byte, isEOF bool) error {
 	conn, err := tm.GetOrCreateLocalConn(connID, tunnelID)
 	if err != nil {
-		// 发送错误到服务端
 		tm.SendError(tunnelID, connID, err.Error())
 		return err
 	}
@@ -190,9 +189,8 @@ func (tm *TunnelManager) HandleData(connID, tunnelID string, data []byte, isEOF 
 	return nil
 }
 
-// HandleLocalResponse 处理本地服务响应，转发给服务端
+// HandleLocalResponse forwards local service data back to the server.
 func (tm *TunnelManager) HandleLocalResponse(connID, tunnelID string, data []byte, isEOF bool) error {
-	// 验证隧道存在
 	if _, ok := tm.GetTunnel(tunnelID); !ok {
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
@@ -217,7 +215,7 @@ func (tm *TunnelManager) HandleLocalResponse(connID, tunnelID string, data []byt
 	return err
 }
 
-// SendError 发送隧道错误到服务端
+// SendError forwards a tunnel error to the server.
 func (tm *TunnelManager) SendError(tunnelID, connID, errMsg string) {
 	payload := common.TunnelErrorPayload{
 		TunnelID: tunnelID,
@@ -231,7 +229,7 @@ func (tm *TunnelManager) SendError(tunnelID, connID, errMsg string) {
 	})
 }
 
-// ReadFromLocal 启动从本地连接读取响应的 goroutine
+// ReadFromLocal starts a goroutine that reads from one local connection.
 func (tm *TunnelManager) ReadFromLocal(connID, tunnelID string, localConn net.Conn) {
 	go func() {
 		buf := make([]byte, 32*1024)
@@ -251,7 +249,6 @@ func (tm *TunnelManager) ReadFromLocal(connID, tunnelID string, localConn net.Co
 						"conn_id", connID,
 						"error", err)
 				}
-				// 发送 EOF
 				tm.HandleLocalResponse(connID, tunnelID, nil, true)
 				break
 			}
@@ -259,7 +256,7 @@ func (tm *TunnelManager) ReadFromLocal(connID, tunnelID string, localConn net.Co
 	}()
 }
 
-// OpenTunnel 发起创建隧道请求
+// OpenTunnel asks the server to create a new tunnel.
 func (tm *TunnelManager) OpenTunnel(localAddr string, localPort int, protocol string) (string, int, error) {
 	tunnelID := fmt.Sprintf("tunnel-%d", time.Now().UnixNano())
 
@@ -279,10 +276,10 @@ func (tm *TunnelManager) OpenTunnel(localAddr string, localPort int, protocol st
 		return "", 0, err
 	}
 
-	return tunnelID, 0, nil // publicPort 将在 ack 中获取
+	return tunnelID, 0, nil
 }
 
-// CloseTunnelConn 关闭指定连接
+// CloseTunnelConn closes one proxied connection and informs the server.
 func (tm *TunnelManager) CloseTunnelConn(tunnelID, connID string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -303,7 +300,7 @@ func (tm *TunnelManager) CloseTunnelConn(tunnelID, connID string) error {
 	})
 }
 
-// StartReadLoop 启动读取本地响应的 goroutine（如果还没有启动）
+// StartReadLoop starts the local read loop once per connID.
 func (tm *TunnelManager) StartReadLoop(connID, tunnelID string) {
 	tm.mu.Lock()
 	if tm.readLoops[connID] {
@@ -314,7 +311,6 @@ func (tm *TunnelManager) StartReadLoop(connID, tunnelID string) {
 
 	lc, ok := tm.localConns[connID]
 	tm.mu.Unlock()
-
 	if !ok {
 		return
 	}
@@ -322,7 +318,6 @@ func (tm *TunnelManager) StartReadLoop(connID, tunnelID string) {
 	go tm.readFromLocal(connID, tunnelID, lc.Conn)
 }
 
-// readFromLocal 从本地连接读取响应
 func (tm *TunnelManager) readFromLocal(connID, tunnelID string, localConn net.Conn) {
 	defer func() {
 		tm.mu.Lock()

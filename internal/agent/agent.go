@@ -12,17 +12,17 @@ import (
 
 // Agent is the main agent controller
 type Agent struct {
-	config       *Config
-	connector    *Connector
-	handler      *Handler
-	executor     *Executor
-	reconnect    *Reconnect
+	config        *Config
+	connector     *Connector
+	handler       *Handler
+	executor      *Executor
+	reconnect     *Reconnect
 	tunnelManager *TunnelManager
-	hostname     string
-	os           string
-	clientID     string
-	mu           sync.RWMutex
-	stopped      bool
+	hostname      string
+	os            string
+	clientID      string
+	mu            sync.RWMutex
+	stopped       bool
 }
 
 // NewAgent creates a new Agent
@@ -55,8 +55,8 @@ func NewAgent(config *Config) *Agent {
 			config.Reconnect.MaxInterval,
 		),
 		tunnelManager: NewTunnelManager(nil),
-		hostname: hostname,
-		os:       os,
+		hostname:      hostname,
+		os:            os,
 	}
 
 	// 设置 tunnelManager 的 agent 引用
@@ -91,6 +91,9 @@ func (a *Agent) Run() error {
 			a.reconnect.beforeRetry()
 			continue
 		}
+
+		// A successful connection should reset the failure backoff budget.
+		a.reconnect.reset()
 
 		// Handle connection
 		if err := a.handleConnection(); err != nil {

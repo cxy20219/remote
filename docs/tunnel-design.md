@@ -244,6 +244,7 @@ type TunnelManager struct {
 ```json
 {
   "client_id": "client-xxx",
+  "local_addr": "127.0.0.1",
   "local_port": 22,
   "protocol": "tcp"
 }
@@ -255,6 +256,7 @@ type TunnelManager struct {
   "tunnel_id": "tunnel-xxx",
   "public_port": 15001,
   "public_addr": "server.example.com:15001",
+  "local_addr": "127.0.0.1",
   "status": "active"
 }
 ```
@@ -301,6 +303,8 @@ server:
 
 tunnel:
   enabled: true
+  public_host: "server.example.com"   # API 返回给外部调用方的主机名/IP
+  default_local_addr: "127.0.0.1"     # 未显式传入 local_addr 时的默认目标地址
   port_range_start: 10000  # 分配的公网端口起始
   port_range_end: 20000     # 分配的公网端口结束
   max_tunnels_per_client: 10 # 每个客户端最大隧道数
@@ -397,7 +401,7 @@ heartbeat:
 # 1. 通过 API 创建 SSH 隧道
 curl -X POST http://server:8080/api/tunnels \
   -H "Content-Type: application/json" \
-  -d '{"client_id": "client-xxx", "local_port": 22, "protocol": "tcp"}'
+  -d '{"client_id": "client-xxx", "local_addr": "127.0.0.1", "local_port": 22, "protocol": "tcp"}'
 
 # 返回: {"tunnel_id": "xxx", "public_port": 15001, ...}
 
@@ -410,7 +414,8 @@ ssh -p 15001 user@server.example.com
 ```bash
 # 1. 创建 HTTP 隧道
 curl -X POST http://server:8080/api/tunnels \
-  -d '{"client_id": "client-xxx", "local_port": 80, "protocol": "tcp"}'
+  -H "Content-Type: application/json" \
+  -d '{"client_id": "client-xxx", "local_addr": "127.0.0.1", "local_port": 80, "protocol": "tcp"}'
 
 # 返回: {"tunnel_id": "xxx", "public_port": 15002, ...}
 

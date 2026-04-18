@@ -772,6 +772,9 @@ const docTemplate = `{
                 "client_id": {
                     "type": "string"
                 },
+                "local_addr": {
+                    "type": "string"
+                },
                 "local_port": {
                     "type": "integer"
                 },

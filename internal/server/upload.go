@@ -2,6 +2,7 @@ package server
 
 import (
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -18,7 +19,7 @@ type UploadFile struct {
 	ClientID    string
 	Status      string // in_progress/completed/failed
 	CreatedAt   time.Time
-	IsDownload  bool   // true if this is a download (server receiving from client)
+	IsDownload  bool // true if this is a download (server receiving from client)
 }
 
 // UploadManager manages ongoing file uploads
@@ -38,6 +39,10 @@ func NewUploadManager() *UploadManager {
 // If isDownload is true, the file is not created here (server will write to it later)
 func (m *UploadManager) Add(upload *UploadFile, isDownload bool) error {
 	if !isDownload {
+		if err := os.MkdirAll(filepath.Dir(upload.Filename), 0755); err != nil {
+			return err
+		}
+
 		// Create file for writing (upload mode: server sends file to client)
 		file, err := os.Create(upload.Filename)
 		if err != nil {
@@ -66,5 +71,8 @@ func (m *UploadManager) Get(fileID string) *UploadFile {
 func (m *UploadManager) Remove(fileID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if upload, ok := m.files[fileID]; ok && upload.File != nil {
+		upload.File.Close()
+	}
 	delete(m.files, fileID)
 }

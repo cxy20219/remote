@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -38,14 +39,14 @@ type Server struct {
 // NewServer creates a new Server
 func NewServer(config *Config) *Server {
 	s := &Server{
-		Addr:         fmt.Sprintf("%s:%d", config.Server.Host, config.Server.Port),
-		tlsEnabled:   config.Server.TLS.Enabled,
-		tlsCert:      config.Server.TLS.Cert,
-		tlsKey:       config.Server.TLS.Key,
-		config:       config,
-		clients:      NewClientManager(),
-		tasks:        NewTaskStore(),
-		handler:      nil,
+		Addr:          net.JoinHostPort(config.Server.Host, fmt.Sprintf("%d", config.Server.Port)),
+		tlsEnabled:    config.Server.TLS.Enabled,
+		tlsCert:       config.Server.TLS.Cert,
+		tlsKey:        config.Server.TLS.Key,
+		config:        config,
+		clients:       NewClientManager(),
+		tasks:         NewTaskStore(),
+		handler:       nil,
 		uploadManager: NewUploadManager(),
 	}
 
@@ -259,7 +260,7 @@ func (s *Server) SendCommand(clientID, taskID, command string, timeout int) erro
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
-	return client.Conn.WriteJSON(common.Message{
+	return client.WriteJSON(common.Message{
 		Type:    "exec",
 		Payload: payloadJSON,
 	})

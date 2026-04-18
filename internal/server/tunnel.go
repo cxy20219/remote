@@ -16,31 +16,31 @@ import (
 type Tunnel struct {
 	TunnelID   string
 	ClientID   string
-	Client     *Client           // WebSocket 连接
+	Client     *Client // WebSocket 连接
 	Protocol   string
-	PublicPort int               // 监听的公网端口
-	LocalAddr  string            // 客户端本地地址
+	PublicPort int    // 监听的公网端口
+	LocalAddr  string // 客户端本地地址
 	LocalPort  int
 	CreatedAt  time.Time
-	Status     string            // "active" / "closing"
+	Status     string // "active" / "closing"
 }
 
 // ExternalConn 外部连接信息
 type ExternalConn struct {
 	ConnID   string
 	TunnelID string
-	Conn     net.Conn            // TCP 连接
+	Conn     net.Conn // TCP 连接
 }
 
 // TunnelManager 隧道管理器
 type TunnelManager struct {
 	mu          sync.RWMutex
-	tunnels     map[string]*Tunnel     // tunnelID -> Tunnel
-	publicPorts map[int]string         // publicPort -> tunnelID
+	tunnels     map[string]*Tunnel       // tunnelID -> Tunnel
+	publicPorts map[int]string           // publicPort -> tunnelID
 	extConns    map[string]*ExternalConn // connID -> ExternalConn
 	portStart   int
 	portEnd     int
-	listeners   map[int]net.Listener   // publicPort -> 监听器
+	listeners   map[int]net.Listener // publicPort -> 监听器
 	server      *Server
 }
 
@@ -318,7 +318,7 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 				IsEOF:    false,
 			}
 			payloadJSON, _ := json.Marshal(payload)
-			err := tunnel.Client.Conn.WriteJSON(common.Message{
+			err := tunnel.Client.WriteJSON(common.Message{
 				Type:    "tunnel_data",
 				Payload: payloadJSON,
 			})
@@ -343,7 +343,7 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 				IsEOF:    true,
 			}
 			payloadJSON, _ := json.Marshal(payload)
-			tunnel.Client.Conn.WriteJSON(common.Message{
+			tunnel.Client.WriteJSON(common.Message{
 				Type:    "tunnel_data",
 				Payload: payloadJSON,
 			})
@@ -370,7 +370,7 @@ func (tm *TunnelManager) SendToClient(tunnelID, connID string, data []byte, isEO
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
-	return tunnel.Client.Conn.WriteJSON(common.Message{
+	return tunnel.Client.WriteJSON(common.Message{
 		Type:    "tunnel_data",
 		Payload: payloadJSON,
 	})
@@ -415,7 +415,7 @@ func (tm *TunnelManager) SendTunnelError(tunnelID, connID, errMsg string) error 
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
-	return tunnel.Client.Conn.WriteJSON(common.Message{
+	return tunnel.Client.WriteJSON(common.Message{
 		Type:    "tunnel_error",
 		Payload: payloadJSON,
 	})

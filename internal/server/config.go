@@ -9,12 +9,12 @@ import (
 
 // Config holds server configuration
 type Config struct {
-	Server      ServerConfig      `yaml:"server"`
-	Auth        AuthConfig        `yaml:"auth"`
-	Heartbeat   HeartbeatConfig   `yaml:"heartbeat"`
-	Log         LogConfig         `yaml:"log"`
+	Server       ServerConfig       `yaml:"server"`
+	Auth         AuthConfig         `yaml:"auth"`
+	Heartbeat    HeartbeatConfig    `yaml:"heartbeat"`
+	Log          LogConfig          `yaml:"log"`
 	FileTransfer FileTransferConfig `yaml:"file_transfer"`
-	Tunnel      TunnelConfig      `yaml:"tunnel"`
+	Tunnel       TunnelConfig       `yaml:"tunnel"`
 }
 
 // FileTransferConfig holds file transfer default paths
@@ -25,17 +25,19 @@ type FileTransferConfig struct {
 
 // TunnelConfig holds tunnel configuration
 type TunnelConfig struct {
-	Enabled           bool `yaml:"enabled"`
-	PortRangeStart    int  `yaml:"port_range_start"`    // 分配的公网端口起始
-	PortRangeEnd      int  `yaml:"port_range_end"`      // 分配的公网端口结束
-	MaxTunnelsPerClient int `yaml:"max_tunnels_per_client"` // 每个客户端最大隧道数
+	Enabled             bool   `yaml:"enabled"`
+	PortRangeStart      int    `yaml:"port_range_start"`       // allocated public port range start
+	PortRangeEnd        int    `yaml:"port_range_end"`         // allocated public port range end
+	MaxTunnelsPerClient int    `yaml:"max_tunnels_per_client"` // max tunnels allowed per client
+	PublicHost          string `yaml:"public_host"`            // optional externally reachable host returned by API
+	DefaultLocalAddr    string `yaml:"default_local_addr"`     // default target address on the agent
 }
 
 // ServerConfig holds WebSocket server configuration
 type ServerConfig struct {
-	Host string      `yaml:"host"`
-	Port int         `yaml:"port"`
-	TLS  TLSConfig  `yaml:"tls"`
+	Host string    `yaml:"host"`
+	Port int       `yaml:"port"`
+	TLS  TLSConfig `yaml:"tls"`
 }
 
 // TLSConfig holds TLS configuration
@@ -106,6 +108,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Tunnel.MaxTunnelsPerClient == 0 {
 		config.Tunnel.MaxTunnelsPerClient = 10
+	}
+	if config.Tunnel.DefaultLocalAddr == "" {
+		config.Tunnel.DefaultLocalAddr = "127.0.0.1"
 	}
 
 	return &config, nil

@@ -34,8 +34,7 @@ func (r *Reconnect) shouldRetry() bool {
 	return r.attempts < r.maxAttempts
 }
 
-// wait sleeps for the current backoff interval
-func (r *Reconnect) wait() {
+func (r *Reconnect) nextBackoff() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -44,23 +43,18 @@ func (r *Reconnect) wait() {
 		interval = r.maxInterval
 	}
 
-	time.Sleep(interval)
 	r.attempts++
+	return interval
+}
+
+// wait sleeps for the current backoff interval
+func (r *Reconnect) wait() {
+	time.Sleep(r.nextBackoff())
 }
 
 // beforeRetry is called before a new connection attempt
 func (r *Reconnect) beforeRetry() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Exponential backoff: 5s, 10s, 20s, 40s, ...
-	interval := r.interval * time.Duration(1<<uint(r.attempts))
-	if interval > r.maxInterval {
-		interval = r.maxInterval
-	}
-
-	time.Sleep(interval)
-	r.attempts++
+	time.Sleep(r.nextBackoff())
 }
 
 // reset resets the reconnect state

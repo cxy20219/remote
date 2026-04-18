@@ -111,7 +111,7 @@ func (h *Handler) handleExec(client *Client, msg *common.Message) error {
 
 	// Forward to client
 	payloadJSON, _ := json.Marshal(payload)
-	return client.Conn.WriteJSON(common.Message{
+	return client.WriteJSON(common.Message{
 		Type:    "exec",
 		Payload: payloadJSON,
 	})
@@ -147,7 +147,7 @@ func (h *Handler) handleResult(client *Client, msg *common.Message) error {
 // handlePing handles heartbeat
 func (h *Handler) handlePing(client *Client, msg *common.Message) error {
 	h.server.clients.UpdatePing(client.ClientID)
-	return client.Conn.WriteJSON(common.Message{Type: "pong"})
+	return client.WriteJSON(common.Message{Type: "pong"})
 }
 
 // handleUpload handles file upload initiation (server -> client)
@@ -203,7 +203,7 @@ func (h *Handler) sendFileInChunks(client *Client, fileID, filename string) erro
 				EOF:    eof,
 			}
 			payloadJSON, _ := json.Marshal(uploadDataPayload)
-			err := client.Conn.WriteJSON(common.Message{
+			err := client.WriteJSON(common.Message{
 				Type:    "upload_data",
 				Payload: payloadJSON,
 			})
@@ -372,7 +372,7 @@ func (h *Handler) handleDownloadData(client *Client, msg *common.Message) error 
 func (h *Handler) sendRegisterOK(client *Client) error {
 	payload := common.RegisterOKPayload{ClientID: client.ClientID}
 	payloadJSON, _ := json.Marshal(payload)
-	return client.Conn.WriteJSON(common.Message{
+	return client.WriteJSON(common.Message{
 		Type:    "register_ok",
 		Payload: payloadJSON,
 	})
@@ -381,7 +381,7 @@ func (h *Handler) sendRegisterOK(client *Client) error {
 func (h *Handler) sendRegisterFail(client *Client, reason string) error {
 	payload := common.RegisterFailPayload{Reason: reason}
 	payloadJSON, _ := json.Marshal(payload)
-	return client.Conn.WriteJSON(common.Message{
+	return client.WriteJSON(common.Message{
 		Type:    "register_fail",
 		Payload: payloadJSON,
 	})
@@ -394,7 +394,7 @@ func (h *Handler) sendUploadComplete(client *Client, fileID string, success bool
 		Error:   errMsg,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	return client.Conn.WriteJSON(common.Message{
+	return client.WriteJSON(common.Message{
 		Type:    "upload_complete",
 		Payload: payloadJSON,
 	})
@@ -417,7 +417,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Error:    err.Error(),
 		}
 		payloadJSON, _ := json.Marshal(ackPayload)
-		return client.Conn.WriteJSON(common.Message{
+		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
 		})
@@ -440,7 +440,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Error:    err.Error(),
 		}
 		payloadJSON, _ := json.Marshal(ackPayload)
-		return client.Conn.WriteJSON(common.Message{
+		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
 		})
@@ -455,7 +455,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Error:    err.Error(),
 		}
 		payloadJSON, _ := json.Marshal(ackPayload)
-		return client.Conn.WriteJSON(common.Message{
+		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
 		})
@@ -468,7 +468,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 		Success:    true,
 	}
 	payloadJSON, _ := json.Marshal(ackPayload)
-	return client.Conn.WriteJSON(common.Message{
+	return client.WriteJSON(common.Message{
 		Type:    "tunnel_open_ack",
 		Payload: payloadJSON,
 	})

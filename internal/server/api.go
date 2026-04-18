@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -118,7 +119,7 @@ func (s *Server) handleAPIExec(c *gin.Context) {
 		Timeout: req.Timeout,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	err = client.Conn.WriteJSON(common.Message{
+	err = client.WriteJSON(common.Message{
 		Type:    "exec",
 		Payload: payloadJSON,
 	})
@@ -182,14 +183,14 @@ type OpenClawRequest struct {
 
 // UploadRequest 文件上传请求 (server -> client)
 type UploadRequest struct {
-	ClientID string `json:"client_id"`
+	ClientID   string `json:"client_id"`
 	ServerPath string `json:"server_path"` // 服务器上的文件路径
-	ClientPath string `json:"client_path"`  // 客户端保存路径，不填则使用默认路径
+	ClientPath string `json:"client_path"` // 客户端保存路径，不填则使用默认路径
 }
 
 // DownloadRequest 文件下载请求 (client -> server)
 type DownloadRequest struct {
-	ClientID string `json:"client_id"`
+	ClientID   string `json:"client_id"`
 	ClientPath string `json:"client_path"` // 客户端要下载的文件路径
 	ServerPath string `json:"server_path"` // 服务器保存路径，不填则使用默认路径
 }
@@ -259,7 +260,7 @@ func (s *Server) handleOpenClaw(c *gin.Context) {
 		Timeout: req.Timeout,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	err = client.Conn.WriteJSON(common.Message{
+	err = client.WriteJSON(common.Message{
 		Type:    "exec",
 		Payload: payloadJSON,
 	})
@@ -386,13 +387,13 @@ func (s *Server) handleAPIUpload(c *gin.Context) {
 
 	// 创建上传记录
 	upload := &UploadFile{
-		FileID:     fileID,
-		Filename:   clientPath,
-		Size:       fileSize,
-		Offset:     0,
-		TaskID:     "",
-		ClientID:   req.ClientID,
-		Status:     "in_progress",
+		FileID:   fileID,
+		Filename: clientPath,
+		Size:     fileSize,
+		Offset:   0,
+		TaskID:   "",
+		ClientID: req.ClientID,
+		Status:   "in_progress",
 	}
 
 	s.uploadManager.Add(upload, false)
@@ -406,7 +407,7 @@ func (s *Server) handleAPIUpload(c *gin.Context) {
 		TaskID:   "",
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	err := client.Conn.WriteJSON(common.Message{
+	err := client.WriteJSON(common.Message{
 		Type:    "upload",
 		Payload: payloadJSON,
 	})
@@ -422,7 +423,7 @@ func (s *Server) handleAPIUpload(c *gin.Context) {
 	c.JSON(http.StatusOK, map[string]interface{}{
 		"file_id":     fileID,
 		"client_id":   req.ClientID,
-		"client_path":  clientPath,
+		"client_path": clientPath,
 		"size":        fileSize,
 		"status":      "uploading",
 	})
@@ -455,7 +456,7 @@ func (s *Server) sendFileInChunksAsync(client *Client, fileID, filename string) 
 				EOF:    eof,
 			}
 			payloadJSON, _ := json.Marshal(uploadDataPayload)
-			err := client.Conn.WriteJSON(common.Message{
+			err := client.WriteJSON(common.Message{
 				Type:    "upload_data",
 				Payload: payloadJSON,
 			})
@@ -475,7 +476,7 @@ func (s *Server) sendFileInChunksAsync(client *Client, fileID, filename string) 
 		}
 	}
 
-slog.Info("file upload sent", "file_id", fileID, "size", stat.Size())
+	slog.Info("file upload sent", "file_id", fileID, "size", stat.Size())
 }
 
 // sendFileDataAsync 异步发送内存中的文件数据到客户端
@@ -501,7 +502,7 @@ func (s *Server) sendFileDataAsync(client *Client, fileID string, data []byte) {
 			EOF:    eof,
 		}
 		payloadJSON, _ := json.Marshal(uploadDataPayload)
-		err := client.Conn.WriteJSON(common.Message{
+		err := client.WriteJSON(common.Message{
 			Type:    "upload_data",
 			Payload: payloadJSON,
 		})
@@ -602,7 +603,7 @@ func (s *Server) handleAPIDownload(c *gin.Context) {
 		Filename: req.ClientPath,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	err = client.Conn.WriteJSON(common.Message{
+	err = client.WriteJSON(common.Message{
 		Type:    "download",
 		Payload: payloadJSON,
 	})
@@ -613,11 +614,11 @@ func (s *Server) handleAPIDownload(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, map[string]interface{}{
-		"file_id":    fileID,
-		"client_id":  req.ClientID,
+		"file_id":     fileID,
+		"client_id":   req.ClientID,
 		"client_path": req.ClientPath,
 		"server_path": savePath,
-		"status":     "downloading",
+		"status":      "downloading",
 	})
 }
 
@@ -651,9 +652,30 @@ func (s *Server) handleAPIUploadStatus(c *gin.Context) {
 
 // TunnelRequest 隧道创建请求
 type TunnelRequest struct {
-	ClientID string `json:"client_id"`
+	ClientID  string `json:"client_id"`
+	LocalAddr string `json:"local_addr"`
 	LocalPort int    `json:"local_port"`
 	Protocol  string `json:"protocol"`
+}
+
+func (s *Server) advertisedTunnelHost(reqHost string) string {
+	if s.config.Tunnel.PublicHost != "" {
+		return s.config.Tunnel.PublicHost
+	}
+
+	if host, _, err := net.SplitHostPort(reqHost); err == nil && host != "" {
+		return host
+	}
+
+	if reqHost != "" {
+		return reqHost
+	}
+
+	if host := s.config.Server.Host; host != "" && host != "0.0.0.0" && host != "::" {
+		return host
+	}
+
+	return "127.0.0.1"
 }
 
 // handleAPICreateTunnel 创建端口映射
@@ -667,6 +689,10 @@ type TunnelRequest struct {
 // @Failure 400 {object} map[string]string
 // @Failure 404 {object} map[string]string
 // @Router /api/tunnels [post]
+func tunnelPublicAddr(host string, port int) string {
+	return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+}
+
 func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	if s.tunnelManager == nil {
 		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "tunnel is not enabled"})
@@ -693,6 +719,9 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	if req.Protocol == "" {
 		req.Protocol = "tcp"
 	}
+	if req.LocalAddr == "" {
+		req.LocalAddr = s.config.Tunnel.DefaultLocalAddr
+	}
 
 	// 获取客户端
 	client, ok := s.clients.Get(req.ClientID)
@@ -717,7 +746,7 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		req.ClientID,
 		client,
 		req.Protocol,
-		"127.0.0.1",
+		req.LocalAddr,
 		req.LocalPort,
 		publicPort,
 	); err != nil {
@@ -736,12 +765,12 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	// 通知 Agent 创建隧道
 	tunnelOpenPayload := common.TunnelOpenPayload{
 		TunnelID:  tunnelID,
-		LocalAddr: "127.0.0.1",
+		LocalAddr: req.LocalAddr,
 		LocalPort: req.LocalPort,
 		Protocol:  req.Protocol,
 	}
 	payloadJSON, _ := json.Marshal(tunnelOpenPayload)
-	err = client.Conn.WriteJSON(common.Message{
+	err = client.WriteJSON(common.Message{
 		Type:    "tunnel_open",
 		Payload: payloadJSON,
 	})
@@ -754,7 +783,8 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	c.JSON(http.StatusOK, map[string]interface{}{
 		"tunnel_id":   tunnelID,
 		"public_port": publicPort,
-		"public_addr":  fmt.Sprintf("localhost:%d", publicPort),
+		"public_addr": tunnelPublicAddr(s.advertisedTunnelHost(c.Request.Host), publicPort),
+		"local_addr":  req.LocalAddr,
 		"status":      "active",
 	})
 }
@@ -831,7 +861,7 @@ func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
 		TunnelID: tunnelID,
 	}
 	payloadJSON, _ := json.Marshal(tunnelClosePayload)
-	tunnel.Client.Conn.WriteJSON(common.Message{
+	tunnel.Client.WriteJSON(common.Message{
 		Type:    "tunnel_close",
 		Payload: payloadJSON,
 	})

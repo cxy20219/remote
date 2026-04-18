@@ -10,19 +10,21 @@ auth:
   key: "your-secret-key"
 
 heartbeat:
-  interval: 30      # heartbeat check interval in seconds
-  timeout: 90       # heartbeat timeout in seconds
+  interval: 30
+  timeout: 90
 
 log:
-  level: "info"     # debug/info/warn/error
-  file: ""          # empty for stdout, or path to log file
+  level: "info"
+  file: ""
 
 file_transfer:
-  upload_path: "C:/work/go-remote/uploads"     # default path for uploads (server sends to client)
-  download_path: "C:/work/go-remote/downloads"   # default path for downloads (server receives from client)
+  upload_path: "C:/work/go-remote/uploads"
+  download_path: "C:/work/go-remote/downloads"
 
 tunnel:
   enabled: true
-  port_range_start: 10000  # 分配的公网端口起始
-  port_range_end: 20000    # 分配的公网端口结束
-  max_tunnels_per_client: 10 # 每个客户端最大隧道数
+  public_host: ""
+  default_local_addr: "127.0.0.1"
+  port_range_start: 10000
+  port_range_end: 20000
+  max_tunnels_per_client: 10
