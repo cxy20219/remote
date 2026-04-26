@@ -1,0 +1,24 @@
+server:
+  address: "YOUR_SERVER:8080"
+  tls:
+    enabled: false
+
+auth:
+  key: "test-secret-key"
+
+agent:
+  hostname: "internal-server"
+  os: "linux"
+
+heartbeat:
+  interval: 30
+
+reconnect:
+  enabled: true
+  interval: 5
+  max_attempts: 0
+  max_interval: 60
+
+log:
+  level: "info"
+  file: ""

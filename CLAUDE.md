@@ -4,3 +4,4 @@
 - **[客户端测试方案](./docs/agent-test.md)** - 客户端单元/集成/端到端测试
 - **[项目结构](./docs/project-structure.md)** - 项目目录结构、文件说明
 - **[隧道设计文档](./docs/tunnel-design.md)** - 隧道架构、数据传输、安全机制
+- **[SSH 隧道部署排障经验](./docs/harness/experience/ssh-tunnel-deployment.md)** - 跨平台编译、PuTTY 工具使用、API 调试技巧、网络排查清单、常见错误处理
