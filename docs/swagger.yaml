@@ -15,72 +15,6 @@ definitions:
         description: online/offline
         type: string
     type: object
-  server.DownloadRequest:
-    properties:
-      client_id:
-        type: string
-      client_path:
-        description: 客户端要下载的文件路径
-        type: string
-      server_path:
-        description: 服务器保存路径，不填则使用默认路径
-        type: string
-    type: object
-  server.ExecRequest:
-    properties:
-      client_id:
-        type: string
-      command:
-        type: string
-      timeout:
-        type: integer
-    type: object
-  server.OpenClawRequest:
-    properties:
-      client_id:
-        type: string
-      message:
-        type: string
-      session_id:
-        type: string
-      timeout:
-        type: integer
-      user_id:
-        type: string
-    type: object
-  server.Task:
-    properties:
-      client_id:
-        type: string
-      command:
-        type: string
-      create_at:
-        type: string
-      end_at:
-        type: string
-      result:
-        $ref: '#/definitions/server.TaskResult'
-      start_at:
-        type: string
-      status:
-        type: string
-      task_id:
-        type: string
-      timeout:
-        description: timeout in seconds
-        type: integer
-    type: object
-  server.TaskResult:
-    properties:
-      error:
-        type: string
-      exit_code:
-        type: integer
-      stderr:
-        type: string
-      stdout:
-        type: string
-    type: object
   server.Tunnel:
     properties:
       client:
@@ -135,26 +69,6 @@ paths:
       summary: 获取在线客户端列表
       tags:
       - clients
-  /api/clients/{client_id}/tunnels:
-    get:
-      description: 获取指定客户端的所有隧道
-      parameters:
-      - description: 客户端ID
-        in: path
-        name: client_id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-      summary: 获取指定客户端的隧道
-      tags:
-      - tunnel
   /api/clients/{id}:
     get:
       description: 根据客户端ID获取详细信息
@@ -180,135 +94,13 @@ paths:
       summary: 获取客户端详情
       tags:
       - clients
-  /api/download:
-    post:
-      consumes:
-      - application/json
-      description: |-
-        从指定客户端下载文件到服务器
-        从指定客户端下载文件到服务器
-      parameters:
-      - description: 下载请求
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/server.DownloadRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: 从指定客户端下载文件
-      tags:
-      - file
-  /api/exec:
-    post:
-      consumes:
-      - application/json
-      description: 向指定客户端下发待执行的命令
-      parameters:
-      - description: 执行请求
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/server.ExecRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: 向指定客户端下发命令
-      tags:
-      - exec
-  /api/openclaw:
-    post:
-      consumes:
-      - application/json
-      description: 通过 OpenClaw agent 发送会话消息
-      parameters:
-      - description: 会话请求
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/server.OpenClawRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: OpenClaw 会话接口
-      tags:
-      - openclaw
-  /api/tasks:
+  /api/clients/{client_id}/tunnels:
     get:
-      description: 获取所有任务列表
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-      summary: 获取任务列表
-      tags:
-      - tasks
-  /api/tasks/{id}:
-    get:
-      description: 根据任务ID获取任务详细信息
+      description: 获取指定客户端的所有隧道
       parameters:
-      - description: 任务ID
+      - description: 客户端ID
         in: path
-        name: id
+        name: client_id
         required: true
         type: string
       produces:
@@ -317,16 +109,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/server.Task'
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
+            additionalProperties: true
             type: object
-      summary: 获取任务详情
+      summary: 获取指定客户端的隧道
       tags:
-      - tasks
+      - tunnel
   /api/tunnels:
     get:
       description: 获取所有隧道的列表
@@ -426,76 +213,6 @@ paths:
       summary: 获取隧道详情
       tags:
       - tunnel
-  /api/upload:
-    post:
-      consumes:
-      - multipart/form-data
-      - application/json
-      description: 将文件上传到指定客户端，支持 multipart/form-data 或 JSON
-      parameters:
-      - description: 要上传的文件
-        in: formData
-        name: file
-        required: true
-        type: file
-      - description: 客户端ID
-        in: formData
-        name: client_id
-        required: true
-        type: string
-      - description: 客户端保存路径
-        in: formData
-        name: client_path
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: 向指定客户端上传文件
-      tags:
-      - file
-  /api/upload/{file_id}:
-    get:
-      description: 根据文件ID获取上传或下载状态
-      parameters:
-      - description: 文件ID
-        in: path
-        name: file_id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: 获取文件传输状态
-      tags:
-      - file
   /health:
     get:
       description: 服务健康状态检查

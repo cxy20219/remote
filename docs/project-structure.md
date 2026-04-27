@@ -1,8 +1,13 @@
-# 远程命令执行系统设计方案
+# 项目结构与协议设计
 
 ## 1. 系统概述
 
-设计一个后台常驻程序，通过WebSocket长连接实现远程命令执行和服务端-客户端双向文件传输。服务端可以主动向客户端下发命令，客户端执行后返回结果。
+GoRemote 是一个基于 WebSocket 的内网穿透系统，通过 SSH 隧道实现公网访问内网服务。
+
+**核心功能**：
+- Agent 部署在内网，主动连接公网服务端的 WebSocket
+- 通过 HTTP API 创建端口映射隧道
+- 外部用户通过公网端口访问内网服务（如 SSH、HTTP）
 
 ## 2. 架构概览
 
@@ -11,40 +16,42 @@
 **星型架构（客户端主动连接）**：
 
 ```
-                    ┌─────────────┐
-                    │  控制中心   │
-                    │  (服务端)   │
-                    └──────┬──────┘
-                           │ WebSocket长连接
-           ┌───────────────┼───────────────┐
-           │               │               │
-    ┌──────┴──────┐ ┌──────┴──────┐ ┌──────┴──────┐
-    │  机器A      │ │  机器B      │ │  机器C      │
-    │  (客户端)   │ │  (客户端)   │ │  (客户端)   │
-    └─────────────┘ └─────────────┘ └─────────────┘
+                         ┌─────────────┐
+                         │   公网      │
+                         │   服务端    │
+                         └──────┬──────┘
+                                │ WebSocket 长连接
+            ┌───────────────────┼───────────────────┐
+            │                   │                   │
+     ┌──────┴──────┐   ┌──────┴──────┐   ┌──────┴──────┐
+     │  内网机器A   │   │  内网机器B   │   │  内网机器C   │
+     │  (Agent)   │   │  (Agent)   │   │  (Agent)   │
+     └─────────────┘   └─────────────┘   └─────────────┘
 ```
 
 **特点**：
-- 客户端（被控机器）运行agent程序，主动连接控制中心
-- 防火墙友好：只需客户端出方向连接服务端（443端口）
-- NAT友好：客户端主动发起连接，不受NAT影响
+- Agent（被控机器）运行程序，主动连接公网服务端
+- 防火墙友好：只需 Agent 出方向连接服务端 WebSocket 端口
+- NAT 友好：Agent 主动发起连接，不受 NAT 影响
+- 支持 SSH、HTTP 等任意 TCP 协议
 
 ### 2.2 技术选型
 
 | 组件 | 选择 | 理由 |
 |------|------|------|
-| 语言 | Go | 跨平台、内嵌WebSocket、性能好 |
-| WebSocket库 | gorilla/websocket | Go最成熟，文档完善 |
-| 命令执行 | os/exec | 标准库，跨平台 |
-| 日志 | log/slog | Go 1.21+内置 |
+| 语言 | Go | 跨平台、内嵌 WebSocket、性能好 |
+| WebSocket库 | gorilla/websocket | Go 最成熟，文档完善 |
+| HTTP 框架 | Gin | 高性能路由和中间件 |
+| 日志 | log/slog | Go 1.21+ 内置 |
 | 配置 | viper | 支持多种格式，环境变量 |
 
 ## 3. 详细设计文档
 
 - **[服务端设计文档](./server-design.md)** - 服务端架构、消息协议、接口设计
-- **[客户端设计文档](./agent-design.md)** - 客户端架构、命令执行、重连机制
-- **[服务端测试方案](./server-test.md)** - 服务端单元/集成/端到端测试
-- **[客户端测试方案](./agent-test.md)** - 客户端单元/集成/端到端测试
+- **[客户端设计文档](./agent-design.md)** - 客户端架构、重连机制
+- **[隧道设计文档](./tunnel-design.md)** - 隧道架构、数据传输、安全机制
+- **[SSH 隧道直通测试用例](./test/ssh-tunnel-test-cases.md)** - SSH 隧道测试用例
+- **[GoRemote 调试开发经验](./experience/go-remote-debugging.md)** - 开发调试经验总结
 
 ## 4. 消息协议
 
@@ -55,7 +62,7 @@
 {
   "type": "register",
   "key": "your-secret-key",
-  "hostname": "server-01",
+  "hostname": "internal-server",
   "os": "linux"
 }
 
@@ -65,26 +72,32 @@
   "client_id": "uuid"
 }
 
-// 服务端下发命令
+// 服务端响应注册失败
 {
-  "type": "exec",
-  "task_id": "uuid",
-  "command": "ls -la /tmp",
-  "timeout": 30
-}
-
-// 客户端执行结果
-{
-  "type": "result",
-  "task_id": "uuid",
-  "exit_code": 0,
-  "stdout": "total 0\n",
-  "stderr": ""
+  "type": "register_fail",
+  "reason": "invalid key"
 }
 
 // 心跳
 {"type": "ping"}
 {"type": "pong"}
+
+// 隧道申请
+{
+  "type": "tunnel_open",
+  "tunnel_id": "uuid",
+  "local_addr": "127.0.0.1",
+  "local_port": 22,
+  "protocol": "tcp"
+}
+
+// 隧道创建确认
+{
+  "type": "tunnel_open_ack",
+  "tunnel_id": "uuid",
+  "public_port": 15001,
+  "success": true
+}
 ```
 
 ### 4.2 消息类型汇总
@@ -94,98 +107,27 @@
 | register | Client → Server | 客户端注册 |
 | register_ok | Server → Client | 注册成功响应 |
 | register_fail | Server → Client | 注册失败（密钥错误等） |
-| exec | Server → Client | 服务端下发命令 |
-| result | Client → Server | 客户端返回执行结果 |
 | ping | Client → Server | 心跳请求 |
 | pong | Server → Client | 心跳响应 |
-| upload | Server → Client | 上传文件（服务端→客户端） |
-| upload_data | Server → Client | 上传文件数据 |
-| upload_complete | Client → Server | 上传完成确认 |
-| download | Client → Server | 下载文件请求（客户端→服务端） |
-| download_data | Server → Client | 下载文件数据 |
-| download_complete | Server → Client | 下载完成确认 |
-
-### 4.3 文件传输消息格式
-
-**上传（服务端 → 客户端）**：
-```json
-// 发起上传
-{
-  "type": "upload",
-  "task_id": "file-001",
-  "file_id": "uuid",
-  "filename": "app.tar.gz",
-  "size": 104857600,
-  "offset": 0
-}
-
-// 分片数据
-{
-  "type": "upload_data",
-  "file_id": "uuid",
-  "offset": 0,
-  "data": "base64 encoded data...",
-  "eof": false
-}
-
-// 最后一个分片
-{
-  "type": "upload_data",
-  "file_id": "uuid",
-  "offset": 104857600,
-  "data": "base64 encoded data...",
-  "eof": true
-}
-
-// 上传完成确认（客户端发送）
-{
-  "type": "upload_complete",
-  "file_id": "uuid",
-  "success": true
-}
-```
-
-**下载（客户端 → 服务端）**：
-```json
-// 发起下载请求
-{
-  "type": "download",
-  "task_id": "file-002",
-  "file_id": "uuid",
-  "filename": "/var/log/syslog",
-  "offset": 0
-}
-
-// 分片数据（服务端返回）
-{
-  "type": "download_data",
-  "file_id": "uuid",
-  "offset": 0,
-  "data": "base64 encoded data...",
-  "eof": false
-}
-
-// 下载完成（服务端发送）
-{
-  "type": "download_complete",
-  "file_id": "uuid",
-  "success": true
-}
-```
+| tunnel_open | Client → Server | 申请创建隧道 |
+| tunnel_open_ack | Server → Client | 隧道创建确认 |
+| tunnel_close | C↔S | 关闭隧道 |
+| tunnel_data | C↔S | 隧道数据（双向） |
+| tunnel_error | Server → Client | 隧道错误通知 |
 
 ## 5. 安全性
 
 ### 5.1 传输安全
-- 使用 TLS/WSS 加密通信
+- 使用 TLS/WSS 加密通信（可选）
 - 防止中间人攻击
 
 ### 5.2 认证
-- 客户端使用预共享密钥连接
+- Agent 使用预共享密钥连接
 - 服务端验证密钥后才允许连接
 
-### 5.3 命令安全
-- 建议客户端限制可执行命令范围
-- 可扩展：白名单模式
+### 5.3 隧道安全
+- 隧道端口范围可配置
+- 每客户端最大隧道数可限制
 
 ## 6. 项目结构
 
@@ -198,21 +140,36 @@ project/
 │       └── main.go        # 客户端入口
 ├── internal/
 │   ├── server/            # 服务端实现 (Gin + WebSocket)
-│   ├── agent/             # 客户端实现 (见 agent-design.md)
+│   │   ├── server.go     # 主逻辑
+│   │   ├── client.go     # 客户端管理
+│   │   ├── handler.go    # 消息处理
+│   │   ├── tunnel.go     # 隧道管理
+│   │   ├── api.go       # HTTP API
+│   │   └── config.go    # 配置加载
+│   ├── agent/             # 客户端实现
+│   │   ├── agent.go      # 主控逻辑
+│   │   ├── connector.go  # WebSocket 连接
+│   │   ├── handler.go   # 消息处理
+│   │   ├── tunnel.go    # 隧道管理
+│   │   ├── reconnect.go # 重连机制
+│   │   └── config.go    # 配置加载
 │   └── common/
-│       ├── message.go     # 消息定义
-│       └── util.go        # 工具函数
+│       └── message.go    # 消息定义
 ├── docs/
-│   ├── docs.go            # Swagger 文档生成代码
-│   ├── swagger.json       # Swagger JSON 文档
-│   ├── swagger.yaml       # Swagger YAML 文档
-│   ├── server-design.md   # 服务端详细设计
-│   ├── agent-design.md    # 客户端详细设计
-│   ├── server-test.md     # 服务端测试方案
-│   └── agent-test.md      # 客户端测试方案
+│   ├── docs.go           # Swagger 文档生成代码
+│   ├── swagger.json      # Swagger JSON 文档
+│   ├── swagger.yaml      # Swagger YAML 文档
+│   ├── server-design.md  # 服务端详细设计
+│   ├── agent-design.md   # 客户端详细设计
+│   ├── tunnel-design.md  # 隧道详细设计
+│   ├── project-structure.md # 项目结构本文档
+│   ├── experience/       # 开发经验总结
+│   │   └── go-remote-debugging.md
+│   └── test/            # 测试文档
+│       └── ssh-tunnel-test-cases.md
 ├── config/
-│   ├── server.yaml        # 服务端配置示例
-│   └── agent.yaml         # 客户端配置示例
+│   ├── server.yaml       # 服务端配置示例
+│   └── agent.yaml        # 客户端配置示例
 ├── go.mod
 └── go.sum
 ```
@@ -222,7 +179,7 @@ project/
 ### 7.1 二进制部署
 
 - 单一二进制文件，无依赖
-- 配置文件（config.yaml）放密钥和服务器地址
+- 配置文件（config.yaml）放密钥和服务端地址
 
 **服务端**：
 ```bash
@@ -240,5 +197,18 @@ agent.exe --config agent.yaml
 
 ### 7.2 进程管理
 
-- 服务端：systemd 或 直接后台运行
+- 服务端：systemd 或直接后台运行
 - 客户端：systemd (Linux) / NSSM (Windows)
+
+## 8. HTTP API
+
+| Method | Path | 描述 |
+|--------|------|------|
+| GET | /health | 健康检查 |
+| GET | /api/clients | 在线客户端列表 |
+| GET | /api/clients/:id | 客户端详情 |
+| GET | /api/clients/:client_id/tunnels | 客户端隧道列表 |
+| POST | /api/tunnels | 创建端口映射 |
+| GET | /api/tunnels | 所有隧道列表 |
+| GET | /api/tunnels/:tunnel_id | 隧道详情 |
+| DELETE | /api/tunnels/:tunnel_id | 删除端口映射 |

@@ -6,71 +6,19 @@
 
 | 层级 | 范围 | 测试方式 |
 |------|------|----------|
-| 单元测试 | Executor/Reconnect等独立组件 | 直接调用函数，mock外部依赖 |
-| 集成测试 | Agent与Mock服务端交互 | httptest + websocket |
-| 端到端测试 | Agent与真实服务端连接 | 启动真实服务，完整流程 |
+| 单元测试 | Reconnect 等独立组件 | 直接调用函数，mock 外部依赖 |
+| 集成测试 | Agent 与 Mock 服务端交互 | httptest + websocket |
+| 端到端测试 | Agent 与真实服务端连接 | 启动真实服务，完整流程 |
 
 ### 1.2 测试框架
 
 - **测试框架**: Go 标准库 `testing`
-- **WebSocket测试**: `golang.org/x/net/websocket`
-- **HTTP测试**: `net/http/httptest`
+- **WebSocket 测试**: `golang.org/x/net/websocket`
+- **HTTP 测试**: `net/http/httptest`
 
 ## 2. 单元测试
 
-### 2.1 Executor 命令执行
-
-```go
-// internal/agent/executor_test.go
-
-func TestExecutor_Execute(t *testing.T) {
-    e := NewExecutor()
-
-    tests := []struct {
-        cmd     string
-        wantOut string
-        wantErr bool
-    }{
-        {"echo hello", "hello", false},
-        {"exit 0", "", false},
-    }
-
-    for _, tt := range tests {
-        t.Run(tt.cmd, func(t *testing.T) {
-            result, err := e.Execute(tt.cmd, 10)
-            if (err != nil) != tt.wantErr {
-                t.Errorf("Execute() error = %v", err)
-            }
-            if !strings.Contains(result.Stdout, tt.wantOut) {
-                t.Errorf("expected %q in stdout, got %q", tt.wantOut, result.Stdout)
-            }
-        })
-    }
-}
-
-func TestExecutor_Execute_Timeout(t *testing.T) {
-    e := NewExecutor()
-    cmd := "sleep 10"
-    if runtime.GOOS == "windows" {
-        cmd = "timeout /t 10"
-    }
-
-    result, err := e.Execute(cmd, 1)
-    if err == nil && result.ExitCode == 0 {
-        t.Error("expected timeout error")
-    }
-}
-
-func TestExecutor_Execute_CommandNotFound(t *testing.T) {
-    e := NewExecutor()
-    _, err := e.Execute("nonexistent-command-xyz", 10)
-    if err == nil {
-        t.Error("expected error for nonexistent command")
-    }
-}
-```
-
-### 2.2 Reconnect 重连机制
+### 2.1 Reconnect 重连机制
 
 ```go
 // internal/agent/reconnect_test.go
@@ -105,7 +53,7 @@ func TestReconnect_Backoff(t *testing.T) {
 }
 ```
 
-### 2.3 Config 配置加载
+### 2.2 Config 配置加载
 
 ```go
 // internal/agent/config_test.go
@@ -143,26 +91,10 @@ func TestLoadConfig_FileNotFound(t *testing.T) {
 }
 ```
 
-### 2.4 Handler 消息处理
+### 2.3 Handler 消息处理
 
 ```go
 // internal/agent/handler_test.go
-
-func TestHandler_HandleExec(t *testing.T) {
-    handler := &Handler{executor: NewExecutor()}
-    msg := &Message{
-        Type:    "exec",
-        Payload: json.RawMessage(`{"task_id":"t1","command":"echo test","timeout":10}`),
-    }
-
-    result, err := handler.HandleExec(msg)
-    if err != nil {
-        t.Fatalf("unexpected error: %v", err)
-    }
-    if result.TaskID != "t1" || result.ExitCode != 0 {
-        t.Errorf("unexpected result: %+v", result)
-    }
-}
 
 func TestHandler_HandleRegisterOK(t *testing.T) {
     handler := &Handler{}
@@ -176,6 +108,37 @@ func TestHandler_HandleRegisterOK(t *testing.T) {
         t.Errorf("got %s", clientID)
     }
 }
+
+func TestHandler_HandleRegisterFail(t *testing.T) {
+    handler := &Handler{}
+    msg := &Message{
+        Type:    "register_fail",
+        Payload: json.RawMessage(`{"reason":"invalid key"}`),
+    }
+
+    reason := handler.HandleRegisterFail(msg)
+    if reason != "invalid key" {
+        t.Errorf("got %s", reason)
+    }
+}
+
+func TestHandler_HandleTunnelOpenAck(t *testing.T) {
+    handler := &Handler{
+        agent: &Agent{tunnels: make(map[string]*Tunnel)},
+    }
+    msg := &Message{
+        Type:    "tunnel_open_ack",
+        Payload: json.RawMessage(`{"tunnel_id":"t1","public_port":15001,"success":true}`),
+    }
+
+    ack := handler.HandleTunnelOpenAck(msg)
+    if !ack.Success {
+        t.Error("expected success")
+    }
+    if ack.PublicPort != 15001 {
+        t.Errorf("got port %d", ack.PublicPort)
+    }
+}
 ```
 
 ## 3. 集成测试
@@ -186,10 +149,10 @@ func TestHandler_HandleRegisterOK(t *testing.T) {
 // internal/agent/integration_test.go
 
 type MockServer struct {
-    Server  *httptest.Server
-    WSURL   string
-    receivedMessages []*Message
-    mu      sync.Mutex
+    Server            *httptest.Server
+    WSURL             string
+    receivedMessages  []*Message
+    mu                sync.Mutex
 }
 
 func NewMockServer(authKey string) *MockServer {
@@ -291,12 +254,12 @@ func TestIntegration_Heartbeat(t *testing.T) {
 
 ## 4. 端到端测试
 
-### 4.1 命令执行与重连
+### 4.1 连接与重连
 
 ```go
 // internal/agent/e2e_test.go
 
-func TestE2E_CommandExecution(t *testing.T) {
+func TestE2E_ConnectAndDisconnect(t *testing.T) {
     server := startRealServer(t, "test-key", 0)
     defer server.Stop()
 
@@ -361,29 +324,15 @@ func NewTestConfig() *Config {
         Reconnect: ReconnectConfig{Interval: 5, MaxAttempts: 0, MaxInterval: 60},
     }
 }
-
-type CapturingExecutor struct {
-    *Executor
-    Results []*Result
-    mu      sync.Mutex
-}
-
-func (ce *CapturingExecutor) Execute(cmd string, timeout int) (*Result, error) {
-    result, err := ce.Executor.Execute(cmd, timeout)
-    ce.mu.Lock()
-    ce.Results = append(ce.Results, result)
-    ce.mu.Unlock()
-    return result, err
-}
 ```
 
 ## 6. 测试覆盖率目标
 
 | 组件 | 覆盖率目标 |
 |------|-----------|
-| Executor | 90%+ |
 | Reconnect | 85%+ |
 | Handler | 85%+ |
+| TunnelManager | 85%+ |
 | Config | 90%+ |
 | 整体客户端 | 80%+ |
 
@@ -422,12 +371,6 @@ func TestExecutor_WindowsCommands(t *testing.T) {
     if runtime.GOOS != "windows" {
         t.Skip("windows-specific test")
     }
-    e := NewExecutor()
-    for _, winCmd := range windowsCommands {
-        result, _ := e.Execute(winCmd+" /?", 5)
-        if result.ExitCode != 0 {
-            t.Errorf("%s failed", winCmd)
-        }
-    }
+    // Windows 特定测试
 }
 ```

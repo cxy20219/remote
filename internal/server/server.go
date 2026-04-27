@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -26,11 +25,9 @@ type Server struct {
 
 	config *Config
 
-	clients       *ClientManager
-	tasks         *TaskStore
-	handler       *Handler
-	uploadManager *UploadManager
-	tunnelManager *TunnelManager
+	clients        *ClientManager
+	handler        *Handler
+	tunnelManager  *TunnelManager
 
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
@@ -39,15 +36,13 @@ type Server struct {
 // NewServer creates a new Server
 func NewServer(config *Config) *Server {
 	s := &Server{
-		Addr:          net.JoinHostPort(config.Server.Host, fmt.Sprintf("%d", config.Server.Port)),
-		tlsEnabled:    config.Server.TLS.Enabled,
-		tlsCert:       config.Server.TLS.Cert,
-		tlsKey:        config.Server.TLS.Key,
-		config:        config,
-		clients:       NewClientManager(),
-		tasks:         NewTaskStore(),
-		handler:       nil,
-		uploadManager: NewUploadManager(),
+		Addr:       net.JoinHostPort(config.Server.Host, fmt.Sprintf("%d", config.Server.Port)),
+		tlsEnabled: config.Server.TLS.Enabled,
+		tlsCert:    config.Server.TLS.Cert,
+		tlsKey:     config.Server.TLS.Key,
+		config:     config,
+		clients:    NewClientManager(),
+		handler:    nil,
 	}
 
 	s.handler = NewHandler(s)
@@ -84,13 +79,6 @@ func (s *Server) Start() error {
 	s.engine.GET("/api/clients", s.handleAPIClients)
 	s.engine.GET("/api/clients/:id", s.handleAPIClientDetail)
 	s.engine.GET("/api/client-tunnels/:client_id", s.handleAPIListClientTunnels)
-	s.engine.POST("/api/exec", s.handleAPIExec)
-	s.engine.POST("/api/openclaw", s.handleOpenClaw)
-	s.engine.GET("/api/tasks", s.handleAPITasks)
-	s.engine.GET("/api/tasks/:id", s.handleAPITaskDetail)
-	s.engine.POST("/api/upload", s.handleAPIUpload)
-	s.engine.GET("/api/upload/:file_id", s.handleAPIUploadStatus)
-	s.engine.POST("/api/download", s.handleAPIDownload)
 	// Tunnel API
 	s.engine.POST("/api/tunnels", s.handleAPICreateTunnel)
 	s.engine.GET("/api/tunnels", s.handleAPIListTunnels)
@@ -234,36 +222,6 @@ func (s *Server) checkClientsTimeout(timeout time.Duration) {
 // GetClients returns all connected clients
 func (s *Server) GetClients() []*Client {
 	return s.clients.List()
-}
-
-// GetTasks returns all tasks
-func (s *Server) GetTasks() []*Task {
-	return s.tasks.List()
-}
-
-// GetTask returns a task by ID
-func (s *Server) GetTask(taskID string) *Task {
-	return s.tasks.Get(taskID)
-}
-
-// SendCommand sends a command to a client
-func (s *Server) SendCommand(clientID, taskID, command string, timeout int) error {
-	client, ok := s.clients.Get(clientID)
-	if !ok {
-		return fmt.Errorf("client not found: %s", clientID)
-	}
-
-	payload := common.ExecPayload{
-		TaskID:  taskID,
-		Command: command,
-		Timeout: timeout,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	return client.WriteJSON(common.Message{
-		Type:    "exec",
-		Payload: payloadJSON,
-	})
 }
 
 // generateUUID generates a simple UUID (for demo purposes)

@@ -6,15 +6,15 @@
 
 | 层级 | 范围 | 测试方式 |
 |------|------|----------|
-| 单元测试 | 各个组件独立功能 | 直接调用函数，mock依赖 |
+| 单元测试 | 各个组件独立功能 | 直接调用函数，mock 依赖 |
 | 集成测试 | 多组件协作 | 启动真实服务，模拟客户端 |
 | 端到端测试 | 完整流程 | 启动真实服务端和客户端 |
 
 ### 1.2 测试框架
 
 - **测试框架**: Go 标准库 `testing`
-- **WebSocket测试**: `golang.org/x/net/websocket`
-- **HTTP测试**: `net/http/httptest`
+- **WebSocket 测试**: `golang.org/x/net/websocket`
+- **HTTP 测试**: `net/http/httptest`
 - **Mock**: 使用接口和 mock 对象
 
 ## 2. 单元测试
@@ -87,67 +87,7 @@ func TestClientManager_Broadcast(t *testing.T) {
 }
 ```
 
-### 2.2 TaskStore 任务管理
-
-```go
-// internal/server/task_test.go
-
-func TestTaskStore_Create(t *testing.T) {
-    store := NewTaskStore()
-    task := &Task{
-        TaskID:   "task-001",
-        ClientID: "client-001",
-        Command:  "ls -la",
-        Timeout:  30,
-        Status:   StatusPending,
-    }
-
-    store.Create(task)
-
-    got := store.Get("task-001")
-    if got == nil || got.Command != "ls -la" {
-        t.Errorf("expected task with command 'ls -la', got %v", got)
-    }
-}
-
-func TestTaskStore_Update(t *testing.T) {
-    store := NewTaskStore()
-    store.Create(&Task{TaskID: "task-001", Status: StatusPending})
-
-    store.Update("task-001", StatusRunning)
-
-    task := store.Get("task-001")
-    if task.Status != StatusRunning {
-        t.Errorf("expected status running, got %s", task.Status)
-    }
-}
-
-func TestTaskStore_GetByClient(t *testing.T) {
-    store := NewTaskStore()
-    store.Create(&Task{TaskID: "t1", ClientID: "c1"})
-    store.Create(&Task{TaskID: "t2", ClientID: "c1"})
-    store.Create(&Task{TaskID: "t3", ClientID: "c2"})
-
-    tasks := store.GetByClient("c1")
-    if len(tasks) != 2 {
-        t.Errorf("expected 2 tasks for client c1, got %d", len(tasks))
-    }
-}
-
-func TestTaskStore_List(t *testing.T) {
-    store := NewTaskStore()
-    store.Create(&Task{TaskID: "t1"})
-    store.Create(&Task{TaskID: "t2"})
-    store.Create(&Task{TaskID: "t3"})
-
-    tasks := store.List()
-    if len(tasks) != 3 {
-        t.Errorf("expected 3 tasks, got %d", len(tasks))
-    }
-}
-```
-
-### 2.3 Handler 消息处理
+### 2.2 Handler 消息处理
 
 ```go
 // internal/server/handler_test.go
@@ -232,7 +172,7 @@ func TestHandler_HandlePing(t *testing.T) {
 }
 ```
 
-### 2.4 配置加载
+### 2.3 配置加载
 
 ```go
 // internal/server/config_test.go
@@ -364,45 +304,7 @@ func TestIntegration_InvalidKeyRegistration(t *testing.T) {
 }
 ```
 
-### 3.2 命令执行流程
-
-```go
-// internal/server/integration_test.go
-
-func TestIntegration_CommandExecution(t *testing.T) {
-    server := startTestServer(t, "test-key")
-    defer server.Stop()
-
-    // 连接并注册客户端
-    clientConn := connectAndRegister(t, server, "test-key", "test-host", "linux")
-    defer clientConn.Close()
-
-    // 从服务端发送命令
-    taskID := "task-integration-001"
-    err := websocket.JSON.Send(clientConn, Message{
-        Type: "exec",
-        Payload: ExecPayload{
-            TaskID:  taskID,
-            Command: "echo hello",
-            Timeout: 10,
-        },
-    })
-    if err != nil {
-        t.Fatalf("failed to send exec: %v", err)
-    }
-
-    // 客户端接收并处理命令（模拟）
-    // 这里简化处理，实际测试时需要客户端也运行
-
-    // 验证任务被创建
-    task := server.GetTask(taskID)
-    if task == nil {
-        t.Errorf("task %s not found", taskID)
-    }
-}
-```
-
-### 3.3 心跳保活
+### 3.2 心跳保活
 
 ```go
 // internal/server/integration_test.go
@@ -454,6 +356,61 @@ func TestIntegration_HeartbeatTimeout(t *testing.T) {
 }
 ```
 
+### 3.3 HTTP API 测试
+
+```go
+// internal/server/api_test.go
+
+func TestAPI_GetClients(t *testing.T) {
+    server := startTestServer(t, "test-key")
+    defer server.Stop()
+
+    // 注册一个客户端
+    conn := connectAndRegister(t, server, "test-key", "test-host", "linux")
+    defer conn.Close()
+
+    // 调用 API 获取客户端列表
+    resp, err := http.Get(server.URL + "/api/clients")
+    if err != nil {
+        t.Fatalf("failed to get clients: %v", err)
+    }
+    defer resp.Body.Close()
+
+    var result map[string]interface{}
+    json.NewDecoder(resp.Body).Decode(&result)
+
+    clients := result["clients"].([]interface{})
+    if len(clients) != 1 {
+        t.Errorf("expected 1 client, got %d", len(clients))
+    }
+}
+
+func TestAPI_CreateTunnel(t *testing.T) {
+    server := startTestServer(t, "test-key")
+    defer server.Stop()
+
+    conn := connectAndRegister(t, server, "test-key", "test-host", "linux")
+    defer conn.Close()
+
+    // 创建隧道
+    body, _ := json.Marshal(map[string]interface{}{
+        "client_id": "test-client-id",
+        "local_port": 22,
+        "protocol":  "tcp",
+    })
+    resp, err := http.Post(server.URL+"/api/tunnels", "application/json", bytes.NewReader(body))
+    if err != nil {
+        t.Fatalf("failed to create tunnel: %v", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+        // NotFound 是因为客户端不存在，属于正常业务逻辑
+        t.Errorf("unexpected status: %d", resp.StatusCode)
+    }
+}
+```
+
 ## 4. 端到端测试
 
 ### 4.1 完整流程测试
@@ -461,7 +418,7 @@ func TestIntegration_HeartbeatTimeout(t *testing.T) {
 ```go
 // internal/server/e2e_test.go
 
-func TestE2E_FullWorkflow(t *testing.T) {
+func TestE2E_ClientLifecycle(t *testing.T) {
     // 启动服务端
     server := startTestServer(t, "e2e-key")
     defer server.Stop()
@@ -482,25 +439,23 @@ func TestE2E_FullWorkflow(t *testing.T) {
         t.Errorf("expected 3 online clients, got %d", len(onlineClients))
     }
 
-    // 向每个客户端发送命令
-    for i, clientID := range clientIDs {
-        taskID := fmt.Sprintf("task-%d", i)
-        err := server.SendCommand(clientID, taskID, "echo hello", 10)
+    // 验证心跳维持在线状态
+    time.Sleep(2 * time.Second)
+
+    for _, conn := range clients {
+        err := websocket.JSON.Send(conn, Message{Type: "ping"})
         if err != nil {
-            t.Errorf("failed to send command to %s: %v", clientID, err)
+            t.Errorf("failed to send ping: %v", err)
         }
     }
 
-    // 等待命令执行
-    time.Sleep(2 * time.Second)
+    // 断开一个客户端
+    clients[0].Close()
+    time.Sleep(500 * time.Millisecond)
 
-    // 验证任务状态
-    for i := range clientIDs {
-        taskID := fmt.Sprintf("task-%d", i)
-        task := server.GetTask(taskID)
-        if task.Status != StatusCompleted {
-            t.Errorf("task %s expected status completed, got %s", taskID, task.Status)
-        }
+    onlineClients = server.GetClients()
+    if len(onlineClients) != 2 {
+        t.Errorf("expected 2 online clients after disconnect, got %d", len(onlineClients))
     }
 }
 ```
@@ -611,9 +566,10 @@ func (m *mockConn) RemoteAddr() net.Addr {
 | 组件 | 覆盖率目标 |
 |------|-----------|
 | ClientManager | 90%+ |
-| TaskStore | 90%+ |
 | Handler | 85%+ |
+| TunnelManager | 85%+ |
 | Config | 90%+ |
+| API | 85%+ |
 | 整体服务端 | 80%+ |
 
 ## 7. 运行测试

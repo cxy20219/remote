@@ -207,19 +207,3 @@ func (c *Connector) Register(hostname, os string) error {
 func (c *Connector) SendPing() error {
 	return c.Send(&common.Message{Type: "ping"})
 }
-
-// SendResult sends a command result
-func (c *Connector) SendResult(taskID string, exitCode int, stdout, stderr string) error {
-	payload := common.ResultPayload{
-		TaskID:   taskID,
-		ExitCode: exitCode,
-		Stdout:   stdout,
-		Stderr:   stderr,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	return c.Send(&common.Message{
-		Type:    "result",
-		Payload: payloadJSON,
-	})
-}

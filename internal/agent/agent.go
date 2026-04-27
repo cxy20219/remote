@@ -10,12 +10,10 @@ import (
 	"goremote/internal/common"
 )
 
-// Agent is the main agent controller
 type Agent struct {
 	config        *Config
 	connector     *Connector
 	handler       *Handler
-	executor      *Executor
 	reconnect     *Reconnect
 	tunnelManager *TunnelManager
 	hostname      string
@@ -25,7 +23,6 @@ type Agent struct {
 	stopped       bool
 }
 
-// NewAgent creates a new Agent
 func NewAgent(config *Config) *Agent {
 	hostname := config.Agent.Hostname
 	if hostname == "" {
@@ -48,7 +45,6 @@ func NewAgent(config *Config) *Agent {
 		config:    config,
 		connector: connector,
 		handler:   nil,
-		executor:  NewExecutor(),
 		reconnect: NewReconnect(
 			config.Reconnect.Interval,
 			config.Reconnect.MaxAttempts,
@@ -59,7 +55,6 @@ func NewAgent(config *Config) *Agent {
 		os:            os,
 	}
 
-	// 设置 tunnelManager 的 agent 引用
 	agent.tunnelManager.agent = agent
 
 	agent.handler = NewHandler(agent)
@@ -67,7 +62,6 @@ func NewAgent(config *Config) *Agent {
 	return agent
 }
 
-// Run starts the agent
 func (a *Agent) Run() error {
 	slog.Info("agent starting",
 		"server", a.config.Server.Address,
@@ -79,7 +73,6 @@ func (a *Agent) Run() error {
 			return nil
 		}
 
-		// Connect
 		if err := a.connect(); err != nil {
 			slog.Warn("connection failed", "error", err)
 
@@ -92,15 +85,12 @@ func (a *Agent) Run() error {
 			continue
 		}
 
-		// A successful connection should reset the failure backoff budget.
 		a.reconnect.reset()
 
-		// Handle connection
 		if err := a.handleConnection(); err != nil {
 			slog.Warn("connection error", "error", err)
 		}
 
-		// Close connection
 		a.connector.Close()
 		a.reconnect.beforeRetry()
 
@@ -110,7 +100,6 @@ func (a *Agent) Run() error {
 	}
 }
 
-// Stop stops the agent
 func (a *Agent) Stop() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -129,13 +118,11 @@ func (a *Agent) connect() error {
 		return err
 	}
 
-	// Register
 	if err := a.connector.Register(a.hostname, a.os); err != nil {
 		a.connector.Close()
 		return err
 	}
 
-	// Wait for register response
 	for {
 		msg, err := a.connector.Receive()
 		if err != nil {
@@ -164,11 +151,9 @@ func (a *Agent) connect() error {
 }
 
 func (a *Agent) handleConnection() error {
-	// Start heartbeat
 	hbDone := make(chan struct{})
 	go a.startHeartbeat(hbDone)
 
-	// Read messages
 	for {
 		msg, err := a.connector.Receive()
 		if err != nil {
@@ -200,64 +185,14 @@ func (a *Agent) startHeartbeat(done chan struct{}) {
 	}
 }
 
-// SetClientID sets the client ID
 func (a *Agent) SetClientID(clientID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.clientID = clientID
 }
 
-// GetClientID returns the client ID
 func (a *Agent) GetClientID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.clientID
-}
-
-// SendResult sends a command result to server
-func (a *Agent) SendResult(taskID string, exitCode int, stdout, stderr string) error {
-	return a.connector.SendResult(taskID, exitCode, stdout, stderr)
-}
-
-// SendUploadComplete sends upload complete message
-func (a *Agent) SendUploadComplete(fileID string, success bool, errMsg string) error {
-	payload := common.UploadCompletePayload{
-		FileID:  fileID,
-		Success: success,
-		Error:   errMsg,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-	return a.connector.Send(&common.Message{
-		Type:    "upload_complete",
-		Payload: payloadJSON,
-	})
-}
-
-// SendDownloadComplete sends download complete message
-func (a *Agent) SendDownloadComplete(fileID string, success bool, errMsg string) error {
-	payload := common.DownloadCompletePayload{
-		FileID:  fileID,
-		Success: success,
-		Error:   errMsg,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-	return a.connector.Send(&common.Message{
-		Type:    "download_complete",
-		Payload: payloadJSON,
-	})
-}
-
-// SendDownloadRequest sends a download request to server
-func (a *Agent) SendDownloadRequest(taskID, fileID, filename string, offset int64) error {
-	payload := common.DownloadPayload{
-		TaskID:   taskID,
-		FileID:   fileID,
-		Filename: filename,
-		Offset:   offset,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-	return a.connector.Send(&common.Message{
-		Type:    "download",
-		Payload: payloadJSON,
-	})
 }
