@@ -243,7 +243,7 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 	}
 
 	if req.LocalAddr == "" {
-		req.LocalAddr = "127.0.0.1"
+		req.LocalAddr = s.config.Tunnel.DefaultLocalAddr
 	}
 	if req.Protocol == "" {
 		req.Protocol = "tcp"

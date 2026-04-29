@@ -67,6 +67,22 @@ func (h *Handler) handlePing(client *Client, msg *common.Message) error {
 }
 
 func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
+	if h.server.tunnelManager == nil {
+		ackPayload := common.TunnelOpenAckPayload{
+			Success: false,
+			Error:   "tunnel is not enabled",
+		}
+		payloadJSON, err := json.Marshal(ackPayload)
+		if err != nil {
+			slog.Error("failed to marshal tunnel_open_ack", "error", err)
+			return err
+		}
+		return client.WriteJSON(common.Message{
+			Type:    "tunnel_open_ack",
+			Payload: payloadJSON,
+		})
+	}
+
 	var payload common.TunnelOpenPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return err
@@ -79,7 +95,11 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Success:  false,
 			Error:    err.Error(),
 		}
-		payloadJSON, _ := json.Marshal(ackPayload)
+		payloadJSON, err := json.Marshal(ackPayload)
+		if err != nil {
+			slog.Error("failed to marshal tunnel_open_ack", "error", err)
+			return err
+		}
 		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
@@ -101,7 +121,11 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Success:  false,
 			Error:    err.Error(),
 		}
-		payloadJSON, _ := json.Marshal(ackPayload)
+		payloadJSON, err := json.Marshal(ackPayload)
+		if err != nil {
+			slog.Error("failed to marshal tunnel_open_ack", "error", err)
+			return err
+		}
 		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
@@ -115,7 +139,11 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Success:  false,
 			Error:    err.Error(),
 		}
-		payloadJSON, _ := json.Marshal(ackPayload)
+		payloadJSON, err := json.Marshal(ackPayload)
+		if err != nil {
+			slog.Error("failed to marshal tunnel_open_ack", "error", err)
+			return err
+		}
 		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
@@ -127,7 +155,11 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 		PublicPort: publicPort,
 		Success:    true,
 	}
-	payloadJSON, _ := json.Marshal(ackPayload)
+	payloadJSON, err := json.Marshal(ackPayload)
+	if err != nil {
+		slog.Error("failed to marshal tunnel_open_ack", "error", err)
+		return err
+	}
 	return client.WriteJSON(common.Message{
 		Type:    "tunnel_open_ack",
 		Payload: payloadJSON,
@@ -135,6 +167,10 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 }
 
 func (h *Handler) handleTunnelClose(client *Client, msg *common.Message) error {
+	if h.server.tunnelManager == nil {
+		return fmt.Errorf("tunnel is not enabled")
+	}
+
 	var payload common.TunnelClosePayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return err
@@ -153,6 +189,10 @@ func (h *Handler) handleTunnelClose(client *Client, msg *common.Message) error {
 }
 
 func (h *Handler) handleTunnelData(client *Client, msg *common.Message) error {
+	if h.server.tunnelManager == nil {
+		return fmt.Errorf("tunnel is not enabled")
+	}
+
 	var payload common.TunnelDataPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return err
@@ -172,6 +212,11 @@ func (h *Handler) handleTunnelData(client *Client, msg *common.Message) error {
 }
 
 func (h *Handler) handleTunnelError(client *Client, msg *common.Message) error {
+	if h.server.tunnelManager == nil {
+		slog.Warn("tunnel error from agent but tunnel is not enabled")
+		return nil
+	}
+
 	var payload common.TunnelErrorPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return err
@@ -187,7 +232,11 @@ func (h *Handler) handleTunnelError(client *Client, msg *common.Message) error {
 
 func (h *Handler) sendRegisterOK(client *Client) error {
 	payload := common.RegisterOKPayload{ClientID: client.ClientID}
-	payloadJSON, _ := json.Marshal(payload)
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("failed to marshal register_ok", "error", err)
+		return err
+	}
 	return client.WriteJSON(common.Message{
 		Type:    "register_ok",
 		Payload: payloadJSON,
@@ -196,7 +245,11 @@ func (h *Handler) sendRegisterOK(client *Client) error {
 
 func (h *Handler) sendRegisterFail(client *Client, reason string) error {
 	payload := common.RegisterFailPayload{Reason: reason}
-	payloadJSON, _ := json.Marshal(payload)
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("failed to marshal register_fail", "error", err)
+		return err
+	}
 	return client.WriteJSON(common.Message{
 		Type:    "register_fail",
 		Payload: payloadJSON,

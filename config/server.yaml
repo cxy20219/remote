@@ -18,6 +18,7 @@ log:
   level: "info"
 
 tunnel:
+  enabled: true
   public_host: "YOUR_SERVER"
   port_range_start: 10000
   port_range_end: 20000

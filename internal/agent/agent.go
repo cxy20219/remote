@@ -39,6 +39,7 @@ func NewAgent(config *Config) *Agent {
 		config.Server.TLS.Enabled,
 		config.Server.TLS.CA,
 		config.Auth.Key,
+		config.Server.TLS.InsecureSkipVerify,
 	)
 
 	agent := &Agent{
@@ -92,6 +93,7 @@ func (a *Agent) Run() error {
 		}
 
 		a.connector.Close()
+		a.tunnelManager.Cleanup()
 		a.reconnect.beforeRetry()
 
 		if a.isStopped() {

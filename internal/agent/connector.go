@@ -32,10 +32,11 @@ const (
 
 // Connector manages WebSocket connection
 type Connector struct {
-	serverAddr string
-	tlsEnabled bool
-	tlsCA      string
-	authKey    string
+	serverAddr         string
+	tlsEnabled         bool
+	tlsCA              string
+	insecureSkipVerify bool
+	authKey            string
 
 	conn   *websocket.Conn
 	mu     sync.Mutex
@@ -44,13 +45,14 @@ type Connector struct {
 }
 
 // NewConnector creates a new Connector
-func NewConnector(serverAddr string, tlsEnabled bool, tlsCA, authKey string) *Connector {
+func NewConnector(serverAddr string, tlsEnabled bool, tlsCA string, authKey string, insecureSkipVerify bool) *Connector {
 	return &Connector{
-		serverAddr: serverAddr,
-		tlsEnabled: tlsEnabled,
-		tlsCA:      tlsCA,
-		authKey:    authKey,
-		done:       make(chan struct{}),
+		serverAddr:         serverAddr,
+		tlsEnabled:         tlsEnabled,
+		tlsCA:              tlsCA,
+		insecureSkipVerify: insecureSkipVerify,
+		authKey:            authKey,
+		done:               make(chan struct{}),
 	}
 }
 
@@ -101,6 +103,9 @@ func (c *Connector) resetConnectionState(conn *websocket.Conn) {
 }
 
 func (c *Connector) buildTLSConfig() (*tls.Config, error) {
+	if c.tlsCA == "" && c.insecureSkipVerify {
+		return &tls.Config{InsecureSkipVerify: true}, nil
+	}
 	if c.tlsCA == "" {
 		return &tls.Config{}, nil
 	}

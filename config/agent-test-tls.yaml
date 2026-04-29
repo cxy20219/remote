@@ -1,0 +1,18 @@
+server:
+  address: "YOUR_SERVER:8080"
+  tls:
+    enabled: true
+    ca: "config/server.crt"
+
+auth:
+  key: "test-secret-key"
+
+heartbeat:
+  interval: 30
+
+reconnect:
+  interval: 5
+  max_interval: 60
+
+log:
+  level: "info"

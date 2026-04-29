@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"sort"
@@ -17,7 +18,7 @@ import (
 type Tunnel struct {
 	TunnelID   string
 	ClientID   string
-	Client     *Client // WebSocket 连接
+	Client     *Client   `json:"-"` // WebSocket 连接 (not serialized)
 	Protocol   string
 	PublicPort int    // 监听的公网端口
 	LocalAddr  string // 客户端本地地址
@@ -214,7 +215,7 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 		return nil, fmt.Errorf("tunnel is not active, current status: %s", tunnel.Status)
 	}
 
-	if localPort != tunnel.LocalPort || protocol != tunnel.Protocol {
+	if localAddr != tunnel.LocalAddr || localPort != tunnel.LocalPort || protocol != tunnel.Protocol {
 		payloadJSON, _ := json.Marshal(common.TunnelClosePayload{TunnelID: tunnelID})
 		tunnel.Client.WriteJSON(common.Message{
 			Type:    "tunnel_close",
@@ -377,7 +378,7 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 			}
 		}
 		if err != nil {
-			if err.Error() != "EOF" {
+			if err != io.EOF {
 				slog.Warn("external conn read error",
 					"conn_id", connID,
 					"error", err)
@@ -438,7 +439,6 @@ func (tm *TunnelManager) HandleAgentData(tunnelID, connID string, data []byte, i
 	}
 
 	if isEOF {
-		ec.Conn.Close()
 		tm.RemoveExternalConn(connID)
 	}
 

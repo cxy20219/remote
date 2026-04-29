@@ -26,8 +26,9 @@ type ServerConfig struct {
 
 // TLSConfig holds TLS configuration
 type TLSConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	CA      string `yaml:"ca"` // CA certificate to verify server
+	Enabled            bool   `yaml:"enabled"`
+	CA                 string `yaml:"ca"`                   // CA certificate to verify server
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"` // skip server certificate verification
 }
 
 // AuthConfig holds authentication configuration

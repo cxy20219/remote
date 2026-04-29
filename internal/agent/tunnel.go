@@ -92,6 +92,21 @@ func (tm *TunnelManager) ListTunnels() []*Tunnel {
 	return tunnels
 }
 
+// Cleanup closes all tunnels and local connections. Call on reconnect.
+func (tm *TunnelManager) Cleanup() {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	for connID, lc := range tm.localConns {
+		lc.Conn.Close()
+		delete(tm.localConns, connID)
+	}
+	for tunnelID := range tm.tunnels {
+		delete(tm.tunnels, tunnelID)
+	}
+	slog.Info("tunnel manager cleaned up", "tunnels", len(tm.tunnels), "connections", len(tm.localConns))
+}
+
 // CloseTunnel removes a tunnel and closes any related local connections.
 func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 	tm.mu.Lock()
@@ -223,10 +238,12 @@ func (tm *TunnelManager) SendError(tunnelID, connID, errMsg string) {
 		Error:    errMsg,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	tm.agent.connector.Send(&common.Message{
+	if err := tm.agent.connector.Send(&common.Message{
 		Type:    "tunnel_error",
 		Payload: payloadJSON,
-	})
+	}); err != nil {
+		slog.Warn("failed to send tunnel error to server", "tunnel_id", tunnelID, "conn_id", connID, "error", err)
+	}
 }
 
 // ReadFromLocal starts a goroutine that reads from one local connection.

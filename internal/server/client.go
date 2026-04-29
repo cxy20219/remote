@@ -98,7 +98,7 @@ func (m *ClientManager) SendTo(clientID string, data []byte) error {
 	defer m.mu.RUnlock()
 	client, ok := m.clients[clientID]
 	if !ok {
-		return nil
+		return fmt.Errorf("client not found: %s", clientID)
 	}
 	return client.WriteMessage(websocket.TextMessage, data)
 }
