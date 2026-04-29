@@ -3,8 +3,8 @@ server:
   port: 8080
   tls:
     enabled: true
-    cert: "server.crt"
-    key: "server.key"
+    cert: "/home/xinyv/goremote/config/server.crt"
+    key: "/home/xinyv/goremote/config/server.key"
 
 auth:
   key: "test-secret-key"
@@ -24,3 +24,6 @@ tunnel:
   port_range_start: 10000
   port_range_end: 20000
   max_tunnels_per_client: 10
+
+swagger:
+  enabled: false

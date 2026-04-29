@@ -99,7 +99,9 @@ func (s *Server) Start() error {
 		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
 		protected.Static("/static", "./static")
 		protected.StaticFile("/", "./static/index.html")
-		protected.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		if s.config.Swagger.Enabled {
+			protected.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		}
 	}
 
 	// Start heartbeat checker

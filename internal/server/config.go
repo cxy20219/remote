@@ -15,6 +15,7 @@ type Config struct {
 	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
 	Log       LogConfig       `yaml:"log"`
 	Tunnel    TunnelConfig    `yaml:"tunnel"`
+	Swagger   SwaggerConfig   `yaml:"swagger"`
 }
 
 // TunnelConfig holds tunnel configuration
@@ -25,6 +26,11 @@ type TunnelConfig struct {
 	MaxTunnelsPerClient int    `yaml:"max_tunnels_per_client"` // max tunnels allowed per client
 	PublicHost          string `yaml:"public_host"`            // optional externally reachable host returned by API
 	DefaultLocalAddr    string `yaml:"default_local_addr"`     // default target address on the agent
+}
+
+// SwaggerConfig holds Swagger UI configuration
+type SwaggerConfig struct {
+	Enabled bool `yaml:"enabled"` // 是否启用 Swagger UI 接口文档
 }
 
 // ServerConfig holds WebSocket server configuration
@@ -85,11 +91,17 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Heartbeat.Interval == 0 {
 		config.Heartbeat.Interval = 30
 	}
+	if config.Admin.Password == "" {
+		config.Admin.Password = "admin123"
+	}
 	if config.Heartbeat.Timeout == 0 {
 		config.Heartbeat.Timeout = 90
 	}
 	if config.Log.Level == "" {
 		config.Log.Level = "info"
+	}
+	if !config.Swagger.Enabled {
+		config.Swagger.Enabled = true // 默认启用 Swagger
 	}
 
 	// Tunnel defaults

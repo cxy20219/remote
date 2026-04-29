@@ -74,7 +74,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/clients/{client_id}/tunnels": {
+        "/api/client-tunnels/{client_id}": {
             "get": {
                 "description": "获取指定客户端的所有隧道",
                 "produces": [
@@ -200,6 +200,63 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/server.Tunnel"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "更新隧道配置（修改本地端口/协议等）",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tunnel"
+                ],
+                "summary": "更新隧道配置",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "隧道ID",
+                        "name": "tunnel_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "隧道更新请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.TunnelUpdateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.Tunnel"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
                         }
                     },
                     "404": {
@@ -342,12 +399,9 @@ const docTemplate = `{
                 }
             }
         },
-        "server.TunnelRequest": {
+        "server.TunnelUpdateRequest": {
             "type": "object",
             "properties": {
-                "client_id": {
-                    "type": "string"
-                },
                 "local_addr": {
                     "type": "string"
                 },

@@ -104,7 +104,13 @@ func (m *ClientManager) SendTo(clientID string, data []byte) error {
 }
 
 // WriteJSON serializes websocket writes to avoid concurrent write panics.
-func (c *Client) WriteJSON(v interface{}) error {
+func (c *Client) WriteJSON(v interface{}) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic in WriteJSON: %v", r)
+		}
+	}()
+
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
