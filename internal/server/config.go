@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Server    ServerConfig    `yaml:"server"`
 	Auth      AuthConfig      `yaml:"auth"`
+	Admin     AdminConfig     `yaml:"admin"`
 	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
 	Log       LogConfig       `yaml:"log"`
 	Tunnel    TunnelConfig    `yaml:"tunnel"`
@@ -40,9 +41,14 @@ type TLSConfig struct {
 	Key     string `yaml:"key"`
 }
 
-// AuthConfig holds authentication configuration
+// AuthConfig holds agent authentication configuration
 type AuthConfig struct {
 	Key string `yaml:"key"`
+}
+
+// AdminConfig holds web admin authentication configuration
+type AdminConfig struct {
+	Password string `yaml:"password"`
 }
 
 // HeartbeatConfig holds heartbeat configuration

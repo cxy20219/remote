@@ -7,6 +7,9 @@ server:
 auth:
   key: "test-secret-key"
 
+admin:
+  password: "admin123"
+
 heartbeat:
   interval: 30
   timeout: 90

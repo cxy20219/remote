@@ -30,6 +30,7 @@ type Server struct {
 	clients        *ClientManager
 	handler        *Handler
 	tunnelManager  *TunnelManager
+	adminAuth      *AdminAuth
 
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
@@ -49,6 +50,7 @@ func NewServer(config *Config) *Server {
 	}
 
 	s.handler = NewHandler(s)
+	s.adminAuth = NewAdminAuth(config.Admin.Password)
 
 	// Initialize tunnel manager
 	if config.Tunnel.Enabled {
@@ -75,27 +77,30 @@ func (s *Server) Start() error {
 	s.engine = gin.New()
 	s.engine.Use(gin.Recovery())
 
-	// WebSocket route - keep original upgrade logic
+	// Public routes (no auth required)
 	s.engine.GET("/ws", s.handleConn)
-
-	// API routes
-	s.engine.GET("/api/clients", s.handleAPIClients)
-	s.engine.GET("/api/clients/:id", s.handleAPIClientDetail)
-	s.engine.GET("/api/client-tunnels/:client_id", s.handleAPIListClientTunnels)
-	// Tunnel API
-	s.engine.POST("/api/tunnels", s.handleAPICreateTunnel)
-	s.engine.GET("/api/tunnels", s.handleAPIListTunnels)
-	s.engine.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
-	s.engine.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
-	s.engine.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
 	s.engine.GET("/health", s.handleHealth)
+	s.engine.POST("/api/login", s.handleLogin)
+	s.engine.POST("/api/logout", s.handleLogout)
+	s.engine.GET("/api/check-auth", s.handleCheckAuth)
+	s.engine.StaticFile("/login.html", "./static/login.html")
 
-	// Static files
-	s.engine.Static("/static", "./static")
-	s.engine.StaticFile("/", "./static/index.html")
-
-	// Swagger UI
-	s.engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	// Protected routes
+	protected := s.engine.Group("/")
+	protected.Use(s.authMiddleware())
+	{
+		protected.GET("/api/clients", s.handleAPIClients)
+		protected.GET("/api/clients/:id", s.handleAPIClientDetail)
+		protected.GET("/api/client-tunnels/:client_id", s.handleAPIListClientTunnels)
+		protected.POST("/api/tunnels", s.handleAPICreateTunnel)
+		protected.GET("/api/tunnels", s.handleAPIListTunnels)
+		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
+		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
+		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
+		protected.Static("/static", "./static")
+		protected.StaticFile("/", "./static/index.html")
+		protected.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	}
 
 	// Start heartbeat checker
 	go s.startHeartbeatChecker()

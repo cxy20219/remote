@@ -4,6 +4,11 @@
 
 本文档记录 GoRemote SSH 隧道使用和开发调试过程中遇到的常见问题、解决方案和最佳实践。
 
+> 相关专题文档：
+> - [远程部署常见坑点](./remote-deployment-pitfalls.md) — 部署流程中的 binary 覆盖、权限、进程管理
+> - [Gin 路由与管理员认证实现经验](./gin-auth-route-tips.md) — 路由规划、Middleware、Cookie
+> - [跨平台开发与 PowerShell 使用技巧](./cross-platform-ps-tips.md) — 交叉编译、curl、plink、JSON 传递
+
 ## 1. TLS 证书配置
 
 ### 问题：Go 1.15+ 要求 SAN 而不是 Common Name
