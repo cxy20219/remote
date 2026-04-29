@@ -67,3 +67,7 @@ Tests use `runtime.GOOS` checks. Windows: `sleep` → `timeout /t`, `ls` → `di
 - **[Gin 路由与管理员认证实现经验]** - docs/experience/gin-auth-route-tips.md：路由规划 Public vs Protected、Middleware 重定向循环、Static vs StaticFile 区别、ShouldBindJSON Content-Type 要求、Cookie 设置与清除、返回格式自动适配
 - **[跨平台开发与 PowerShell 使用技巧]** - docs/experience/cross-platform-ps-tips.md：交叉编译、curl.exe vs curl、JSON 传递可靠方案、plink 引用问题、Windows netstat vs Linux ss、Start-Process 后台启动、证书管理分发规则
 - **[SSH 隧道直通内网服务流程]** - docs/workflow/ssh-tunnel-direct-access.md：SSH 隧道从公网访问内网服务的完整流程，包括隧道创建、SSH 直连内网、部署服务、问题排查等实操步骤
+
+## Tool Skills
+
+- **[GoRemote 部署 Skill]** - skills/goremote-deploy/SKILL.md：编译、部署、配置 GoRemote 服务端与客户端的自动化指导 skill，包含部署脚本、配置模板、TLS 设置指南

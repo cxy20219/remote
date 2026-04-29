@@ -1,0 +1,30 @@
+server:
+  host: "0.0.0.0"
+  port: {{SERVER_PORT}}
+  tls:
+    enabled: {{TLS_ENABLED}}
+    cert: "{{TLS_CERT}}"
+    key: "{{TLS_KEY}}"
+
+auth:
+  key: "{{AUTH_KEY}}"
+
+admin:
+  password: "{{ADMIN_PASSWORD}}"
+
+heartbeat:
+  interval: {{HB_INTERVAL}}
+  timeout: {{HB_TIMEOUT}}
+
+log:
+  level: "{{LOG_LEVEL}}"
+
+tunnel:
+  enabled: true
+  public_host: "{{PUBLIC_HOST}}"
+  port_range_start: {{PORT_RANGE_START}}
+  port_range_end: {{PORT_RANGE_END}}
+  max_tunnels_per_client: {{MAX_TUNNELS}}
+
+swagger:
+  enabled: {{SWAGGER_ENABLED}}

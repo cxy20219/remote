@@ -39,6 +39,13 @@ type Server struct {
 
 // NewServer creates a new Server
 func NewServer(config *Config) *Server {
+	// Validate TLS certificate files if TLS is enabled
+	if config.Server.TLS.Enabled {
+		if config.Server.TLS.Cert == "" || config.Server.TLS.Key == "" {
+			slog.Warn("TLS enabled but cert or key path is empty")
+		}
+	}
+
 	s := &Server{
 		Addr:       net.JoinHostPort(config.Server.Host, fmt.Sprintf("%d", config.Server.Port)),
 		tlsEnabled: config.Server.TLS.Enabled,
@@ -150,6 +157,7 @@ func (s *Server) handleConn(c *gin.Context) {
 
 	// Read messages
 	for {
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		var msg common.Message
 		if err := conn.ReadJSON(&msg); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -171,6 +179,11 @@ func (s *Server) handleConn(c *gin.Context) {
 			go s.readLoop(client)
 			return
 		}
+		if msg.Type == "register" && client.ClientID == "" {
+			// Registration failed, close connection
+			slog.Warn("registration failed, closing connection", "remote", remoteAddr)
+			break
+		}
 	}
 
 	conn.Close()
@@ -181,6 +194,14 @@ func (s *Server) handleConn(c *gin.Context) {
 func (s *Server) readLoop(client *Client) {
 	defer func() {
 		if client.ClientID != "" {
+			// 清理该客户端的所有隧道
+			if s.tunnelManager != nil {
+				for _, t := range s.tunnelManager.ListTunnelsByClient(client.ClientID) {
+					if err := s.tunnelManager.CloseTunnel(t.TunnelID); err != nil {
+						slog.Warn("failed to close tunnel on disconnect", "tunnel_id", t.TunnelID, "error", err)
+					}
+				}
+			}
 			s.clients.Remove(client.ClientID)
 			slog.Info("client disconnected", "client_id", client.ClientID)
 		}
@@ -188,6 +209,8 @@ func (s *Server) readLoop(client *Client) {
 	}()
 
 	for {
+		// 设置读超时，防止客户端非正常断开后长时间阻塞
+		client.Conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		var msg common.Message
 		if err := client.Conn.ReadJSON(&msg); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -240,13 +263,17 @@ func (s *Server) startHeartbeatChecker() {
 func (s *Server) checkClientsTimeout(timeout time.Duration) {
 	now := time.Now()
 	s.clients.mu.Lock()
-	defer s.clients.mu.Unlock()
-
+	var toClose []*Client
 	for _, client := range s.clients.clients {
 		if now.Sub(client.LastPing) > timeout {
 			slog.Warn("client heartbeat timeout", "client_id", client.ClientID)
-			client.Conn.Close()
+			toClose = append(toClose, client)
 		}
+	}
+	s.clients.mu.Unlock()
+
+	for _, client := range toClose {
+		client.Conn.Close()
 	}
 }
 
