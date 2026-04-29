@@ -63,6 +63,7 @@ Tests use `runtime.GOOS` checks. Windows: `sleep` → `timeout /t`, `ls` → `di
 - **[隧道设计文档]** - docs/tunnel-design.md：隧道架构、数据传输、安全机制
 - **[SSH 隧道直通测试用例]** - docs/test/ssh-tunnel-test-cases.md：SSH 隧道直通流程测试用例，覆盖正常流程、边界条件、异常情况
 - **[GoRemote 调试开发经验]** - docs/experience/go-remote-debugging.md：常见坑点、排查思路、最佳实践、环境差异处理技巧等经验总结，包括 Web 服务部署、SSH 隧道连接、API 调用、进程管理、Windows 特殊处理等
+- **[GoRemote 部署与调试实战经验]** - docs/experience/go-remote-deploy-debug.md：部署与测试过程中的实战经验，包括 PowerShell/curl 技巧、Agent 启动问题、配置脱敏规范、TLS 证书部署、Agent 断线验证方法、Skill 创建规范、健康检查清单
 - **[远程部署常见坑点]** - docs/experience/remote-deployment-pitfalls.md：binary in use 无法覆盖、上传后 Permission denied、进程杀不掉用 fuser、nohup 启动卡住、服务器目录混淆等部署相关实战经验
 - **[Gin 路由与管理员认证实现经验]** - docs/experience/gin-auth-route-tips.md：路由规划 Public vs Protected、Middleware 重定向循环、Static vs StaticFile 区别、ShouldBindJSON Content-Type 要求、Cookie 设置与清除、返回格式自动适配
 - **[跨平台开发与 PowerShell 使用技巧]** - docs/experience/cross-platform-ps-tips.md：交叉编译、curl.exe vs curl、JSON 传递可靠方案、plink 引用问题、Windows netstat vs Linux ss、Start-Process 后台启动、证书管理分发规则
