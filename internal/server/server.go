@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	swaggerFiles "github.com/swaggo/files"
@@ -31,6 +33,7 @@ type Server struct {
 
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
+	httpSrv  *http.Server
 }
 
 // NewServer creates a new Server
@@ -83,8 +86,13 @@ func (s *Server) Start() error {
 	s.engine.POST("/api/tunnels", s.handleAPICreateTunnel)
 	s.engine.GET("/api/tunnels", s.handleAPIListTunnels)
 	s.engine.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
+	s.engine.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
 	s.engine.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
 	s.engine.GET("/health", s.handleHealth)
+
+	// Static files
+	s.engine.Static("/static", "./static")
+	s.engine.StaticFile("/", "./static/index.html")
 
 	// Swagger UI
 	s.engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -92,18 +100,27 @@ func (s *Server) Start() error {
 	// Start heartbeat checker
 	go s.startHeartbeatChecker()
 
-	if s.tlsEnabled {
-		slog.Info("server starting with TLS", "cert", s.tlsCert)
-		return s.engine.RunTLS(s.Addr, s.tlsCert, s.tlsKey)
+	s.httpSrv = &http.Server{
+		Addr:    s.Addr,
+		Handler: s.engine,
 	}
 
-	return s.engine.Run(s.Addr)
+	if s.tlsEnabled {
+		slog.Info("server starting with TLS", "cert", s.tlsCert)
+		return s.httpSrv.ListenAndServeTLS(s.tlsCert, s.tlsKey)
+	}
+
+	return s.httpSrv.ListenAndServe()
 }
 
-// Stop stops the server
+// Stop stops the server gracefully
 func (s *Server) Stop() error {
 	slog.Info("server stopping")
-	// Gin doesn't have a direct shutdown, but we can use context
+	if s.httpSrv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.httpSrv.Shutdown(ctx)
+	}
 	return nil
 }
 
@@ -197,6 +214,13 @@ func (s *Server) startHeartbeatChecker() {
 	interval := time.Duration(s.config.Heartbeat.Interval) * time.Second
 	timeout := time.Duration(s.config.Heartbeat.Timeout) * time.Second
 
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -224,9 +248,6 @@ func (s *Server) GetClients() []*Client {
 	return s.clients.List()
 }
 
-// generateUUID generates a simple UUID (for demo purposes)
-// In production, use github.com/google/uuid
 func generateUUID() string {
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", time.Now().UnixNano(),
-		time.Now().Unix()&0xffff, 0x4000, 0x8000, time.Now().UnixNano())
+	return uuid.New().String()
 }

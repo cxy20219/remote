@@ -62,4 +62,5 @@ Tests use `runtime.GOOS` checks. Windows: `sleep` → `timeout /t`, `ls` → `di
 - **[项目结构]** - docs/project-structure.md：项目目录结构、架构设计、消息协议格式
 - **[隧道设计文档]** - docs/tunnel-design.md：隧道架构、数据传输、安全机制
 - **[SSH 隧道直通测试用例]** - docs/test/ssh-tunnel-test-cases.md：SSH 隧道直通流程测试用例，覆盖正常流程、边界条件、异常情况
-- **[GoRemote 调试开发经验]** - docs/experience/go-remote-debugging.md：常见坑点、排查思路、最佳实践、环境差异处理技巧等经验总结
+- **[GoRemote 调试开发经验]** - docs/experience/go-remote-debugging.md：常见坑点、排查思路、最佳实践、环境差异处理技巧等经验总结，包括 Web 服务部署、SSH 隧道连接、API 调用、进程管理、Windows 特殊处理等
+- **[SSH 隧道直通内网服务流程]** - docs/workflow/ssh-tunnel-direct-access.md：SSH 隧道从公网访问内网服务的完整流程，包括隧道创建、SSH 直连内网、部署服务、问题排查等实操步骤

@@ -3,11 +3,9 @@ server:
   port: 8080
   tls:
     enabled: false
-    cert: "server.crt"
-    key: "server.key"
 
 auth:
-  key: "your-secret-key"
+  key: "test-secret-key"
 
 heartbeat:
   interval: 30
@@ -15,16 +13,9 @@ heartbeat:
 
 log:
   level: "info"
-  file: ""
-
-file_transfer:
-  upload_path: "C:/work/go-remote/uploads"
-  download_path: "C:/work/go-remote/downloads"
 
 tunnel:
-  enabled: true
-  public_host: ""
-  default_local_addr: "127.0.0.1"
+  public_host: "YOUR_SERVER"
   port_range_start: 10000
   port_range_end: 20000
   max_tunnels_per_client: 10

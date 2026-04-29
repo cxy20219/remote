@@ -1,18 +1,19 @@
 # GoRemote
 
-内网穿透系统 - 通过 WebSocket 隧道暴露内网服务（SSH、HTTP 等）。
+SSH 隧道内网穿透系统 - 通过 WebSocket 隧道暴露内网服务。
 
 ## 功能特性
 
-- **内网穿透/端口映射** - 通过 WebSocket 隧道暴露内网服务
+- **SSH 隧道** - 通过 WebSocket 隧道暴露内网 SSH 端口
 - **心跳保活** - 客户端定期发送心跳，服务端检测超时断开
 - **自动重连** - 客户端支持断线自动重连（指数退避）
 - **跨平台** - 支持 Linux 和 Windows
+- **TLS 加密** - 支持 WebSocket TLS 加密传输
 
 ## 项目结构
 
 ```
-C:\work\GoRemote\
+go-remote/
 ├── cmd/
 │   ├── server/main.go       # 服务端入口
 │   └── agent/main.go        # 客户端入口
@@ -22,29 +23,24 @@ C:\work\GoRemote\
 │   │   ├── server.go       # Gin 引擎与路由
 │   │   ├── client.go       # 客户端管理
 │   │   ├── handler.go      # 消息处理
-│   │   ├── task.go         # 任务管理
-│   │   ├── upload.go       # 文件传输管理
-│   │   ├── tunnel.go       # 隧道管理（内网穿透）
-│   │   ├── api.go          # HTTP API (Gin handlers)
-│   │   ├── config.go       # 配置加载
-│   │   └── logger.go       # 日志配置
+│   │   ├── tunnel.go       # 隧道管理
+│   │   ├── api.go          # HTTP API
+│   │   └── config.go       # 配置加载
 │   └── agent/              # 客户端实现
 │       ├── agent.go        # 主控逻辑
 │       ├── connector.go    # WebSocket 连接
 │       ├── handler.go      # 消息处理
-│       ├── executor.go     # 命令执行
 │       ├── reconnect.go    # 重连机制
-│       ├── tunnel.go       # 隧道管理（内网穿透）
-│       ├── config.go       # 配置加载
-│       └── logger.go       # 日志配置
+│       ├── tunnel.go       # 隧道管理
+│       └── config.go       # 配置加载
 ├── config/
-│   ├── server.yaml          # 服务端配置
-│   └── agent.yaml          # 客户端配置
-├── docs/                   # 设计文档
-│   ├── docs.go             # Swagger 文档生成代码
-│   ├── swagger.json        # Swagger JSON 文档
-│   └── swagger.yaml        # Swagger YAML 文档
-├── go.mod
+│   ├── server.yaml          # 服务端配置（开发）
+│   ├── agent.yaml          # 客户端配置（开发）
+│   ├── server-deploy.yaml  # 服务端配置（生产）
+│   └── agent-deploy.yaml  # 客户端配置（生产）
+├── docs/
+│   ├── workflow/           # 操作流程文档
+│   └── experience/         # 调试经验文档
 └── README.md
 ```
 
@@ -57,100 +53,102 @@ go build -o bin/server.exe ./cmd/server
 go build -o bin/agent.exe ./cmd/agent
 ```
 
-### Linux
+### Linux（跨编译）
 
 ```bash
 GOOS=linux GOARCH=amd64 go build -o bin/server ./cmd/server
 GOOS=linux GOARCH=amd64 go build -o bin/agent ./cmd/agent
 ```
 
-## 使用
+## 配置
 
-### 1. 修改配置
-
-编辑 `config/server.yaml`：
+### 服务端配置 (server.yaml)
 
 ```yaml
 server:
   host: "0.0.0.0"
   port: 8080
-
-tunnel:
-  public_host: "server.example.com"  # optional host returned in public_addr
-  default_local_addr: "127.0.0.1"    # default agent-side target address
+  tls:
+    enabled: false
 
 auth:
-  key: "your-secret-key"  # 修改为你的密钥
+  key: "test-secret-key"
+
+heartbeat:
+  interval: 30
+  timeout: 90
+
+log:
+  level: "info"
+
+tunnel:
+  public_host: "your-public-host"
+  port_range_start: 10000
+  port_range_end: 20000
+  max_tunnels_per_client: 10
 ```
 
-编辑 `config/agent.yaml`：
+### 客户端配置 (agent.yaml)
 
 ```yaml
 server:
-  address: "localhost:8080"  # 修改为服务端地址
+  address: "localhost:8080"
 
 auth:
-  key: "your-secret-key"  # 与服务端一致
+  key: "test-secret-key"
+
+heartbeat:
+  interval: 30
+
+reconnect:
+  interval: 5
+  max_interval: 60
+
+log:
+  level: "info"
 ```
 
-### 2. 启动服务端
+## 使用
+
+### 1. 启动服务端
 
 ```bash
 ./bin/server.exe --config config/server.yaml
 ```
 
-### 3. 启动客户端
+### 2. 启动客户端
 
 ```bash
 ./bin/agent.exe --config config/agent.yaml
 ```
 
-### 4. Swagger UI 接口文档
-
-启动服务后，可通过浏览器访问 Swagger UI 查看和测试所有 API 接口：
+### 3. Swagger UI
 
 ```
 http://localhost:8080/swagger/index.html
 ```
 
-### 5. API 接口
+### 4. API 接口
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/health` | GET | 健康检查 |
-| `/api/clients` | GET | 查看在线客户端列表 |
-| `/api/clients/:id` | GET | 查看客户端详情 |
-| `/api/client-tunnels/:client_id` | GET | 查看指定客户端的隧道 |
-| `/api/tunnels` | POST | 创建端口映射 |
+| `/api/clients` | GET | 查看在线客户端 |
 | `/api/tunnels` | GET | 查看所有隧道 |
-| `/api/tunnels/:tunnel_id` | GET | 查看隧道详情 |
-| `/api/tunnels/:tunnel_id` | DELETE | 删除端口映射 |
-| `/swagger/*` | GET | Swagger UI 接口文档 |
+| `/api/tunnels` | POST | 创建隧道 |
+| `/api/tunnels/:id` | PUT | 更新隧道端口 |
+| `/api/tunnels/:id` | DELETE | 删除隧道 |
 
-### 6. 创建隧道示例
+### 5. 创建隧道
 
 ```bash
-# 查看客户端列表，获取 client_id
+# 查看客户端
 curl http://localhost:8080/api/clients
 
-# 创建隧道（映射内网 SSH 端口）
+# 创建隧道
 curl -X POST http://localhost:8080/api/tunnels \
   -H "Content-Type: application/json" \
-  -d '{
-    "client_id": "client-id",
-    "local_port": 22,
-    "protocol": "tcp"
-  }'
-
-# 创建隧道到指定目标地址
-curl -X POST http://localhost:8080/api/tunnels \
-  -H "Content-Type: application/json" \
-  -d '{
-    "client_id": "client-id",
-    "local_addr": "192.168.1.10",
-    "local_port": 8081,
-    "protocol": "tcp"
-  }'
+  -d '{"client_id":"xxx","local_port":22,"protocol":"tcp"}'
 ```
 
 ## 消息协议
@@ -159,38 +157,24 @@ curl -X POST http://localhost:8080/api/tunnels \
 |------|------|------|
 | register | C→S | 客户端注册 |
 | register_ok | S→C | 注册成功 |
-| register_fail | S→C | 注册失败 |
 | ping | C→S | 心跳 |
 | pong | S→C | 心跳响应 |
-| tunnel_open | C→S | 申请创建隧道 |
-| tunnel_open_ack | S→C | 隧道创建确认 |
+| tunnel_open | S→C | 创建隧道 |
+| tunnel_open_ack | C→S | 隧道创建确认 |
 | tunnel_close | C↔S | 关闭隧道 |
-| tunnel_data | C↔S | 隧道数据（双向） |
-| tunnel_error | S→C | 隧道错误通知 |
+| tunnel_data | C↔S | 隧道数据 |
 
 ## 架构
 
 ```
-                     ┌─────────────┐
-                     │  控制中心   │
-                     │  (服务端)   │
-                     └──────┬──────┘
-                            │ WebSocket
-            ┌───────────────┼───────────────┐
-            │               │               │
-     ┌──────┴──────┐ ┌──────┴──────┐ ┌──────┴──────┐
-     │  机器A      │ │  机器B      │ │  机器C      │
-     │  (客户端)   │ │  (客户端)   │ │  (客户端)   │
-     └─────────────┘ └─────────────┘ └─────────────┘
-
-内网穿透架构：
-
 外部用户 ──▶ [服务端:公网端口] ──▶ [WebSocket隧道] ──▶ [Agent:本地端口]
              (端口映射)              (数据透传)          (内网服务)
 ```
 
-## 设计文档
+## 文档
 
 - [服务端设计文档](./docs/server-design.md)
 - [客户端设计文档](./docs/agent-design.md)
 - [隧道设计文档](./docs/tunnel-design.md)
+- [SSH 隧道直通内网服务流程](./docs/workflow/ssh-tunnel-direct-access.md)
+- [GoRemote 调试开发经验](./docs/experience/go-remote-debugging.md)

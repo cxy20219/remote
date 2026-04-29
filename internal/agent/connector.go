@@ -70,8 +70,9 @@ func (c *Connector) Connect() error {
 
 	// Set connection options
 	dialer := websocket.Dialer{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+		ReadBufferSize:   1024,
+		WriteBufferSize:  1024,
+		HandshakeTimeout: 10 * time.Second,
 	}
 
 	if c.tlsEnabled {

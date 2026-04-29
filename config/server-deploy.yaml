@@ -2,9 +2,9 @@ server:
   host: "0.0.0.0"
   port: 8080
   tls:
-    enabled: false
-    cert: ""
-    key: ""
+    enabled: true
+    cert: "server.crt"
+    key: "server.key"
 
 auth:
   key: "test-secret-key"
@@ -15,16 +15,9 @@ heartbeat:
 
 log:
   level: "info"
-  file: ""
-
-file_transfer:
-  upload_path: "/tmp/uploads"
-  download_path: "/tmp/downloads"
 
 tunnel:
-  enabled: true
-  public_host: "YOUR_SERVER"
-  default_local_addr: "127.0.0.1"
+  public_host: "your-public-host"
   port_range_start: 10000
   port_range_end: 20000
   max_tunnels_per_client: 10

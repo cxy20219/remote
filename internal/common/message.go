@@ -52,3 +52,16 @@ type TunnelErrorPayload struct {
 	ConnID   string `json:"conn_id,omitempty"`
 	Error    string `json:"error"`
 }
+
+type TunnelUpdatePayload struct {
+	TunnelID  string `json:"tunnel_id"`
+	LocalAddr string `json:"local_addr,omitempty"`
+	LocalPort int    `json:"local_port,omitempty"`
+	Protocol  string `json:"protocol,omitempty"`
+}
+
+type TunnelUpdateAckPayload struct {
+	TunnelID string `json:"tunnel_id"`
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+}

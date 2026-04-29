@@ -212,6 +212,52 @@ func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
 	c.JSON(http.StatusOK, map[string]string{"success": "true"})
 }
 
+func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
+	if s.tunnelManager == nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "tunnel is not enabled"})
+		return
+	}
+
+	tunnelID := c.Param("tunnel_id")
+
+	var req struct {
+		LocalAddr string `json:"local_addr"`
+		LocalPort int    `json:"local_port"`
+		Protocol  string `json:"protocol"`
+	}
+
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if req.LocalPort == 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "local_port is required"})
+		return
+	}
+
+	if req.LocalAddr == "" {
+		req.LocalAddr = "127.0.0.1"
+	}
+	if req.Protocol == "" {
+		req.Protocol = "tcp"
+	}
+
+	tunnel, err := s.tunnelManager.UpdateTunnel(tunnelID, req.LocalAddr, req.LocalPort, req.Protocol)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, tunnel)
+}
+
 func (s *Server) handleAPIListClientTunnels(c *gin.Context) {
 	if s.tunnelManager == nil {
 		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "tunnel is not enabled"})

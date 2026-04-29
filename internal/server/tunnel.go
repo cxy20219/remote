@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sort"
 	"sync"
 	"time"
 
@@ -149,6 +150,9 @@ func (tm *TunnelManager) ListTunnels() []*Tunnel {
 	for _, t := range tm.tunnels {
 		tunnels = append(tunnels, t)
 	}
+	sort.Slice(tunnels, func(i, j int) bool {
+		return tunnels[i].CreatedAt.Before(tunnels[j].CreatedAt)
+	})
 	return tunnels
 }
 
@@ -162,6 +166,9 @@ func (tm *TunnelManager) ListTunnelsByClient(clientID string) []*Tunnel {
 			tunnels = append(tunnels, t)
 		}
 	}
+	sort.Slice(tunnels, func(i, j int) bool {
+		return tunnels[i].CreatedAt.Before(tunnels[j].CreatedAt)
+	})
 	return tunnels
 }
 
@@ -191,8 +198,48 @@ func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 	delete(tm.tunnels, tunnelID)
 
 	slog.Info("tunnel closed", "tunnel_id", tunnelID)
-
 	return nil
+}
+
+func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPort int, protocol string) (*Tunnel, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	tunnel, ok := tm.tunnels[tunnelID]
+	if !ok {
+		return nil, fmt.Errorf("tunnel not found: %s", tunnelID)
+	}
+
+	if tunnel.Status != "active" {
+		return nil, fmt.Errorf("tunnel is not active, current status: %s", tunnel.Status)
+	}
+
+	if localPort != tunnel.LocalPort || protocol != tunnel.Protocol {
+		payloadJSON, _ := json.Marshal(common.TunnelClosePayload{TunnelID: tunnelID})
+		tunnel.Client.WriteJSON(common.Message{
+			Type:    "tunnel_close",
+			Payload: payloadJSON,
+		})
+	}
+
+	tunnel.LocalAddr = localAddr
+	tunnel.LocalPort = localPort
+	tunnel.Protocol = protocol
+
+	openPayload := common.TunnelOpenPayload{
+		TunnelID:  tunnelID,
+		LocalAddr: localAddr,
+		LocalPort: localPort,
+		Protocol:  protocol,
+	}
+	payloadJSON, _ := json.Marshal(openPayload)
+	tunnel.Client.WriteJSON(common.Message{
+		Type:    "tunnel_open",
+		Payload: payloadJSON,
+	})
+
+	slog.Info("tunnel updated", "tunnel_id", tunnelID, "local_addr", localAddr, "local_port", localPort, "protocol", protocol)
+	return tunnel, nil
 }
 
 // closeTunnelConnections 关闭隧道的所有外部连接

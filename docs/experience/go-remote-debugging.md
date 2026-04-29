@@ -1,236 +1,349 @@
 # GoRemote 调试开发经验总结
 
-本文档记录在 GoRemote 项目调试和开发过程中总结的经验教训，避免重复踩坑。
+## 概述
 
-## 1. 二进制部署关键检查
+本文档记录 GoRemote SSH 隧道使用和开发调试过程中遇到的常见问题、解决方案和最佳实践。
 
-### 1.1 上传后务必验证文件大小
+## 1. TLS 证书配置
 
-**问题**：通过 `pscp` 上传二进制文件时，网络中断或超时可能导致文件不完整，但命令不报错。
+### 问题：Go 1.15+ 要求 SAN 而不是 Common Name
 
-**现象**：本地编译的 binary 和远程的 binary 大小不一致，导致运行旧版本。
-
-**排查方法**：
-```powershell
-# 本地检查大小
-Get-ChildItem bin/server | Select-Object Length
-
-# 远程检查大小
-plink ... "ls -la /root/goremote/server"
+**现象**：
+```
+x509: certificate relies on legacy Common Name field, use SANs instead
 ```
 
-**最佳实践**：
-- 上传后立即校验 MD5 或文件大小
-- 建议分两步：先 kill 旧进程，再上传新 binary，最后启动
+**原因**：
+Go 1.15+ 版本不再默认使用 Common Name 进行证书验证，要求使用 Subject Alternative Names (SANs)。
 
-### 1.2 Swagger Docs 嵌入在编译时
+**解决方案**：
+生成证书时必须包含 SAN：
 
-**问题**：更新了 `docs/docs.go` 后，Swagger UI 仍显示旧接口定义。
-
-**原因**：Swagger JSON 是通过 `swaggo/swag` 工具在**编译时生成**，直接修改源文件不会生效，必须重新编译。
-
-**解决**：
-```powershell
-# 1. 重新编译（docs.go 会被编译进二进制）
-$env:GOOS="linux"; $env:GOARCH="amd64"
-go build -o bin/server ./cmd/server
-
-# 2. 上传到服务器
-pscp -pwfile ... bin/server root@host:/path/to/server_new
-
-# 3. 重启服务（kill 旧进程，启动新进程）
-```
-
-## 2. PuTTY 工具链注意事项
-
-### 2.1 密码文件路径问题
-
-**问题**：PowerShell 中使用 `$env:TEMP` 构造密码文件路径时，路径可能包含特殊字符或空格导致 PuTTY 工具无法识别。
-
-**现象**：`plink: unable to open password file`
-
-**解决**：
-```powershell
-# 方法1：直接使用短路径
-$pass = "Ss123456!" | Out-File -Encoding ASCII "$env:TEMP\ssh_pass.txt"
-& "C:\Program Files\PuTTY\plink.exe" -pwfile "$env:TEMP\ssh_pass.txt" ...
-
-# 方法2：使用 -pw 直接传密码（适用于简单场景）
-& "C:\Program Files\PuTTY\plink.exe" -pw "Ss123456!" ...
-```
-
-### 2.2 plink 批处理模式使用 `-batch`
-
-**问题**：交互式确认 hostkey 时，脚本会挂起等待输入。
-
-**解决**：使用 `-batch` 参数禁用交互：
-```powershell
-plink -batch -pwfile "$env:TEMP\pass.txt" -P 22 user@host "command"
-```
-
-### 2.3 plink hostkey 预置格式
-
-**问题**：首次连接需要确认 hostkey，脚本环境下会失败。
-
-**解决**：使用 `-hostkey` 参数预置完整格式：
-```powershell
-plink -hostkey "ssh-ed25519 255 SHA256:6UuurwstZ8VAi7VciSrumObZP+GpNBMBGYgCuzeKQ2c" ...
-```
-
-格式必须是完整的 `ssh-ed25519 255 SHA256:xxx`，不能只传 fingerprint。
-
-## 3. 进程管理与服务重启
-
-### 3.1 优雅重启顺序
-
-**推荐顺序**：
-1. 上传新 binary 为 `server_new`
-2. kill 旧进程
-3. 替换 binary（mv server server_old; mv server_new server）
-4. chmod +x
-5. 启动新进程
-
-**避免**：先启动新进程再 kill 旧进程，可能导致端口冲突。
-
-### 3.2 kill 命令在远程执行
-
-**问题**：通过 plink 执行 `kill PID` 时，命令可能不会立即生效。
-
-**解决**：使用 `-9` 信号强制终止，并加延迟：
 ```bash
-kill -9 58093 2>/dev/null
-sleep 1
-ps aux | grep server | grep -v grep
+# 生成私钥
+openssl genrsa -out server.key 2048
+
+# 生成带 SAN 的证书（Go 1.15+ 要求）
+openssl req -new -x509 -key server.key -out server.crt -days 365 \
+  -subj "/CN=your-server.com" \
+  -addext "subjectAltName=DNS:your-server.com,IP:1.2.3.4"
 ```
 
-## 4. SSH 隧道与端口转发
+**经验**：
+- 生产环境建议使用 CA 机构签发的证书
+- 自签证书用于测试，但需包含正确的 SAN
+- SAN 覆盖域名和/或 IP，避免 CN 相关的历史限制
 
-### 4.1 plink 建立临时端口转发
+### 问题：TLS 握手失败，错误为 "certificate verify failed"
 
-**用途**：测试阶段临时建立端口转发访问内网服务。
+**原因**：
+客户端配置的 CA 路径不正确，或证书不包含正确的 SANs。
+
+**解决方案**：
+1. 确认服务端证书包含正确的 SAN
+2. 确认客户端 CA 文件指向服务端证书（server.crt）
+3. 检查证书是否过期：`openssl x509 -in server.crt -text -noout | grep "Not After"`
+
+## 2. PowerShell 转义问题
+
+### 问题：在 Windows PowerShell 中执行复杂命令时转义错误
+
+**现象**：
+```powershell
+plink -batch -pw "pass" -P 22 user@host "cat > /tmp/test.py << 'ENDPY' ... ENDPY"
+# 报错：ParserError、Unexpected token 等
+```
+
+**原因**：
+PowerShell 对引号、&、括号、heredoc 等特殊字符的处理与 bash 不同。
+
+**解决方案**：
+
+1. **使用 Python 脚本代替复杂 shell 命令**：
+```python
+# 创建一个 Python 脚本写文件
+cfg = '''yaml content here'''
+with open('/tmp/config.yaml', 'w') as f:
+    f.write(cfg)
+```
+
+2. **避免内联 heredoc**：
+```bash
+# 错误：plink ... "cat > file << 'EOF' ... EOF"
+# 正确：先写脚本，再上传执行
+```
+
+3. **& 后台运行在 PowerShell 中不支持**：
+```powershell
+# 错误：./agent.exe &  
+# 正确：Start-Process -FilePath "./agent.exe" -NoNewWindow
+```
+
+**经验**：
+- PowerShell 中复杂命令建议用 Python 脚本封装
+- 上传脚本到服务器执行，避免转义问题
+- 使用 `Start-Process` 代替 `&` 后台运行
+
+## 3. 配置文件优化
+
+### 问题：配置文件包含未使用的字段
+
+**现象**：
+配置文件中有 `file_transfer`、`server.tls.ca` 等字段，但功能已移除或未实现。
+
+**解决方案**：
+定期审查配置文件，删除未使用的字段：
+
+| 未使用字段 | 位置 | 原因 |
+|-----------|------|------|
+| `file_transfer.*` | server.yaml | 文件传输功能已移除 |
+| `server.tls.ca` | agent.yaml | Agent 端未实现 CA 验证 |
+| `reconnect.enabled` | agent-deploy.yaml | 配置结构中无此字段 |
+
+**经验**：
+- 配置字段应与代码实现保持同步
+- 使用默认值代替空字符串字段（如 `tls.cert/key` 在 disabled 时无需填写）
+- 部署配置应只包含与环境相关的字段，默认值可省略
+
+### 问题：配置修改后不生效
+
+**现象**：
+修改了 `config.yaml` 但服务端/客户端未加载新配置。
+
+**解决方案**：
+1. 确认加载的是正确的配置文件路径
+2. 重启服务使配置生效
+3. 检查配置是否有语法错误（YAML 缩进、引号等）
+
+## 4. 隧道列表排序
+
+### 问题：隧道列表刷新一次，顺序就变了
+
+**现象**：
+每次调用 `GET /api/tunnels` 返回的隧道顺序不同。
+
+**原因**：
+Go map 遍历顺序不确定，`ListTunnels()` 直接返回 map 中的值。
+
+**解决方案**：
+按 `CreatedAt` 字段排序：
+
+```go
+func (tm *TunnelManager) ListTunnels() []*Tunnel {
+    tm.mu.RLock()
+    defer tm.mu.RUnlock()
+    tunnels := make([]*Tunnel, 0, len(tm.tunnels))
+    for _, t := range tm.tunnels {
+        tunnels = append(tunnels, t)
+    }
+    sort.Slice(tunnels, func(i, j int) bool {
+        return tunnels[i].CreatedAt.Before(tunnels[j].CreatedAt)
+    })
+    return tunnels
+}
+```
+
+**经验**：
+- Go map 遍历顺序不确定，需要显式排序
+- 按时间排序是最直观的方式
+- 添加 `sort` 包到 import
+
+## 5. 端口修改逻辑
+
+### 问题：端口修改提交后不生效
+
+**现象**：
+前端修改隧道端口后提交，但隧道仍然转发到旧端口。
+
+**原因**：
+`UpdateTunnel()` 中错误地关闭了监听器，或监听器未重新启动。
+
+**解决方案**：
+当只修改 `localPort/protocol` 时（publicPort 不变），不应关闭服务器端的监听器：
+
+```go
+func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPort int, protocol string) (*Tunnel, error) {
+    tm.mu.Lock()
+    defer tm.mu.Unlock()
+    
+    tunnel, ok := tm.tunnels[tunnelID]
+    if !ok {
+        return nil, fmt.Errorf("tunnel not found: %s", tunnelID)
+    }
+    
+    // 只发送 tunnel_open 给 agent，不关闭监听器
+    if localPort != tunnel.LocalPort || protocol != tunnel.Protocol {
+        payloadJSON, _ := json.Marshal(common.TunnelOpenPayload{
+            TunnelID:  tunnelID,
+            LocalAddr: tunnel.LocalAddr,
+            LocalPort: localPort,  // 新端口
+            Protocol:  protocol,
+        })
+        tunnel.Client.WriteJSON(common.Message{
+            Type:    "tunnel_open",
+            Payload: payloadJSON,
+        })
+    }
+    
+    tunnel.LocalAddr = localAddr
+    tunnel.LocalPort = localPort
+    tunnel.Protocol = protocol
+    
+    return tunnel, nil
+}
+```
+
+**经验**：
+- 修改隧道配置时，区分哪些需要重启监听器，哪些不需要
+- publicPort 变化才需要重启监听器，localPort 变化只需通知 agent
+- 避免在 Update 中引入不必要的状态变更
+
+## 6. Agent 未运行排查
+
+### 问题：隧道创建成功但访问无响应
+
+**现象**：
+隧道创建成功，但 `curl http://public:port/` 无响应或超时。
+
+**原因**：
+内网服务器上没有运行 agent，或 agent 连接已断开。
+
+**排查步骤**：
+
+1. **检查服务端客户端列表**：
+```bash
+curl http://localhost:8080/api/clients
+# 确认 client 状态为 "online"
+```
+
+2. **检查 agent 进程**：
+```bash
+# 在内部服务器上
+ps aux | grep agent | grep -v grep
+```
+
+3. **检查 agent 日志**：
+```bash
+# agent 日志（若配置了 file）
+cat /path/to/agent.log
+
+# 或查看 agent 输出
+ps aux | grep agent  # 查看命令行的 --config 参数
+```
+
+4. **重启 agent**：
+```bash
+cd /path/to/agent && ./agent --config config/agent.yaml &
+```
+
+**经验**：
+- 隧道工作依赖 agent 正常运行
+- 服务端显示 "online" 不代表 agent 一定正常工作（可能有延迟）
+- 确保 agent 的 `server.address` 指向正确的公网服务器地址
+
+## 7. 交叉编译
+
+### 问题：在 Windows 上编译 Linux 二进制
+
+**现象**：
+Windows 上 `go build` 生成的是 Windows .exe，无法直接上传到 Linux 服务器运行。
+
+**解决方案**：
+使用 `GOOS` 和 `GOARCH` 环境变量：
 
 ```powershell
-# 转发本地 13306 -> 内网 22
-plink -hostkey "ssh-ed25519 255 SHA256:xxx" -pwfile "$env:TEMP\pass.txt" `
-  -P 10001 -L 13306:localhost:22 lvcheng@YOUR_SERVER `
-  "echo 'Tunnel active'; sleep 5"
-```
-
-### 4.2 SSH 隧道用户身份
-
-**关键点**：SSH 隧道的认证用户是**内网目标服务器的用户**，不是公网服务端用户。
-
-**示例**：
-```
-ssh lvcheng@YOUR_SERVER -p 10001
-# 实际认证到 192.168.66.42 的 lvcheng 用户
-```
-
-### 4.3 SCP 通过隧道传输文件
-
-**上传到内网**：
-```powershell
-# 通过端口转发上传
-plink -hostkey ... -pwfile ... -P 10001 lvcheng@YOUR_SERVER `
-  "cat > /home/lvcheng/test_remote.txt" < local_file.txt
-
-# 或用 pscp 指定端口
-pscp -P 10001 -hostkey ... -pwfile ... local_file.txt lvcheng@YOUR_SERVER:/path/
-```
-
-**从内网下载**：
-```powershell
-pscp -P 10001 -hostkey ... -pwfile ... lvcheng@YOUR_SERVER:/path/remote_file.txt .
-```
-
-## 5. API 调试技巧
-
-### 5.1 PowerShell 中 JSON 处理
-
-**问题**：直接用字符串拼接 JSON 可能转义问题。
-
-**推荐方法**：
-```powershell
-$body = @{
-    client_id = "client-xxx"
-    local_port = 22
-    protocol = "tcp"
-} | ConvertTo-Json
-
-Invoke-RestMethod -Uri 'http://YOUR_SERVER:8080/api/tunnels' `
-  -Method Post -ContentType 'application/json' -Body $body
-```
-
-### 5.2 curl.exe vs curl 别名
-
-**问题**：PowerShell 中 `curl` 是 `Invoke-WebRequest` 别名。
-
-**解决**：使用 `curl.exe` 调用真正的 curl，或直接用 `Invoke-RestMethod`。
-
-### 5.3 API 响应验证
-
-**快速验证命令**：
-```powershell
-# 健康检查
-curl.exe -s http://YOUR_SERVER:8080/health
-
-# 获取客户端列表
-curl.exe -s http://YOUR_SERVER:8080/api/clients
-
-# 创建隧道
-$body = @{"client_id"="xxx";"local_port"=22;"protocol"="tcp"} | ConvertTo-Json
-curl.exe -s -X POST -H "Content-Type: application/json" `
-  -d $body http://YOUR_SERVER:8080/api/tunnels
-```
-
-## 6. 环境差异处理
-
-### 6.1 Windows/Linux 命令差异
-
-| 场景 | Windows | Linux |
-|------|---------|-------|
-| 列表目录 | `dir` 或 `Get-ChildItem` | `ls` |
-| 延迟 | `Start-Sleep -Seconds 1` | `sleep 1` |
-| 文件权限 | N/A | `chmod +x` |
-| 进程查看 | `Get-Process` | `ps aux` |
-| 网络连接 | `netstat -an` | `netstat -tlnp` |
-
-### 6.2 Go 交叉编译
-
-**Windows → Linux**：
-```powershell
+# Linux 64位
 $env:GOOS="linux"
 $env:GOARCH="amd64"
 go build -o bin/server ./cmd/server
+go build -o bin/agent ./cmd/agent
+
+# 验证生成的是 Linux 二进制
+file bin/server
+# 输出：ELF 64-bit LSB executable, x86-64 ...
 ```
 
-**注意**：
-- PowerShell 中 `&&` 不支持，使用 `;` 分隔命令
-- 编译产物无执行权限，部署后需 `chmod +x`
+**经验**：
+- Windows 编译 Linux 二进制需要设置 `GOOS=linux`
+- 生成后验证文件类型（`file` 命令）
+- 上传到服务器后需要 `chmod +x` 赋予执行权限
 
-## 7. 常见坑点速查
+## 8. 证书分发
 
-| 症状 | 可能原因 | 解决 |
-|------|----------|------|
-| Swagger 显示旧 API | 未重新编译 | 重新 `go build` 并部署 |
-| Binary 大小不匹配 | 上传不完整 | 校验 MD5/文件大小 |
-| `pscp` 上传慢 | 网络波动 | 重试或分片上传 |
-| `plink` 挂起 | hostkey 交互确认 | 加 `-batch` 参数 |
-| 密码文件找不到 | 路径含特殊字符 | 使用短路径或 `-pw` |
-| 端口已占用 | 旧进程未关闭 | `kill -9 PID` |
-| 隧道创建失败 | Agent 离线 | 检查 agent 状态 |
-| SSH 认证失败 | 用户名/密码错误 | 确认内网 SSH 凭据 |
+### 问题：客户端无法验证服务器证书
 
-## 8. 调试检查清单
+**现象**：
+```
+tls: failed to verify certificate: x509: certificate relies on legacy Common Name field
+```
 
-当部署或连接问题时，按顺序检查：
+**解决方案**：
 
-- [ ] 本地 binary 大小 = 远程 binary 大小
-- [ ] 新 binary 已设置执行权限 (`chmod +x`)
-- [ ] 旧进程已 kill（`ps aux | grep server`）
-- [ ] 新进程已启动（检查 PID）
-- [ ] 服务端日志无 ERROR（`cat server.log`）
-- [ ] `curl http://host:8080/health` 返回正常
-- [ ] `GET /api/clients` 显示 agent 在线
-- [ ] 隧道创建成功（`POST /api/tunnels`）
-- [ ] SSH 通过公网端口能连接内网（`ssh user@host -p PORT`）
+1. **服务端生成证书（带 SAN）**：
+```bash
+openssl req -new -x509 -key server.key -out server.crt -days 365 \
+  -subj "/CN=YOUR_SERVER" \
+  -addext "subjectAltName=IP:YOUR_SERVER"
+```
+
+2. **分发证书到客户端**：
+```powershell
+# 从服务器下载证书
+pscp -P 22 root@YOUR_SERVER:/path/to/server.crt .\config\
+```
+
+3. **客户端配置 CA**：
+```yaml
+server:
+  address: "YOUR_SERVER:8080"
+  tls:
+    enabled: true
+    ca: "config/server.crt"  # 指向服务器证书
+```
+
+**经验**：
+- 自签证书可以作为 CA 用于验证（在生产环境应使用受信任 CA）
+- 证书应放在客户端可访问的路径
+- `ca` 字段为空时，客户端不验证服务器证书（不推荐）
+
+## 9. Windows 路径问题
+
+### 问题：配置中的路径在 Windows 和 Linux 上不兼容
+
+**现象**：
+Windows 配置文件中的路径 `C:/work/go-remote/uploads` 在 Linux 上无效。
+
+**解决方案**：
+- 开发配置使用当前系统格式
+- 部署配置使用目标系统格式
+- 或使用相对路径
+
+**经验**：
+- Windows 路径用 `C:\path\to\file` 或 `C:/path/to/file`
+- Linux 路径用 `/path/to/file`
+- 配置文件中路径应针对目标系统调整
+
+## 10. 快速问题排查清单
+
+### 隧道不通时检查清单
+
+- [ ] 服务端是否运行：`ps aux | grep server`
+- [ ] 服务端监听端口：`ss -tlnp | grep 8080`
+- [ ] Agent 是否运行：`ps aux | grep agent`（内部服务器）
+- [ ] Agent 是否注册：`curl http://localhost:8080/api/clients`
+- [ ] 隧道是否存在：`curl http://localhost:8080/api/tunnels`
+- [ ] 内网服务是否运行：`curl http://localhost:local_port/`（内部服务器）
+- [ ] TLS 证书是否有效：`openssl x509 -in server.crt -text -noout`
+- [ ] 防火墙是否放行：`iptables -L -n | grep port`
+
+### TLS 相关
+
+- [ ] 证书是否包含 SAN：`openssl x509 -in server.crt -text | grep -A1 "Subject Alternative Name"`
+- [ ] 客户端 CA 路径是否正确
+- [ ] 服务端证书和私钥是否匹配：`openssl x509 -in server.crt -noout -modulus` 对比 `openssl rsa -in server.key -noout -modulus`
+
+## 相关文档
+
+- [SSH 隧道直通内网服务流程](../workflow/ssh-tunnel-direct-access.md) - SSH 隧道从公网访问内网服务的完整流程
+- [服务端设计文档](../server-design.md) - GoRemote 服务端架构
+- [客户端设计文档](../agent-design.md) - GoRemote Agent 架构

@@ -9,18 +9,11 @@ import (
 
 // Config holds server configuration
 type Config struct {
-	Server       ServerConfig       `yaml:"server"`
-	Auth         AuthConfig         `yaml:"auth"`
-	Heartbeat    HeartbeatConfig    `yaml:"heartbeat"`
-	Log          LogConfig          `yaml:"log"`
-	FileTransfer FileTransferConfig `yaml:"file_transfer"`
-	Tunnel       TunnelConfig       `yaml:"tunnel"`
-}
-
-// FileTransferConfig holds file transfer default paths
-type FileTransferConfig struct {
-	UploadPath   string `yaml:"upload_path"`   // default path for uploads (server sends to client)
-	DownloadPath string `yaml:"download_path"` // default path for downloads (server receives from client)
+	Server    ServerConfig    `yaml:"server"`
+	Auth      AuthConfig      `yaml:"auth"`
+	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
+	Log       LogConfig       `yaml:"log"`
+	Tunnel    TunnelConfig    `yaml:"tunnel"`
 }
 
 // TunnelConfig holds tunnel configuration
@@ -92,12 +85,6 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Log.Level == "" {
 		config.Log.Level = "info"
 	}
-	if config.FileTransfer.UploadPath == "" {
-		config.FileTransfer.UploadPath = "./uploads"
-	}
-	if config.FileTransfer.DownloadPath == "" {
-		config.FileTransfer.DownloadPath = "./downloads"
-	}
 
 	// Tunnel defaults
 	if config.Tunnel.PortRangeStart == 0 {
@@ -112,6 +99,7 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Tunnel.DefaultLocalAddr == "" {
 		config.Tunnel.DefaultLocalAddr = "127.0.0.1"
 	}
+	// NOTE: Tunnel.Enabled 默认 false，用户显式开启
 
 	return &config, nil
 }
