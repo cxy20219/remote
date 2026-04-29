@@ -1,5 +1,5 @@
 server:
-  address: "YOUR_SERVER:8080"
+  address: "your-server:8080"
   tls:
     enabled: true
     ca: "config/server.crt"

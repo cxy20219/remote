@@ -19,7 +19,7 @@ log:
 
 tunnel:
   enabled: true
-  public_host: "YOUR_SERVER"
+  public_host: "your-public-host"
   port_range_start: 10000
   port_range_end: 20000
   max_tunnels_per_client: 10
