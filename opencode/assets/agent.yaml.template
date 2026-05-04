@@ -1,0 +1,19 @@
+server:
+  address: "{{SERVER_ADDRESS}}"
+
+auth:
+  key: "{{AUTH_KEY}}"
+
+agent:
+  hostname: "{{AGENT_HOSTNAME}}"
+  os: "{{AGENT_OS}}"
+
+heartbeat:
+  interval: 30
+
+reconnect:
+  interval: 5
+  max_interval: 60
+
+log:
+  level: "info"

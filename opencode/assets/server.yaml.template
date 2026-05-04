@@ -1,0 +1,28 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  tls:
+    enabled: false
+
+auth:
+  key: "test-secret-key"
+
+admin:
+  password: "admin123"
+
+heartbeat:
+  interval: 30
+  timeout: 90
+
+log:
+  level: "info"
+
+tunnel:
+  enabled: true
+  public_host: "{{PUBLIC_HOST}}"
+  port_range_start: 10000
+  port_range_end: 20000
+  max_tunnels_per_client: 10
+
+swagger:
+  enabled: true
