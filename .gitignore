@@ -2,4 +2,4 @@
 *.exe
 bin/
 dy
-test-web/
+test-web/release/
