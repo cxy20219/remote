@@ -3,3 +3,5 @@
 bin/
 dy
 test-web/release/
+*.crt
+*.key
