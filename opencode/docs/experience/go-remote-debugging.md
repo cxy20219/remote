@@ -35,7 +35,7 @@ openssl req -new -x509 -key server.key -out server.crt -days 365 \
 
 ```powershell
 # 从服务器下载证书到本地
-pscp -P 22 root@YOUR_SERVER:/path/to/server.crt .\config\
+pscp -P 22 root@YOUR-SERVER:/path/to/server.crt .\config\
 ```
 
 ### TLS 排查清单

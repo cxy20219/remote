@@ -17,9 +17,9 @@
 
 | 组件 | 地址 | 角色 |
 |------|------|------|
-| Server | YOUR_SERVER:8080 | 公网服务端 |
-| Agent | 192.168.66.42 | 内网客户端 |
-| 内网 SSH | 192.168.66.42:22 | 目标服务 |
+| Server | your-server-ip:8080 | 公网服务端 |
+| Agent | internal-server | 内网客户端 |
+| 内网 SSH | internal-server:22 | 目标服务 |
 
 ### 2.2 配置参数
 
@@ -63,8 +63,8 @@
 | **测试目的** | 验证可以通过 API 创建端口映射隧道 |
 | **前置条件** | Agent 已注册，在线 |
 | **输入** | `POST /api/tunnels` 请求体：`{"client_id":"client-xxx","local_port":22,"protocol":"tcp"}` |
-| **预期输出** | `{"tunnel_id":"xxx","public_port":10001,"public_addr":"YOUR_SERVER:10001","local_addr":"127.0.0.1","status":"active"}` |
-| **实际输出** | `{"tunnel_id":"18aa3faa318b7fa4-7ddb-4000-8000-18aa3faa318b80c4","public_port":10000,"public_addr":"YOUR_SERVER:10000","local_addr":"127.0.0.1","status":"active"}` |
+| **预期输出** | `{"tunnel_id":"xxx","public_port":10001,"public_addr":"your-server-ip:10001","local_addr":"127.0.0.1","status":"active"}` |
+| **实际输出** | `{"tunnel_id":"18aa3faa318b7fa4-7ddb-4000-8000-18aa3faa318b80c4","public_port":10000,"public_addr":"your-server-ip:10000","local_addr":"127.0.0.1","status":"active"}` |
 | **测试结果** | ✅ 通过 |
 
 #### TC-003：SSH 连接通过隧道
@@ -75,9 +75,9 @@
 | **用例名称** | SSH 连接通过隧道 |
 | **测试目的** | 验证外部可以通过隧道连接内网 SSH |
 | **前置条件** | 隧道已创建，公网端口 10000 |
-| **输入** | `ssh lvcheng@YOUR_SERVER -p 10000` |
-| **预期输出** | 成功连接到内网服务器，执行 `whoami` 返回 `lvcheng` |
-| **实际输出** | `lvcheng` |
+| **输入** | `ssh your-user@your-server-ip -p 10000` |
+| **预期输出** | 成功连接到内网服务器，执行 `whoami` 返回 `your-user` |
+| **实际输出** | `your-user` |
 | **测试结果** | ✅ 通过 |
 
 #### TC-004：隧道数据双向传输
@@ -90,7 +90,7 @@
 | **前置条件** | SSH 隧道已建立 |
 | **输入** | 通过 SSH 会话执行多个命令：`echo test && pwd && hostname` |
 | **预期输出** | 每个命令正确返回结果 |
-| **实际输出** | `test /home/lvcheng ai-test` |
+| **实际输出** | `test /home/your-user ai-test` |
 | **测试结果** | ✅ 通过 |
 
 #### TC-005：删除隧道

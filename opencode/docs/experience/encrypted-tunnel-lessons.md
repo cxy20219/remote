@@ -121,7 +121,7 @@ curl.exe -k -b cookies.txt url                          # 后续请求携带 coo
 ```
 WARNING - POTENTIAL SECURITY BREACH!
 The host key does not match the one Plink has cached for this server:
-  YOUR_SERVER (port 10000)
+  your-server-ip (port 10000)
 Connection abandoned.
 ```
 
@@ -158,7 +158,7 @@ where.exe python
 **解决**：
 - 启动简单 HTTP 测试服务时，使用 Go 或已有服务代替 Python
 - 如确实需要 Python：安装完整版 Python 并确保其 PATH 优先级高于 WindowsApps
-- 隧道测试可直接利用已有服务（如 YOUR_SERVER:22 SSH），无需额外启动服务
+- 隧道测试可直接利用已有服务（如 your-server-ip:22 SSH），无需额外启动服务
 
 **经验**：
 - `where.exe python` 可以识别 stub

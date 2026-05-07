@@ -7,7 +7,7 @@
 ## 整体架构
 
 ```
-公网客户端  →  公网服务器 (YOUR_SERVER:10000)  →  SSH 隧道  →  内网服务器 (192.168.66.42)
+公网客户端  →  公网服务器 (your-server-ip:10000)  →  SSH 隧道  →  内网服务器 (internal-server)
                                                               ↓
                                                     内网服务 (如 7777 端口)
 ```
@@ -25,7 +25,7 @@
 通过公网服务器 API 查看已连接的客户端：
 
 ```bash
-curl http://YOUR_SERVER:8080/api/clients
+curl http://your-server-ip:8080/api/clients
 ```
 
 返回示例：
@@ -39,14 +39,14 @@ curl http://YOUR_SERVER:8080/api/clients
 
 ```bash
 # 创建隧道 - 内网 7777 端口映射到公网
-curl -X POST http://YOUR_SERVER:8080/api/tunnels \
+curl -X POST http://your-server-ip:8080/api/tunnels \
   -H 'Content-Type: application/json' \
   -d '{"client_id":"<client_id>","local_port":7777,"protocol":"tcp"}'
 ```
 
 返回示例：
 ```json
-{"local_addr":"127.0.0.1","public_addr":"YOUR_SERVER:10005","public_port":10005,"status":"active","tunnel_id":"18aa8af9cb10381e-c150-4000-8000-18aa8af9cb1038be"}
+{"local_addr":"127.0.0.1","public_addr":"your-server-ip:10005","public_port":10005,"status":"active","tunnel_id":"18aa8af9cb10381e-c150-4000-8000-18aa8af9cb1038be"}
 ```
 
 ### 3. 验证隧道端口已监听
@@ -69,13 +69,13 @@ tcp6  0  0  :::10005  :::*  LISTEN  server
 使用内网账号密码，通过公网的隧道端口 SSH 到内网服务器：
 
 ```bash
-plink.exe -batch -pw "<password>" -P 10000 lvcheng@YOUR_SERVER "hostname"
+plink.exe -batch -pw "<password>" -P 10000 your-user@your-server-ip "hostname"
 ```
 
 参数说明：
 - `-P 10000`: 公网隧道端口（对应内网 22 端口）
-- `lvcheng`: 内网 SSH 用户名
-- `YOUR_SERVER`: 公网服务器 IP
+- `your-user`: 内网 SSH 用户名
+- `your-server-ip`: 公网服务器 IP
 
 ### 在内网服务器部署服务
 
@@ -120,20 +120,20 @@ curl -s http://localhost:7777/
 
 ```bash
 # 直接访问
-curl http://YOUR_SERVER:10005/
+curl http://your-server-ip:10005/
 
 # 或在浏览器打开
-http://YOUR_SERVER:10005/
+http://your-server-ip:10005/
 ```
 
 ### 通过 SSH 隧道执行远程命令
 
 ```bash
 # 查看内网服务进程
-plink.exe -batch -pw "<password>" -P 10000 lvcheng@YOUR_SERVER "ps aux | grep python"
+plink.exe -batch -pw "<password>" -P 10000 your-user@your-server-ip "ps aux | grep python"
 
 # 查看端口监听
-plink.exe -batch -pw "<password>" -P 10000 lvcheng@YOUR_SERVER "ss -tlnp | grep 7777"
+plink.exe -batch -pw "<password>" -P 10000 your-user@your-server-ip "ss -tlnp | grep 7777"
 ```
 
 ## 隧道管理 API
@@ -141,19 +141,19 @@ plink.exe -batch -pw "<password>" -P 10000 lvcheng@YOUR_SERVER "ss -tlnp | grep 
 ### 查看所有隧道
 
 ```bash
-curl http://YOUR_SERVER:8080/api/tunnels
+curl http://your-server-ip:8080/api/tunnels
 ```
 
 ### 删除隧道
 
 ```bash
-curl -X DELETE http://YOUR_SERVER:8080/api/tunnels/<tunnel_id>
+curl -X DELETE http://your-server-ip:8080/api/tunnels/<tunnel_id>
 ```
 
 ### 更新隧道（修改内网目标端口）
 
 ```bash
-curl -X PUT http://YOUR_SERVER:8080/api/tunnels/<tunnel_id> \
+curl -X PUT http://your-server-ip:8080/api/tunnels/<tunnel_id> \
   -H 'Content-Type: application/json' \
   -d '{"local_port":8888,"protocol":"tcp"}'
 ```
@@ -184,19 +184,19 @@ curl -X PUT http://YOUR_SERVER:8080/api/tunnels/<tunnel_id> \
 
 **步骤 1**: 获取客户端 ID
 ```bash
-curl -s http://YOUR_SERVER:8080/api/clients
+curl -s http://your-server-ip:8080/api/clients
 ```
 
 **步骤 2**: 创建隧道（内网 7777 → 公网 10005）
 ```bash
-curl -X POST http://YOUR_SERVER:8080/api/tunnels \
+curl -X POST http://your-server-ip:8080/api/tunnels \
   -H 'Content-Type: application/json' \
   -d '{"client_id":"client-18aa891d1553d80e-b950-4000-8000-18aa891d1553d948","local_port":7777,"protocol":"tcp"}'
 ```
 
 **步骤 3**: SSH 到内网服务器（通过隧道）
 ```bash
-plink.exe -batch -pw "Ss123456!" -P 10000 lvcheng@YOUR_SERVER "echo connected"
+plink.exe -batch -pw "your-password" -P 10000 your-user@your-server-ip "echo connected"
 ```
 
 **步骤 4**: 在内网服务器启动 Web 服务
@@ -222,7 +222,7 @@ python3 /tmp/srv.py &
 curl http://localhost:7777/
 
 # 公网访问内网服务
-curl http://YOUR_SERVER:10005/
+curl http://your-server-ip:10005/
 ```
 
 ## 注意事项

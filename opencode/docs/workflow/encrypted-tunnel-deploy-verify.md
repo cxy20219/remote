@@ -41,7 +41,7 @@ go build -ldflags "-s -w" -o opencode/assets/bin/agent-windows-amd64.exe ./cmd/a
 部署前必须确认磁盘有可用空间，否则 pscp 上传会静默失败（只写入 0 字节）。
 
 ```powershell
-plink -batch -pw "PASSWORD" root@YOUR_SERVER "df -h /root"
+plink -batch -pw "PASSWORD" root@YOUR_SERVER_IP "df -h /root"
 ```
 
 **常见问题**：磁盘满导致上传失败。
