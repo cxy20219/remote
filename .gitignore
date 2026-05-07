@@ -2,6 +2,7 @@
 *.exe
 bin/
 dy
-test-web/release/
+test-web/
+release/
 *.crt
 *.key
