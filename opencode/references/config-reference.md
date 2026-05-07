@@ -24,6 +24,14 @@
 |------|------|--------|------|
 | `password` | string | `admin123` | Web 管理界面登录密码 |
 
+### security
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `allowed_origins` | []string | `[]` | WebSocket Origin 白名单（空=允许所有，生产建议配置） |
+| `login_rate_limit` | int | `5` | 每分钟每 IP 最大登录尝试次数（0=禁用） |
+| `max_body_size_mb` | int | `10` | HTTP 请求体最大大小（MB，0=无限制） |
+
 ### heartbeat
 
 | 字段 | 类型 | 默认值 | 说明 |

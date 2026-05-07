@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -203,9 +202,13 @@ func (h *Handler) handleTunnelData(client *Client, msg *common.Message) error {
 		return fmt.Errorf("tunnel not found or not owned by client")
 	}
 
-	data, err := base64.StdEncoding.DecodeString(payload.Data)
+	if h.server.crypto == nil {
+		return fmt.Errorf("encryption not available")
+	}
+
+	data, err := h.server.crypto.Decrypt(payload.Data)
 	if err != nil {
-		return err
+		return fmt.Errorf("decrypt failed: %w", err)
 	}
 
 	return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, data, payload.IsEOF)

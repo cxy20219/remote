@@ -10,6 +10,12 @@ auth:
 admin:
   password: "admin123"
 
+security:
+  allowed_origins:
+    - "{{PUBLIC_HOST}}"
+  login_rate_limit: 5
+  max_body_size_mb: 10
+
 heartbeat:
   interval: 30
   timeout: 90

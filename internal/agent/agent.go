@@ -16,6 +16,7 @@ type Agent struct {
 	handler       *Handler
 	reconnect     *Reconnect
 	tunnelManager *TunnelManager
+	crypto        *common.CryptoContext
 	hostname      string
 	os            string
 	clientID      string
@@ -57,6 +58,18 @@ func NewAgent(config *Config) *Agent {
 	}
 
 	agent.tunnelManager.agent = agent
+
+	if config.Auth.Key != "" {
+		crypto, err := common.NewCryptoContext(config.Auth.Key)
+		if err != nil {
+			slog.Error("failed to initialize encryption", "error", err)
+		} else {
+			agent.crypto = crypto
+			slog.Info("tunnel data encryption enabled (AES-256-GCM)")
+		}
+	} else {
+		slog.Warn("auth.key is empty, tunnel data encryption disabled")
+	}
 
 	agent.handler = NewHandler(agent)
 

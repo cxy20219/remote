@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -126,9 +125,13 @@ func (h *Handler) handleTunnelData(msg *common.Message) error {
 		return err
 	}
 
-	data, err := base64.StdEncoding.DecodeString(payload.Data)
+	if h.agent.crypto == nil {
+		return fmt.Errorf("encryption not available")
+	}
+
+	data, err := h.agent.crypto.Decrypt(payload.Data)
 	if err != nil {
-		return err
+		return fmt.Errorf("decrypt failed: %w", err)
 	}
 
 	conn, err := h.agent.tunnelManager.GetOrCreateLocalConn(payload.ConnID, payload.TunnelID)

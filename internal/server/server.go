@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,10 +29,12 @@ type Server struct {
 
 	config *Config
 
-	clients        *ClientManager
-	handler        *Handler
-	tunnelManager  *TunnelManager
-	adminAuth      *AdminAuth
+	clients       *ClientManager
+	handler       *Handler
+	tunnelManager *TunnelManager
+	adminAuth     *AdminAuth
+	crypto        *common.CryptoContext
+	loginLimiter  *RateLimiter
 
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
@@ -59,15 +63,27 @@ func NewServer(config *Config) *Server {
 	s.handler = NewHandler(s)
 	s.adminAuth = NewAdminAuth(config.Admin.Password)
 
+	if config.Auth.Key != "" {
+		crypto, err := common.NewCryptoContext(config.Auth.Key)
+		if err != nil {
+			slog.Error("failed to initialize encryption", "error", err)
+		} else {
+			s.crypto = crypto
+			slog.Info("tunnel data encryption enabled (AES-256-GCM)")
+		}
+	} else {
+		slog.Warn("auth.key is empty, tunnel data encryption disabled")
+	}
+
+	s.loginLimiter = NewRateLimiter(config.Security.LoginRateLimit, time.Minute)
+
 	// Initialize tunnel manager
 	if config.Tunnel.Enabled {
 		s.tunnelManager = NewTunnelManager(s, config.Tunnel.PortRangeStart, config.Tunnel.PortRangeEnd)
 	}
 
 	s.upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true // Allow all origins for now
-		},
+		CheckOrigin: s.buildOriginChecker(config.Security.AllowedOrigins),
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 	}
@@ -83,11 +99,18 @@ func (s *Server) Start() error {
 	gin.SetMode(gin.ReleaseMode)
 	s.engine = gin.New()
 	s.engine.Use(gin.Recovery())
+	s.engine.Use(SecurityHeadersMiddleware())
+
+	// Apply body size limit if configured
+	if s.config.Security.MaxBodySizeMB > 0 {
+		maxBytes := int64(s.config.Security.MaxBodySizeMB) * 1024 * 1024
+		s.engine.Use(BodySizeLimitMiddleware(maxBytes))
+	}
 
 	// Public routes (no auth required)
 	s.engine.GET("/ws", s.handleConn)
 	s.engine.GET("/health", s.handleHealth)
-	s.engine.POST("/api/login", s.handleLogin)
+	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter), s.handleLogin)
 	s.engine.POST("/api/logout", s.handleLogout)
 	s.engine.GET("/api/check-auth", s.handleCheckAuth)
 	s.engine.StaticFile("/login.html", "./static/login.html")
@@ -280,6 +303,42 @@ func (s *Server) checkClientsTimeout(timeout time.Duration) {
 // GetClients returns all connected clients
 func (s *Server) GetClients() []*Client {
 	return s.clients.List()
+}
+
+// buildOriginChecker returns a CheckOrigin function that validates against configured allowed origins.
+// If Origin header is empty (non-browser client), the request is allowed.
+// If allowedOrigins is empty, all origins are allowed with a warning log.
+func (s *Server) buildOriginChecker(allowedOrigins []string) func(r *http.Request) bool {
+	if len(allowedOrigins) == 0 {
+		slog.Warn("no allowed_origins configured, WebSocket origin check is disabled")
+		return func(r *http.Request) bool { return true }
+	}
+
+	originSet := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		originSet[strings.ToLower(o)] = true
+	}
+
+	return func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true
+		}
+
+		u, err := url.Parse(origin)
+		if err != nil {
+			slog.Warn("invalid Origin header", "origin", origin, "error", err)
+			return false
+		}
+
+		hostname := strings.ToLower(u.Hostname())
+		if originSet[hostname] {
+			return true
+		}
+
+		slog.Warn("WebSocket origin denied", "origin", origin, "hostname", hostname)
+		return false
+	}
 }
 
 func generateUUID() string {

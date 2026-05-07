@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -358,11 +357,17 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 	for {
 		n, err := extConn.Read(buf)
 		if n > 0 {
-			data := base64.StdEncoding.EncodeToString(buf[:n])
+			encoded, encErr := tm.server.crypto.Encrypt(buf[:n])
+			if encErr != nil {
+				slog.Error("failed to encrypt tunnel data",
+					"conn_id", connID,
+					"error", encErr)
+				return
+			}
 			payload := common.TunnelDataPayload{
 				TunnelID: tunnel.TunnelID,
 				ConnID:   connID,
-				Data:     data,
+				Data:     encoded,
 				IsEOF:    false,
 			}
 			payloadJSON, _ := json.Marshal(payload)
@@ -410,10 +415,19 @@ func (tm *TunnelManager) SendToClient(tunnelID, connID string, data []byte, isEO
 		return fmt.Errorf("tunnel or client not found: %s", tunnelID)
 	}
 
+	if tm.server.crypto == nil {
+		return fmt.Errorf("encryption not available")
+	}
+
+	encoded, err := tm.server.crypto.Encrypt(data)
+	if err != nil {
+		return fmt.Errorf("encrypt failed: %w", err)
+	}
+
 	payload := common.TunnelDataPayload{
 		TunnelID: tunnelID,
 		ConnID:   connID,
-		Data:     base64.StdEncoding.EncodeToString(data),
+		Data:     encoded,
 		IsEOF:    isEOF,
 	}
 	payloadJSON, _ := json.Marshal(payload)

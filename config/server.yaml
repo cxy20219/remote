@@ -10,6 +10,14 @@ auth:
 admin:
   password: "admin123"
 
+security:
+  # WebSocket origin whitelist (empty = allow all)
+  allowed_origins: []
+  # Max login attempts per minute per IP
+  login_rate_limit: 5
+  # Max HTTP request body size in MB
+  max_body_size_mb: 10
+
 heartbeat:
   interval: 30
   timeout: 90

@@ -12,6 +12,7 @@ type Config struct {
 	Server    ServerConfig    `yaml:"server"`
 	Auth      AuthConfig      `yaml:"auth"`
 	Admin     AdminConfig     `yaml:"admin"`
+	Security  SecurityConfig  `yaml:"security"`
 	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
 	Log       LogConfig       `yaml:"log"`
 	Tunnel    TunnelConfig    `yaml:"tunnel"`
@@ -57,6 +58,13 @@ type AdminConfig struct {
 	Password string `yaml:"password"`
 }
 
+// SecurityConfig holds security-related configuration
+type SecurityConfig struct {
+	AllowedOrigins []string `yaml:"allowed_origins"` // WebSocket origin whitelist (empty = allow all)
+	LoginRateLimit int      `yaml:"login_rate_limit"` // max login attempts per minute per IP (0 to disable, default 5)
+	MaxBodySizeMB  int      `yaml:"max_body_size_mb"` // max HTTP request body size in MB (0 for no limit)
+}
+
 // HeartbeatConfig holds heartbeat configuration
 type HeartbeatConfig struct {
 	Interval int `yaml:"interval"` // heartbeat check interval in seconds
@@ -93,6 +101,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Admin.Password == "" {
 		config.Admin.Password = "admin123"
+	}
+	if config.Security.LoginRateLimit == 0 {
+		config.Security.LoginRateLimit = 5
 	}
 	if config.Heartbeat.Timeout == 0 {
 		config.Heartbeat.Timeout = 90

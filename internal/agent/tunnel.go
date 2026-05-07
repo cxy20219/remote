@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -210,24 +209,38 @@ func (tm *TunnelManager) HandleLocalResponse(connID, tunnelID string, data []byt
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
 
+	if tm.agent.crypto == nil {
+		return fmt.Errorf("encryption not available")
+	}
+
+	encoded, err := tm.agent.crypto.Encrypt(data)
+	if err != nil {
+		return fmt.Errorf("encrypt failed: %w", err)
+	}
+
 	payload := common.TunnelDataPayload{
 		TunnelID: tunnelID,
 		ConnID:   connID,
-		Data:     base64.StdEncoding.EncodeToString(data),
+		Data:     encoded,
 		IsEOF:    isEOF,
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
-	err := tm.agent.connector.Send(&common.Message{
+	if err := tm.agent.connector.Send(&common.Message{
 		Type:    "tunnel_data",
 		Payload: payloadJSON,
-	})
+	}); err != nil {
+		if isEOF {
+			tm.CloseLocalConn(connID)
+		}
+		return err
+	}
 
 	if isEOF {
 		tm.CloseLocalConn(connID)
 	}
 
-	return err
+	return nil
 }
 
 // SendError forwards a tunnel error to the server.

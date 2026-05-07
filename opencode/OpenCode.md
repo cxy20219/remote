@@ -6,29 +6,46 @@
 - **模块名**: `goremote` (不是 `go-remote`)
 - **Web框架**: Gin
 - **WebSocket**: gorilla/websocket
-- **架构**: SSH 隧道内网穿透（简化版，移除了 exec/file/openclaw/tasks）
+- **架构**: SSH 隧道内网穿透（服务端/Agent C/S 架构）
+- **加密**: AES-256-GCM 隧道数据加密（密钥由 `auth.key` 通过 SHA-256 派生）
 
 ## 目录结构
 
 ```
 go-remote/
 ├── cmd/
-│   ├── server/main.go    # 服务端入口
-│   └── agent/main.go     # 客户端入口
+│   ├── server/main.go       # 服务端入口
+│   └── agent/main.go        # Agent 入口
 ├── internal/
-│   ├── common/message.go # WebSocket 消息类型（共享）
-│   ├── server/           # Gin + websocket 服务端
-│   └── agent/            # Agent + 重连逻辑
-├── config/
-│   ├── server.yaml       # 服务端配置
-│   └── agent.yaml        # 客户端配置
-├── bin/                  # 编译输出目录
+│   ├── common/
+│   │   ├── message.go       # 消息协议定义
+│   │   ├── crypto.go        # AES-256-GCM 隧道加密
+│   │   └── util.go          # 工具函数
+│   ├── server/
+│   │   ├── server.go        # Gin 引擎、WebSocket、CheckOrigin
+│   │   ├── config.go        # 服务端配置（含 SecurityConfig）
+│   │   ├── tunnel.go        # 隧道管理核心（加密数据转发）
+│   │   ├── handler.go       # 消息分发（加密解密）
+│   │   ├── api.go           # HTTP 管理 API
+│   │   ├── admin_auth.go    # 管理员认证
+│   │   ├── security.go      # 安全中间件（头、限流、Body限制）
+│   │   └── client.go        # 客户端管理
+│   └── agent/
+│       ├── agent.go         # Agent 主控（含 crypto 上下文）
+│       ├── connector.go     # WebSocket 连接（含 TLS）
+│       ├── handler.go       # 消息处理（加密解密）
+│       ├── tunnel.go        # Agent 端隧道（加密数据转发）
+│       ├── config.go        # Agent 配置
+│       └── reconnect.go     # 指数退避重连
+├── config/                   # 配置文件（含 security 段）
+├── docs/                     # swag init 自动生成（构建依赖）
 ├── opencode/
-│   ├── docs/             # 设计文档、经验、流程
-│   ├── scripts/          # 自动化脚本
-│   ├── references/       # 配置参考、TLS指南
-│   └── assets/           # 模板、二进制
-└── skills/               # Skill 目录（不要与 opencode 重复）
+│   ├── OpenCode.md          # 本文件
+│   ├── docs/                # 设计文档、直通流程、经验教训
+│   ├── scripts/             # 部署脚本
+│   ├── references/          # 配置参考、TLS 指南、API 规范
+│   └── assets/              # 配置模板、预编译二进制
+└── go.mod
 ```
 
 ## 常用命令
@@ -38,60 +55,90 @@ go-remote/
 go build -o bin/server.exe ./cmd/server
 go build -o bin/agent.exe ./cmd/agent
 
-# 交叉编译（Linux）
+# 交叉编译（Linux，瘦身二进制）
 $env:GOOS="linux"; $env:GOARCH="amd64"
-go build -o bin/server ./cmd/server
-go build -o bin/agent ./cmd/agent
+go build -ldflags "-s -w" -o bin/server-linux-amd64 ./cmd/server
+
+# 生成 Swagger docs（首次或 API 变更后）
+go install github.com/swaggo/swag/cmd/swag@latest
+swag init -g cmd/server/main.go -o docs
 
 # 测试
-go test -v ./internal/server/...
-go test -v ./internal/agent/...
+go test ./internal/...
 
-# 运行
-./bin/server.exe --config config/server.yaml
-./bin/agent.exe --config config/agent.yaml
+# 静态检查
+go vet ./internal/...
 ```
 
 ## 关键文件
 
-- `internal/common/message.go` - WebSocket 消息类型定义
-- `internal/server/` - 服务端实现（隧道管理、API）
-- `internal/agent/` - 客户端实现（重连、心跳）
-- `config/server.yaml` / `config/agent.yaml` - 配置文件
+| 文件 | 功能 |
+|------|------|
+| `internal/common/crypto.go` | AES-256-GCM 加解密，密钥由 `auth.key` 派生 |
+| `internal/server/security.go` | 安全响应头、请求体大小限制、IP 速率限制 |
+| `internal/server/tunnel.go` | 隧道管理，`handleExternalConn` 加密外发数据 |
+| `internal/server/handler.go` | 消息路由，`handleTunnelData` 解密接收数据 |
+| `internal/agent/tunnel.go` | Agent 端隧道，`HandleLocalResponse` 加密数据 |
+| `internal/agent/handler.go` | Agent 消息处理，`handleTunnelData` 解密 |
+
+## 安全机制
+
+| 机制 | 位置 | 说明 |
+|------|------|------|
+| 隧道数据加密 | `common/crypto.go` | AES-256-GCM，`auth.key` 非空时自动启用 |
+| CheckOrigin | `server/server.go` | `security.allowed_origins` 白名单，空=放行 |
+| 安全响应头 | `server/security.go` | X-Content-Type-Options、X-Frame-Options 等 |
+| Body 大小限制 | `server/security.go` | `security.max_body_size_mb`，默认 10MB |
+| 登录速率限制 | `server/security.go` | `security.login_rate_limit`，默认 5/min/IP |
+| TLS 传输加密 | `server/server.go` / `agent/connector.go` | `server.tls.enabled: true` 启用 |
+
+## 配置（新增 security 段）
+
+```yaml
+security:
+  allowed_origins: []       # WebSocket Origin 白名单
+  login_rate_limit: 5       # 登录速率限制（次/分/IP）
+  max_body_size_mb: 10      # 请求体最大 MB
+```
 
 ## 构建部署
 
-1. 编译对应平台二进制到 `bin/`
-2. 准备配置文件（参考 `opencode/assets/*.template`）
-3. 部署服务端到公网服务器
-4. 部署客户端到内网服务器
-5. 通过 API 创建隧道映射端口
+1. `swag init -g cmd/server/main.go -o docs` — 生成 Swagger 文档
+2. 交叉编译对应平台二进制
+3. 检查服务器磁盘空间（`df -h`）
+4. 停旧进程（`fuser -k 8080/tcp`）
+5. 上传二进制和配置
+6. 启动服务端，验证 `"tunnel data encryption enabled (AES-256-GCM)"`
+7. 启动 Agent，确认加密日志
+8. 通过 API 创建隧道，验证加密数据转发
 
-详见: `opencode/docs/workflow/ssh-tunnel-direct-access.md`
+详见: `opencode/docs/workflow/encrypted-tunnel-deploy-verify.md`
 
 ## 常见问题
 
 | 问题 | 解决 |
 |------|------|
-| TLS 证书无效 | Go 1.15+ 需要 SAN，用 `-addext "subjectAltName=IP:xxx"` 生成 |
-| 客户端连不上 | 检查 `server.address` 是否指向正确公网地址，验证 TLS 配置匹配 |
-| 隧道创建成功但无响应 | 确认内网 agent 进程正常运行 |
-| 配置文件不生效 | 重启服务，检查 YAML 语法 |
-| binary 无法覆盖 | 先 `mv` 重命名，再上传，杀进程后重启 |
+| TLS 证书无效 | Go 1.15+ 需要 SAN，用 `-addext "subjectAltName=IP:xxx"` |
+| pscp 上传 Network error | 磁盘满，`df -h` 检查并清理旧日志 |
+| `swag init` 后编译失败 | 确认 `-o docs` 路径与 import 一致 |
+| 隧道数据无法传输 | 确认服务端和 Agent 的 `auth.key` 完全一致 |
+| 加密未启用 | 检查日志是否包含 `encryption enabled` |
+| curl JSON 请求乱码 | 用 `@file.json` 方式，`Out-File -Encoding ascii` |
+| Start-Process 找不到配置 | 加 `-WorkingDirectory` 参数 |
+| plink 主机密钥警告 | 用 `nc` 验证 tunnel，不依赖 SSH 层 |
 
 ## API 端点
 
-- `GET /health` - 健康检查
-- `POST /api/login` - 管理员登录
-- `GET /api/clients` - 查看客户端列表（需认证）
-- `POST /api/tunnels` - 创建隧道
-- `GET /api/tunnels` - 查看隧道列表
-- `PUT /api/tunnels/:id` - 更新隧道
-- `DELETE /api/tunnels/:id` - 删除隧道
-
-Swagger UI: `http://localhost:8080/swagger/index.html`
+- `GET /health` — 健康检查
+- `POST /api/login` — 管理员登录（速率限制保护）
+- `GET /api/clients` — 客户端列表（需认证）
+- `POST /api/tunnels` — 创建隧道
+- `GET /api/tunnels` — 隧道列表
+- `PUT /api/tunnels/:id` — 更新隧道
+- `DELETE /api/tunnels/:id` — 删除隧道
 
 ## 测试注意
 
-- Windows 上 `sleep` → `timeout /t`，`ls` → `dir`
-- 使用 `runtime.GOOS` 做平台判断
+- 加密功能测试覆盖：`go test -v ./internal/common/`（9 个用例）
+- 测试中 `NewConnector` 需 5 个参数（含 `insecureSkipVerify`）
+- `go vet` 应在每次提交前通过
