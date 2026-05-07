@@ -1,350 +1,277 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GoRemote - SSH 隧道管理</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f7fa; color: #333; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-        h1 { color: #2c3e50; margin-bottom: 30px; }
-        h2 { color: #34495e; font-size: 1.2em; margin: 20px 0 15px; border-bottom: 2px solid #3498db; padding-bottom: 8px; }
-        
-        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .status { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 0.85em; font-weight: 600; }
-        .status-online { background: #d4edda; color: #155724; }
-        .status-offline { background: #f8d7da; color: #721c24; }
-        .status-active { background: #cce5ff; color: #004085; }
-        
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th { background: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6; font-weight: 600; }
-        td { padding: 12px; border-bottom: 1px solid #e9ecef; }
-        tr:hover { background: #f8f9fa; }
-        
-        .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9em; transition: all 0.2s; }
-        .btn-primary { background: #3498db; color: white; }
-        .btn-primary:hover { background: #2980b9; }
-        .btn-danger { background: #e74c3c; color: white; }
-        .btn-danger:hover { background: #c0392b; }
-        .btn-success { background: #27ae60; color: white; }
-        .btn-success:hover { background: #219a52; }
-        
-        .form-group { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; font-weight: 600; font-size: 0.9em; }
-        input, select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; width: 100%; max-width: 400px; font-size: 0.9em; }
-        
-        .alert { padding: 12px 16px; border-radius: 4px; margin-bottom: 15px; }
-        .alert-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .alert-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        
-        .loading { color: #7f8c8d; font-style: italic; }
-        .empty { text-align: center; padding: 40px; color: #7f8c8d; }
-        
-        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
-        
-        .ssh-command { background: #2c3e50; color: #ecf0f1; padding: 15px; border-radius: 4px; margin-top: 10px; font-family: 'Courier New', monospace; font-size: 0.9em; }
-        .ssh-command .port { color: #3498db; font-weight: bold; }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GoRemote · 隧道管理</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0b0e14;color:#c9d1d9;min-height:100vh}
+.container{max-width:1200px;margin:0 auto;padding:24px 20px}
 
-        .btn-warning { background: #f39c12; color: white; }
-        .btn-warning:hover { background: #d68910; }
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px;flex-wrap:wrap;gap:12px}
+.logo{display:flex;align-items:center;gap:12px}
+.logo h1{font-size:22px;font-weight:700;color:#e6edf3;letter-spacing:-0.3px}
+.logo .dot{width:8px;height:8px;border-radius:50%;background:#3fb950;box-shadow:0 0 8px #3fb950;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.logout-btn{padding:8px 18px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#8b949e;cursor:pointer;font-size:13px;transition:all .2s}
+.logout-btn:hover{background:rgba(255,255,255,.1);color:#e6edf3;border-color:rgba(255,255,255,.2)}
 
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
-        .modal.show { display: flex; align-items: center; justify-content: center; }
-        .modal-content { background: white; padding: 30px; border-radius: 8px; width: 400px; max-width: 90%; }
-        .modal h3 { margin-bottom: 20px; color: #2c3e50; }
-        .modal .form-group { margin-bottom: 15px; }
-        .modal-buttons { display: flex; gap: 10px; margin-top: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-        .header h1 { margin-bottom: 0; }
-        .logout-btn { padding: 8px 16px; background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; cursor: pointer; font-size: 13px; transition: all 0.2s; }
-        .logout-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.3); }
-    </style>
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{background:#161b22;border:1px solid #21262d;border-radius:12px;padding:20px;display:flex;align-items:center;gap:16px}
+.stat-icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px}
+.stat-icon.green{background:rgba(63,185,80,.15);color:#3fb950}
+.stat-icon.blue{background:rgba(88,166,255,.15);color:#58a6ff}
+.stat-icon.purple{background:rgba(188,140,255,.15);color:#bc8cff}
+.stat-info .stat-value{font-size:28px;font-weight:700;color:#e6edf3;line-height:1.2}
+.stat-info .stat-label{font-size:12px;color:#8b949e;margin-top:2px}
+
+.card{background:#161b22;border:1px solid #21262d;border-radius:12px;padding:24px;margin-bottom:20px}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+.card-header h2{font-size:15px;font-weight:600;color:#e6edf3;display:flex;align-items:center;gap:8px}
+.card-header h2 .dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.card-header h2 .dot.ok{background:#3fb950;box-shadow:0 0 6px #3fb950}
+.card-header h2 .dot.err{background:#f85149;box-shadow:0 0 6px #f85149}
+
+.form-row{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:18px}
+.form-group{display:flex;flex-direction:column;gap:6px}
+.form-group label{font-size:12px;color:#8b949e;font-weight:500}
+.form-group input,.form-group select{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:9px 14px;color:#c9d1d9;font-size:14px;outline:none;transition:border-color .2s;min-width:160px}
+.form-group input:focus,.form-group select:focus{border-color:#58a6ff;box-shadow:0 0 0 2px rgba(88,166,255,.15)}
+.form-group select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238b949e' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+
+.btn{padding:9px 20px;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:500;transition:all .2s;white-space:nowrap}
+.btn-primary{background:#238636;color:#fff}
+.btn-primary:hover{background:#2ea043}
+.btn-danger{background:rgba(248,81,73,.12);color:#f85149;border:1px solid rgba(248,81,73,.2)}
+.btn-danger:hover{background:rgba(248,81,73,.2)}
+.btn-ghost{background:rgba(255,255,255,.06);color:#8b949e;border:1px solid rgba(255,255,255,.08);font-size:12px;padding:5px 12px}
+.btn-ghost:hover{background:rgba(255,255,255,.1);color:#e6edf3}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 14px;color:#8b949e;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #21262d}
+td{padding:12px 14px;border-bottom:1px solid #21262d;color:#c9d1d9}
+tr:hover td{background:rgba(255,255,255,.02)}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.badge-online{background:rgba(63,185,80,.12);color:#3fb950}
+.badge-offline{background:rgba(248,81,73,.12);color:#f85149}
+.badge-active{background:rgba(88,166,255,.12);color:#58a6ff}
+.badge-online::before,.badge-active::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
+.port-highlight{font-family:'SF Mono','Cascadia Code',monospace;color:#58a6ff;font-weight:600;font-size:14px}
+code{font-family:'SF Mono','Cascadia Code',monospace;font-size:11px;background:rgba(255,255,255,.04);padding:2px 6px;border-radius:4px;color:#8b949e}
+.mono{font-family:'SF Mono','Cascadia Code',monospace;font-size:12px}
+.empty{text-align:center;padding:40px 0;color:#484f58}
+
+.ssh-box{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:18px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.ssh-box .cmd{font-family:'SF Mono','Cascadia Code',monospace;font-size:14px;color:#7ee787;word-break:break-all;flex:1}
+.ssh-box .hint{font-size:11px;color:#484f58;margin-top:6px}
+.copy-btn{padding:8px 16px;background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.2);border-radius:8px;color:#58a6ff;cursor:pointer;font-size:12px;transition:all .2s}
+.copy-btn:hover{background:rgba(88,166,255,.2)}
+.copy-btn.copied{background:rgba(63,185,80,.15);border-color:rgba(63,185,80,.25);color:#3fb950}
+
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;backdrop-filter:blur(4px)}
+.modal-overlay.show{display:flex;align-items:center;justify-content:center}
+.modal{background:#161b22;border:1px solid #30363d;border-radius:16px;padding:28px;width:420px;max-width:92%;animation:slideUp .2s}
+@keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.modal h3{font-size:16px;color:#e6edf3;margin-bottom:20px}
+.modal .form-group{margin-bottom:14px}
+.modal .form-group input,.modal .form-group select{width:100%}
+.modal-actions{display:flex;gap:10px;margin-top:20px;justify-content:flex-end}
+
+.toast{position:fixed;top:20px;right:20px;z-index:200;display:flex;flex-direction:column;gap:8px}
+.toast-item{padding:12px 20px;border-radius:10px;font-size:13px;font-weight:500;animation:slideIn .3s;max-width:380px}
+.toast-item.success{background:#238636;color:#fff}
+.toast-item.error{background:#da3633;color:#fff}
+@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+
+.refresh-dot{font-size:10px;color:#484f58;margin-left:6px;animation:spin 2s linear infinite;display:inline-block}
+@keyframes spin{0%{transform:rotate(0)}25%{transform:rotate(90deg)}50%{transform:rotate(180deg)}75%{transform:rotate(270deg)}100%{transform:rotate(360deg)}}
+
+@media(max-width:768px){
+.stats{grid-template-columns:1fr}
+.form-row{flex-direction:column}
+.form-group input,.form-group select{width:100%}
+.ssh-box{flex-direction:column;align-items:flex-start}
+.topbar{flex-direction:column;align-items:flex-start}
+table{font-size:11px}
+th,td{padding:8px 8px}
+}
+</style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🚇 GoRemote SSH 隧道管理</h1>
-            <button class="logout-btn" onclick="logout()">退出登录</button>
-        </div>
-        
-        <div id="alert"></div>
-        
-        <div class="card">
-            <h2>📡 服务状态</h2>
-            <div id="health-status">加载中...</div>
-        </div>
-        
-        <div class="card">
-            <h2>💻 在线客户端</h2>
-            <div id="clients">加载中...</div>
-        </div>
-        
-        <div class="card">
-            <h2>🔑 隧道管理</h2>
-            <div class="form-group">
-                <label>选择客户端：</label>
-                <select id="client-select">
-                    <option value="">请选择...</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>本地端口：</label>
-                <input type="number" id="local-port" value="22" placeholder="22">
-            </div>
-            <div class="form-group">
-                <label>协议：</label>
-                <select id="protocol">
-                    <option value="tcp">TCP</option>
-                    <option value="udp">UDP</option>
-                </select>
-            </div>
-            <button class="btn btn-primary" onclick="createTunnel()">创建隧道</button>
-            
-            <div id="tunnels" style="margin-top: 20px;">加载中...</div>
-        </div>
-        
-        <div class="card">
-            <h2>🔗 SSH 连接命令</h2>
-            <div class="ssh-command">
-                ssh 用户名@your-server-ip -p <span class="port" id="example-port">10000</span>
-                <div style="margin-top: 10px; font-size: 0.8em; color: #95a5a6;"># 输入密码后连接内网服务器</div>
-            </div>
-        <div id="edit-modal" class="modal">
-            <div class="modal-content">
-                <h3>编辑隧道</h3>
-                <input type="hidden" id="edit-tunnel-id">
-                <div class="form-group">
-                    <label>本地地址：</label>
-                    <input type="text" id="edit-local-addr" value="127.0.0.1">
-                </div>
-                <div class="form-group">
-                    <label>本地端口：</label>
-                    <input type="number" id="edit-local-port" value="22">
-                </div>
-                <div class="form-group">
-                    <label>协议：</label>
-                    <select id="edit-protocol">
-                        <option value="tcp">TCP</option>
-                        <option value="udp">UDP</option>
-                    </select>
-                </div>
-                <div class="modal-buttons">
-                    <button class="btn btn-primary" onclick="saveTunnelEdit()">保存</button>
-                    <button class="btn btn-danger" onclick="closeEditModal()">取消</button>
-                </div>
-            </div>
-        </div>
+<div class="container">
+  <div class="topbar">
+    <div class="logo">
+      <div class="dot"></div>
+      <h1>GoRemote</h1>
     </div>
-    
-    <script>
-        const API_BASE = '';
+    <button class="logout-btn" onclick="logout()">退出登录</button>
+  </div>
 
-        async function checkAuth() {
-            try {
-                const res = await fetch('/api/check-auth');
-                const data = await res.json();
-                if (!data.authenticated) {
-                    window.location.href = '/login.html';
-                }
-            } catch (e) {
-                window.location.href = '/login.html';
-            }
-        }
-        
-        function showAlert(message, type = 'success') {
-            const alertDiv = document.getElementById('alert');
-            alertDiv.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
-            setTimeout(() => alertDiv.innerHTML = '', 5000);
-        }
-        
-        async function checkHealth() {
-            try {
-                const res = await fetch('/health');
-                const data = await res.json();
-                document.getElementById('health-status').innerHTML = 
-                    `<span class="status status-${data.status === 'ok' ? 'online' : 'offline'}">${data.status}</span>`;
-            } catch (err) {
-                document.getElementById('health-status').innerHTML = 
-                    '<span class="status status-offline">服务不可用</span>';
-            }
-        }
-        
-        async function loadClients() {
-            try {
-                const res = await fetch('/api/clients');
-                const data = await res.json();
-                const container = document.getElementById('clients');
-                const select = document.getElementById('client-select');
-                
-                select.innerHTML = '<option value="">请选择...</option>';
-                
-                if (data.clients.length === 0) {
-                    container.innerHTML = '<div class="empty">暂无在线客户端</div>';
-                    return;
-                }
-                
-                let html = `<table><tr><th>Client ID</th><th>主机名</th><th>系统</th><th>状态</th><th>最后心跳</th></tr>`;
-                data.clients.forEach(c => {
-                    html += `<tr>
-                        <td><code>${c.client_id.substring(0, 20)}...</code></td>
-                        <td>${c.hostname}</td>
-                        <td>${c.os}</td>
-                        <td><span class="status status-${c.status}">${c.status}</span></td>
-                        <td>${new Date(c.last_ping).toLocaleString()}</td>
-                    </tr>`;
-                    
-                    select.innerHTML += `<option value="${c.client_id}">${c.hostname} (${c.client_id.substring(0, 8)}...)</option>`;
-                });
-                html += '</table>';
-                container.innerHTML = html;
-            } catch (err) {
-                document.getElementById('clients').innerHTML = '<div class="empty">加载失败</div>';
-            }
-        }
-        
-        async function loadTunnels() {
-            try {
-                const res = await fetch('/api/tunnels');
-                const data = await res.json();
-                const container = document.getElementById('tunnels');
-                
-                if (data.tunnels.length === 0) {
-                    container.innerHTML = '<div class="empty">暂无隧道</div>';
-                    return;
-                }
-                
-                let html = `<table>
-                    <tr><th>隧道 ID</th><th>公网端口</th><th>内网地址</th><th>协议</th><th>状态</th><th>创建时间</th><th>操作</th></tr>`;
-                
-                data.tunnels.forEach(t => {
-                    html += `<tr>
-                        <td><code>${t.TunnelID.substring(0, 20)}...</code></td>
-                        <td><strong>${t.PublicPort}</strong></td>
-                        <td>${t.LocalAddr}:${t.LocalPort}</td>
-                        <td>${t.Protocol.toUpperCase()}</td>
-                        <td><span class="status status-${t.Status.toLowerCase()}">${t.Status}</span></td>
-                        <td>${new Date(t.CreatedAt).toLocaleString()}</td>
-                        <td>
-                            <button class="btn btn-warning" style="padding:4px 8px;margin-right:5px;" onclick="openEditModal('${t.TunnelID}', '${t.LocalAddr}', ${t.LocalPort}, '${t.Protocol}')">编辑</button>
-                            <button class="btn btn-danger" style="padding:4px 8px;" onclick="deleteTunnel('${t.TunnelID}')">删除</button>
-                        </td>
-                    </tr>`;
-                });
-                html += '</table>';
-                container.innerHTML = html;
-            } catch (err) {
-                document.getElementById('tunnels').innerHTML = '<div class="empty">加载失败</div>';
-            }
-        }
-        
-        async function createTunnel() {
-            const clientId = document.getElementById('client-select').value;
-            const localPort = document.getElementById('local-port').value;
-            const protocol = document.getElementById('protocol').value;
-            
-            if (!clientId) {
-                showAlert('请选择客户端', 'error');
-                return;
-            }
-            
-            try {
-                const res = await fetch('/api/tunnels', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ client_id: clientId, local_port: parseInt(localPort), protocol })
-                });
-                
-                const data = await res.json();
-                
-                if (res.ok) {
-                    showAlert(`隧道创建成功！公网端口: ${data.public_port}`, 'success');
-                    document.getElementById('example-port').textContent = data.public_port;
-                    loadTunnels();
-                } else {
-                    showAlert(data.error || '创建失败', 'error');
-                }
-            } catch (err) {
-                showAlert('网络错误: ' + err.message, 'error');
-            }
-        }
-        
-        async function deleteTunnel(tunnelId) {
-            if (!confirm('确定删除此隧道？')) return;
-            
-            try {
-                const res = await fetch(`/api/tunnels/${tunnelId}`, { method: 'DELETE' });
-                const data = await res.json();
-                
-                if (res.ok) {
-                    showAlert('隧道已删除', 'success');
-                    loadTunnels();
-                } else {
-                    showAlert(data.error || '删除失败', 'error');
-                }
-            } catch (err) {
-                showAlert('网络错误: ' + err.message, 'error');
-            }
-        }
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-icon blue">&#9889;</div>
+      <div class="stat-info"><div class="stat-value" id="stat-health">—</div><div class="stat-label">服务状态</div></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon green">&#9786;</div>
+      <div class="stat-info"><div class="stat-value" id="stat-clients">0</div><div class="stat-label">在线客户端</div></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon purple">&#8596;</div>
+      <div class="stat-info"><div class="stat-value" id="stat-tunnels">0</div><div class="stat-label">活跃隧道</div></div>
+    </div>
+  </div>
 
-        function openEditModal(tunnelId, localAddr, localPort, protocol) {
-            document.getElementById('edit-tunnel-id').value = tunnelId;
-            document.getElementById('edit-local-addr').value = localAddr;
-            document.getElementById('edit-local-port').value = localPort;
-            document.getElementById('edit-protocol').value = protocol;
-            document.getElementById('edit-modal').classList.add('show');
-        }
+  <div class="card">
+    <div class="card-header">
+      <h2><span class="dot ok" id="health-dot"></span>在线客户端</h2>
+      <span class="refresh-dot" title="每10秒自动刷新">&#9673;</span>
+    </div>
+    <div id="clients"><div class="empty">加载中...</div></div>
+  </div>
 
-        function closeEditModal() {
-            document.getElementById('edit-modal').classList.remove('show');
-        }
+  <div class="card">
+    <div class="card-header"><h2>&#128273; 创建隧道</h2></div>
+    <div class="form-row">
+      <div class="form-group"><label>目标客户端</label><select id="client-select"><option value="">请选择客户端...</option></select></div>
+      <div class="form-group"><label>内网端口</label><input type="number" id="local-port" value="22" placeholder="22"></div>
+      <div class="form-group"><label>协议</label><select id="protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
+      <button class="btn btn-primary" onclick="createTunnel()">&#10003; 创建隧道</button>
+    </div>
+    <div id="tunnels" style="margin-top:8px"><div class="empty">加载中...</div></div>
+  </div>
 
-        async function saveTunnelEdit() {
-            const tunnelId = document.getElementById('edit-tunnel-id').value;
-            const localAddr = document.getElementById('edit-local-addr').value;
-            const localPort = document.getElementById('edit-local-port').value;
-            const protocol = document.getElementById('edit-protocol').value;
+  <div class="card">
+    <div class="card-header"><h2>&#128279; 连接命令</h2></div>
+    <div class="ssh-box">
+      <div>
+        <div class="cmd">ssh 用户名@your-server-ip -p&nbsp;<span id="example-port">10000</span></div>
+        <div class="hint">创建隧道后端口号自动更新 &middot; 点击右侧按钮复制</div>
+      </div>
+      <button class="copy-btn" onclick="copyCommand()">复制命令</button>
+    </div>
+  </div>
+</div>
 
-            if (!tunnelId) return;
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal">
+    <h3>编辑隧道</h3>
+    <input type="hidden" id="edit-tunnel-id">
+    <div class="form-group"><label>内网地址</label><input type="text" id="edit-local-addr" value="127.0.0.1"></div>
+    <div class="form-group"><label>内网端口</label><input type="number" id="edit-local-port" value="22"></div>
+    <div class="form-group"><label>协议</label><select id="edit-protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeEditModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveTunnelEdit()">保存</button>
+    </div>
+  </div>
+</div>
 
-            try {
-                const res = await fetch(`/api/tunnels/${tunnelId}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ local_addr: localAddr, local_port: parseInt(localPort), protocol })
-                });
+<div class="toast" id="toast"></div>
 
-                const data = await res.json();
+<script>
+async function checkAuth(){try{const r=await fetch('/api/check-auth');if(!(await r.json()).authenticated)window.location.href='/login.html'}catch(e){window.location.href='/login.html'}}
 
-                if (res.ok) {
-                    showAlert('隧道已更新', 'success');
-                    closeEditModal();
-                    loadTunnels();
-                } else {
-                    showAlert(data.error || '更新失败', 'error');
-                }
-            } catch (err) {
-                showAlert('网络错误: ' + err.message, 'error');
-            }
-        }
+function toast(msg,type='success'){
+  const t=document.getElementById('toast');
+  const el=document.createElement('div');
+  el.className='toast-item '+type;el.textContent=msg;t.appendChild(el);
+  setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity .3s';setTimeout(()=>el.remove(),300)},4000)
+}
 
-        async function logout() {
-            await fetch('/api/logout', { method: 'POST' });
-            window.location.href = '/login.html';
-        }
+function copyCommand(){
+  const port=document.getElementById('example-port').textContent;
+  const cmd='ssh 用户名@your-server-ip -p '+port;
+  navigator.clipboard.writeText(cmd).then(()=>{
+    const btn=event.target;btn.textContent='已复制';btn.classList.add('copied');
+    setTimeout(()=>{btn.textContent='复制命令';btn.classList.remove('copied')},2000)
+  }).catch(()=>toast('复制失败','error'))
+}
 
-        // 初始化
-        checkAuth();
-        checkHealth();
-        loadClients();
-        loadTunnels();
-        
-        // 定时刷新
-        setInterval(() => {
-            checkHealth();
-            loadClients();
-            loadTunnels();
-        }, 10000);
-    </script>
+async function checkHealth(){
+  try{
+    const r=await fetch('/health');const d=await r.json();
+    const ok=d.status==='ok';
+    document.getElementById('stat-health').textContent=ok?'正常':'异常';
+    document.getElementById('stat-health').style.color=ok?'#3fb950':'#f85149';
+    const dot=document.getElementById('health-dot');
+    dot.className='dot '+(ok?'ok':'err');
+  }catch(e){
+    document.getElementById('stat-health').textContent='离线';
+    document.getElementById('stat-health').style.color='#f85149';
+    document.getElementById('health-dot').className='dot err';
+  }
+}
+
+async function loadClients(){
+  try{
+    const r=await fetch('/api/clients');const d=await r.json();
+    const sel=document.getElementById('client-select');
+    sel.innerHTML='<option value="">请选择客户端...</option>';
+    document.getElementById('stat-clients').textContent=d.total;
+    if(!d.clients.length){document.getElementById('clients').innerHTML='<div class="empty">暂无在线客户端 &mdash; 请在内网机器启动 Agent</div>';return}
+    let h='<table><thead><tr><th>客户端 ID</th><th>主机名</th><th>系统</th><th>状态</th><th>最后心跳</th></tr></thead><tbody>';
+    d.clients.forEach(c=>{
+      h+=`<tr><td><code>${c.client_id.substring(0,18)}&hellip;</code></td><td>${c.hostname}</td><td>${c.os}</td><td><span class="badge badge-online">online</span></td><td>${new Date(c.last_ping).toLocaleTimeString()}</td></tr>`;
+      sel.innerHTML+=`<option value="${c.client_id}">${c.hostname} &middot; ${c.os}</option>`
+    });
+    h+='</tbody></table>';document.getElementById('clients').innerHTML=h
+  }catch(e){document.getElementById('clients').innerHTML='<div class="empty">加载失败</div>'}
+}
+
+async function loadTunnels(){
+  try{
+    const r=await fetch('/api/tunnels');const d=await r.json();
+    document.getElementById('stat-tunnels').textContent=d.total;
+    if(!d.tunnels.length){document.getElementById('tunnels').innerHTML='<div class="empty">暂无隧道 &mdash; 选择客户端并创建</div>';return}
+    let h='<table><thead><tr><th>隧道 ID</th><th>公网端口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+    d.tunnels.forEach(t=>{
+      h+=`<tr><td><code>${t.TunnelID.substring(0,18)}&hellip;</code></td><td><span class="port-highlight">${t.PublicPort}</span></td><td><span class="mono">${t.LocalAddr}:${t.LocalPort}</span></td><td>${t.Protocol.toUpperCase()}</td><td>${new Date(t.CreatedAt).toLocaleString()}</td>`;
+      h+=`<td><button class="btn btn-ghost" onclick="openEditModal('${t.TunnelID}','${t.LocalAddr}',${t.LocalPort},'${t.Protocol}')">编辑</button> <button class="btn btn-danger" style="font-size:12px;padding:5px 12px" onclick="deleteTunnel('${t.TunnelID}')">删除</button></td></tr>`
+    });
+    h+='</tbody></table>';document.getElementById('tunnels').innerHTML=h
+  }catch(e){document.getElementById('tunnels').innerHTML='<div class="empty">加载失败</div>'}
+}
+
+async function createTunnel(){
+  const cid=document.getElementById('client-select').value;
+  const port=document.getElementById('local-port').value;
+  const proto=document.getElementById('protocol').value;
+  if(!cid)return toast('请先选择客户端','error');
+  try{
+    const r=await fetch('/api/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:cid,local_port:parseInt(port),protocol:proto})});
+    const d=await r.json();
+    if(r.ok){toast('隧道创建成功 &middot; 公网端口 '+d.public_port);document.getElementById('example-port').textContent=d.public_port;loadTunnels()}
+    else toast(d.error||'创建失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
+async function deleteTunnel(id){if(!confirm('确定删除此隧道？所有连接将断开。'))return;try{const r=await fetch('/api/tunnels/'+id,{method:'DELETE'});const d=await r.json();if(r.ok){toast('隧道已删除');loadTunnels()}else toast(d.error||'删除失败','error')}catch(e){toast('网络错误','error')}}
+
+function openEditModal(id,addr,port,proto){
+  document.getElementById('edit-tunnel-id').value=id;
+  document.getElementById('edit-local-addr').value=addr;
+  document.getElementById('edit-local-port').value=port;
+  document.getElementById('edit-protocol').value=proto;
+  document.getElementById('edit-modal').classList.add('show')
+}
+function closeEditModal(){document.getElementById('edit-modal').classList.remove('show')}
+
+async function saveTunnelEdit(){
+  const id=document.getElementById('edit-tunnel-id').value;
+  if(!id)return;
+  try{
+    const r=await fetch('/api/tunnels/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({local_addr:document.getElementById('edit-local-addr').value,local_port:parseInt(document.getElementById('edit-local-port').value),protocol:document.getElementById('edit-protocol').value})});
+    const d=await r.json();
+    if(r.ok){toast('隧道已更新');closeEditModal();loadTunnels()}else toast(d.error||'更新失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
+async function logout(){await fetch('/api/logout',{method:'POST'});window.location.href='/login.html'}
+
+checkAuth();checkHealth();loadClients();loadTunnels();
+setInterval(()=>{checkHealth();loadClients();loadTunnels()},10000);
+</script>
 </body>
 </html>
