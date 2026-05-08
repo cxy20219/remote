@@ -1,180 +1,141 @@
 # GoRemote
 
-SSH 隧道内网穿透系统 - 通过 WebSocket 隧道暴露内网服务。
+基于 WebSocket 的隧道内网穿透系统，支持 AES-256-GCM 加密传输。
 
 ## 功能特性
 
-- **SSH 隧道** - 通过 WebSocket 隧道暴露内网 SSH 端口
-- **心跳保活** - 客户端定期发送心跳，服务端检测超时断开
-- **自动重连** - 客户端支持断线自动重连（指数退避）
-- **跨平台** - 支持 Linux 和 Windows
-- **TLS 加密** - 支持 WebSocket TLS 加密传输
+- **加密隧道**: 所有数据经 AES-256-GCM 加密，密钥由 `auth.key` 派生
+- **Web 管理界面**: 浅色主题，支持隧道 CRUD、客户端管理、SSH 命令复制
+- **安全机制**: 安全响应头、请求体限制、登录速率限制、Origin 白名单
+- **公网端口编辑**: 运行中可修改隧道公网端口，无需删除重建
+- **心跳保活**: Agent 定期心跳，服务端超时自动清理
+- **自动重连**: 指数退避重连，网络恢复后自动上线
+- **TLS 加密传输**: WebSocket 支持 TLS，服务端可配置 CA 验证
+- **跨平台**: Linux / Windows / macOS / Android (ARM64)
 
-## 项目结构
+## 快速开始
 
-```
-go-remote/
-├── cmd/
-│   ├── server/main.go       # 服务端入口
-│   └── agent/main.go        # 客户端入口
-├── internal/
-│   ├── common/              # 公共定义（消息结构）
-│   ├── server/              # 服务端实现 (Gin + WebSocket)
-│   │   ├── server.go       # Gin 引擎与路由
-│   │   ├── client.go       # 客户端管理
-│   │   ├── handler.go      # 消息处理
-│   │   ├── tunnel.go       # 隧道管理
-│   │   ├── api.go          # HTTP API
-│   │   └── config.go       # 配置加载
-│   └── agent/              # 客户端实现
-│       ├── agent.go        # 主控逻辑
-│       ├── connector.go    # WebSocket 连接
-│       ├── handler.go      # 消息处理
-│       ├── reconnect.go    # 重连机制
-│       ├── tunnel.go       # 隧道管理
-│       └── config.go       # 配置加载
-├── config/
-│   ├── server.yaml          # 服务端配置（开发）
-│   ├── agent.yaml          # 客户端配置（开发）
-│   ├── server-deploy.yaml  # 服务端配置（生产）
-│   └── agent-deploy.yaml  # 客户端配置（生产）
-├── docs/
-│   ├── workflow/           # 操作流程文档
-│   └── experience/         # 调试经验文档
-└── README.md
-```
+### 从 Release 下载
 
-## 编译
+[Gitee Release](https://gitee.com/cxy20219/go-remote/releases) 提供各平台预编译包，每个 zip 含 `server` + `agent` + `static/` 界面文件 + 配置模板。
 
-### Windows
+### 服务端部署
 
 ```bash
-go build -o bin/server.exe ./cmd/server
-go build -o bin/agent.exe ./cmd/agent
+# 1. 解压 release 包
+unzip go-remote-v1.0.0-linux-amd64.zip
+cd go-remote-v1.0.0-linux-amd64
+
+# 2. 修改配置（务必改 auth.key 和 admin.password）
+cp server.example.yaml server.yaml
+vim server.yaml
+
+# 3. 启动
+chmod +x server
+./server --config server.yaml
 ```
 
-### Linux（跨编译）
+访问 `https://your-ip:8080/` 打开管理界面。
+
+### 各平台 Agent 使用
+
+#### Linux / macOS / Windows
 
 ```bash
-GOOS=linux GOARCH=amd64 go build -o bin/server ./cmd/server
-GOOS=linux GOARCH=amd64 go build -o bin/agent ./cmd/agent
+cp agent.example.yaml agent.yaml
+# 修改 server.address 和 auth.key
+./agent --config agent.yaml
 ```
 
-## 配置
+#### Android（ADB 直推方案）
 
-### 服务端配置 (server.yaml)
-
-```yaml
-server:
-  host: "0.0.0.0"
-  port: 8080
-  tls:
-    enabled: false
-
-auth:
-  key: "test-secret-key"
-
-heartbeat:
-  interval: 30
-  timeout: 90
-
-log:
-  level: "info"
-
-tunnel:
-  public_host: "your-public-host"
-  port_range_start: 10000
-  port_range_end: 20000
-  max_tunnels_per_client: 10
-```
-
-### 客户端配置 (agent.yaml)
-
-```yaml
-server:
-  address: "localhost:8080"
-
-auth:
-  key: "test-secret-key"
-
-heartbeat:
-  interval: 30
-
-reconnect:
-  interval: 5
-  max_interval: 60
-
-log:
-  level: "info"
-```
-
-## 使用
-
-### 1. 启动服务端
+无需安装任何 App，通过 ADB 直接推送 ARM64 二进制：
 
 ```bash
-./bin/server.exe --config config/server.yaml
+# 1. 交叉编译（或在 Release 页面下载预编译的 agent-linux-arm64）
+GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o agent-linux-arm64 ./cmd/agent
+
+# 2. 推送到手机并启动
+adb push agent-linux-arm64 /data/local/tmp/go-remote-agent
+adb push agent.yaml /data/local/tmp/agent.yaml
+adb shell "pkill go-remote-agent; cd /data/local/tmp && sh -c 'while true; do ./go-remote-agent --config agent.yaml; sleep 5; done > agent.log 2>&1 &'"
 ```
 
-### 2. 启动客户端
+Agent 被杀后会自动重启（watchdog 循环）。如需开机自启，安装 Termux + Termux:Boot，将启动脚本放入 `~/.termux/boot/`。
+
+#### 远程 ADB 调试场景
 
 ```bash
-./bin/agent.exe --config config/agent.yaml
+# 1. 手机开启 adb TCP 模式
+adb tcpip 5555
+
+# 2. 创建隧道（映射手机 5555 到公网 10000）
+curl -k -X POST https://server:8080/api/tunnels \
+  -H "Content-Type: application/json" \
+  -d '{"client_id":"xxx","local_addr":"127.0.0.1","local_port":5555,"protocol":"tcp"}'
+
+# 3. 远程连接
+adb connect your-server:10000
+adb shell getprop ro.product.model   # 验证
 ```
 
-### 3. Swagger UI
-
-```
-http://localhost:8080/swagger/index.html
-```
-
-### 4. API 接口
+## API
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/health` | GET | 健康检查 |
-| `/api/clients` | GET | 查看在线客户端 |
-| `/api/tunnels` | GET | 查看所有隧道 |
-| `/api/tunnels` | POST | 创建隧道 |
-| `/api/tunnels/:id` | PUT | 更新隧道端口 |
+| `/api/login` | POST | 管理员登录 |
+| `/api/clients` | GET | 在线客户端列表 |
+| `/api/tunnels` | GET | 隧道列表 |
+| `/api/tunnels` | POST | 创建隧道（支持 client_id/local_addr/local_port/protocol） |
+| `/api/tunnels/:id` | PUT | 更新隧道（支持 public_port/local_port/local_addr/protocol） |
 | `/api/tunnels/:id` | DELETE | 删除隧道 |
 
-### 5. 创建隧道
+## 配置
+
+完整配置示例见 `config/server.example.yaml` 和 `config/agent.example.yaml`。
+
+```yaml
+# security 段（新增）
+security:
+  allowed_origins: []       # WebSocket Origin 白名单
+  login_rate_limit: 5       # 登录速率限制（次/分）
+  max_body_size_mb: 10      # 请求体最大 MB
+```
+
+## 编译
 
 ```bash
-# 查看客户端
-curl http://localhost:8080/api/clients
+# 生成 API 文档（首次）
+swag init -g cmd/server/main.go -o docs
 
-# 创建隧道
-curl -X POST http://localhost:8080/api/tunnels \
-  -H "Content-Type: application/json" \
-  -d '{"client_id":"xxx","local_port":22,"protocol":"tcp"}'
-```
+# 编译全平台 Release
+go install github.com/swaggo/swag/cmd/swag@latest
 
-## 消息协议
-
-| type | 方向 | 说明 |
-|------|------|------|
-| register | C→S | 客户端注册 |
-| register_ok | S→C | 注册成功 |
-| ping | C→S | 心跳 |
-| pong | S→C | 心跳响应 |
-| tunnel_open | S→C | 创建隧道 |
-| tunnel_open_ack | C→S | 隧道创建确认 |
-| tunnel_close | C↔S | 关闭隧道 |
-| tunnel_data | C↔S | 隧道数据 |
-
-## 架构
-
-```
-外部用户 ──▶ [服务端:公网端口] ──▶ [WebSocket隧道] ──▶ [Agent:本地端口]
-             (端口映射)              (数据透传)          (内网服务)
+# 各平台
+GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w" -o server-linux-amd64   ./cmd/server
+GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o agent-linux-arm64    ./cmd/agent
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o server-windows-amd64.exe ./cmd/server
+GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w" -o server-darwin-amd64  ./cmd/server
+GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o server-darwin-arm64  ./cmd/server
 ```
 
 ## 文档
 
-- [服务端设计文档](./docs/server-design.md)
-- [客户端设计文档](./docs/agent-design.md)
-- [隧道设计文档](./docs/tunnel-design.md)
-- [SSH 隧道直通内网服务流程](./docs/workflow/ssh-tunnel-direct-access.md)
-- [GoRemote 调试开发经验](./docs/experience/go-remote-debugging.md)
+- [Harness 开发指南](harness/Harness.md) — 技术栈、目录结构、常用命令、资源路由
+- [加密隧道部署验证](harness/workflow/encrypted-tunnel-deploy-verify.md) — 完整部署流程
+- [SSH 隧道直通内网](harness/workflow/ssh-tunnel-direct-access.md) — SSH 穿透实操
+- [调试开发经验](harness/experience/go-remote-debugging.md) — 综合排查手册
+- [加密隧道踩坑记录](harness/experience/encrypted-tunnel-lessons.md) — 开发实战经验
+- [远程部署坑点](harness/experience/remote-deployment-pitfalls.md) — 五大运维坑
+
+## 架构
+
+```
+外部用户 ──→ [服务端:公网端口] ──WebSocket(TLS+AES-256-GCM)──→ [Agent:内网端口]
+              (端口映射+加密)          (加密数据透传)             (内网服务/ADB)
+```
+
+## License
+
+MIT
