@@ -74,19 +74,16 @@ Start-Process -FilePath ".\agent.exe" -ArgumentList "--config agent.yaml" -Windo
 
 #### Android (arm64, ADB 直推)
 
-无需安装任何 App，USB 连上手机即可：
+无需安装任何 App。从 Release 下载 `go-remote-v1.0.0-linux-arm64.zip`，取出其中的 `agent` 二进制即可（ARM64 Linux 二进制兼容 Android 内核）：
 
 ```bash
-# 解压 Release 包中的 agent-linux-arm64，或交叉编译
-GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o agent-linux-arm64 ./cmd/agent
-
+# 解压，只需 agent 文件
+unzip go-remote-v1.0.0-linux-arm64.zip
 # 推送 + 启动（带 watchdog 自动重启）
-adb push agent-linux-arm64 /data/local/tmp/go-remote-agent
+adb push agent /data/local/tmp/go-remote-agent
 adb push agent.yaml /data/local/tmp/agent.yaml
 adb shell "pkill go-remote-agent; cd /data/local/tmp && sh -c 'while true; do ./go-remote-agent --config agent.yaml; sleep 5; done > agent.log 2>&1 &'"
 ```
-
-Agent 被杀后 watchdog 自动拉起。配合 `adb tcpip 5555` 可实现远程 ADB 调试（见下方）。
 
 #### 远程 ADB 调试场景
 
