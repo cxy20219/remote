@@ -1,6 +1,6 @@
 # 加密隧道部署与验证直通流程
 
-> 最后验证：2026-05-07 | 适用场景：首次部署、版本升级、加密功能验证
+> 最后验证：2026-05-08 | 适用场景：首次部署、版本升级、加密功能验证、Release 打包
 
 ## 概述
 
@@ -230,6 +230,43 @@ plink -batch -pw "PASSWORD" root@SERVER_IP "ss -tlnp | grep -E '10000|10001' || 
 □ 加密隧道数据转发正常: curl 通过 tunnel 端口收到目标服务响应
 □ 端口释放正常: 杀 Agent 后隧道和端口全部清理
 ```
+
+## 步骤八：制作 Release 发布包
+
+对外发布的 zip 包必须包含完整运行环境，遗漏 `static/` 目录会导致 Web 界面白屏。
+
+### 包内容清单
+
+```
+go-remote-v1.0.0-linux-amd64.zip
+├── server                     # 服务端二进制
+├── agent                      # Agent 二进制
+├── static/
+│   ├── index.html             # 管理界面
+│   └── login.html             # 登录页
+├── server.example.yaml        # 服务端配置模板
+├── agent.example.yaml         # Agent 配置模板
+└── README.txt                 # 部署说明
+```
+
+### 打包命令
+
+```powershell
+$p="linux-amd64"; $d="release/v1.0.0"; $t="$d\pkg"
+New-Item -ItemType Dir -Force -Path $t | Out-Null
+Copy-Item "$d\server-$p" "$t\server"
+Copy-Item "$d\agent-$p" "$t\agent"
+Copy-Item "config\server.example.yaml","config\agent.example.yaml" $t
+Copy-Item "static\index.html","static\login.html" "$t\static\" -Force
+Compress-Archive -Path "$t\*" -Dest "$d\go-remote-v1.0.0-$p.zip" -Force
+```
+
+### 发布前自检
+
+- [ ] 解压 zip，确认 `static/` 目录存在且包含 `index.html` 和 `login.html`
+- [ ] 确认 `server.example.yaml` 中 `auth.key` 不是真实密钥
+- [ ] 确认 README.txt 不含公网 IP 或密码
+- [ ] 各平台二进制均重新编译（含最新改动）
 
 ## 注意事项
 

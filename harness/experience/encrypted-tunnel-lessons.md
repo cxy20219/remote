@@ -226,8 +226,77 @@ grep "encryption enabled" agent.log
 #→ "tunnel data encryption enabled (AES-256-GCM)"
 ```
 
+## 10. Release 打包遗漏 static 文件
+
+**现象**：下载 Gitee Release 的 zip 解压部署后，Web 界面 404 白屏。
+
+**原因**：release 打包脚本只复制了 `server` 和 `agent` 二进制，遗漏了 `static/` 目录下的 `index.html` 和 `login.html`。Gin 的 `StaticFile` 和 `Static` 路由从磁盘加载文件，不嵌入二进制。
+
+**解决**：打包时额外复制 `static/` 目录：
+```powershell
+Copy-Item "static\index.html","static\login.html" "$t\static\" -Force
+```
+
+**经验**：
+- 发布前解压 zip 自检，确认文件齐全
+- 每个 zip 附 `README.txt` 说明部署步骤
+- 模板配置文件中的密钥和地址必须为占位符（`CHANGE-ME` / `YOUR-HOST`）
+
+## 11. UpdateTunnel 锁拆分：避免异步操作死锁
+
+**背景**：新增公网端口编辑功能时，`UpdateTunnel` 持有 `tm.mu.Lock()` 后需要启动新监听器，但 `Listen()` 内部也会 `tm.mu.Lock()`，导致死锁。
+
+**解决**：将 `Listen` 拆分为加锁的公开方法和无锁的私有方法：
+```go
+func (tm *TunnelManager) Listen(port int, id string) error {
+    tm.mu.Lock()
+    defer tm.mu.Unlock()
+    return tm.startListener(port, id)
+}
+
+func (tm *TunnelManager) startListener(port int, id string) error {
+    // 不加锁，由调用方保证线程安全
+    listener, _ := net.Listen("tcp", addr)
+    tm.listeners[port] = listener
+    go tm.acceptLoop(port, id)
+    return nil
+}
+```
+
+在 `UpdateTunnel` 中直接调用 `tm.startListener()`（已持有锁）。
+
+**经验**：
+- 持有锁的方法内部不能再调用同锁的公开方法
+- 拆分模式：`PublicLocked() { lock; internal(); unlock }` + `internal()` 不加锁
+- 适用于任何需要在原子操作中嵌套调用自身的场景
+
+## 12. 端到端测试公网端口变更的完整模式
+
+验证端口编辑功能的标准测试矩阵（2026-05-08 全部通过）：
+
+| 测试 | 操作 | 验证方式 |
+|------|------|----------|
+| 创建双隧道 | A:22→10000, B:8080→10001 | nc/curl 验证数据流通 |
+| 改公网端口 | A: 10000→10088 | 新口 nc 通、旧口 `ss` 确认释放 |
+| 占用拒绝 | A→10001 (B占用) | API 返回 `already in use` |
+| 超范围拒绝 | A→99999 | API 返回 `out of range` |
+| 仅改内网 | 公网端口不动 | 公网端口不变，数据流向新目标 |
+| 同时改双端口 | 公网+内网一起变 | 新口通旧口断 |
+| 删除单隧道 | 删 A | B 不受影响，A 端口释放 |
+| 全清 | 删 B | `total:0` |
+
+验证命令：
+```powershell
+# 数据流通（从服务端自身 nc tunnel 端口最可靠）
+plink root@host "timeout 3 bash -c 'echo x|nc -w2 127.0.0.1 PORT'"
+
+# 端口释放确认
+plink root@host "ss -tlnp | grep PORT || echo 'released'"
+```
+
 ## 相关文档
 
 - [加密隧道部署与验证直通流程](../workflow/encrypted-tunnel-deploy-verify.md) — 完整操作步骤
 - [GoRemote 调试开发经验](./go-remote-debugging.md) — 综合排查手册
 - [远程部署常见坑点](./remote-deployment-pitfalls.md) — 部署五大坑点
+- [SSH 隧道直通测试用例](../references/ssh-tunnel-test-cases.md) — 标准化测试用例

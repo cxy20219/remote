@@ -96,6 +96,8 @@ go vet ./internal/...
 | 配置字段说明 | [references/config-reference.md](references/config-reference.md) | [assets/server.yaml.template](assets/server.yaml.template) |
 | TLS 证书问题 | [references/tls-setup.md](references/tls-setup.md) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
 | 系统架构理解 | [references/project-structure.md](references/project-structure.md) | [references/server-design.md](references/server-design.md) |
+| 制作 Release 发布包 | [workflow/encrypted-tunnel-deploy-verify.md](workflow/encrypted-tunnel-deploy-verify.md#步骤八制作-release-发布包) | — |
+| 隧道功能端到端验证 | [references/ssh-tunnel-test-cases.md](references/ssh-tunnel-test-cases.md) | — |
 | 密码/密钥/公网地址 | **禁止写入 harness 文档**，使用占位符代替 | `CHANGE-ME` / `your-server-ip` 等 |
 
 ## 安全机制
