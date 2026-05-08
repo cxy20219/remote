@@ -1,0 +1,69 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ / Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+.gradle/
+local.properties
+
+# Visual Studio Code
+#.vscode/
+
+# Flutter/Dart
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+coverage/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+
+# Android
+android/app/debug
+android/app/profile
+android/app/release
+android/.gradle
+android/app/build
+android/build
+android/*.jks
+android/*.keystore
+android/key.properties
+
+# iOS
+ios/Pods/
+ios/build/
+ios/Runner/GeneratedPluginRegistrant.*
+ios/.symlinks/
+
+# macOS
+macos/Pods/
+macos/build/
+macos/.symlinks/
+
+# Linux
+linux/flutter/ephemeral/
+
+# Windows
+windows/flutter/ephemeral/
+
+# Web
+web/build/
+
+# Built Go agent binary
+assets/agent-android-*
