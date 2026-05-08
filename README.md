@@ -72,18 +72,28 @@ notepad agent.yaml         # 修改 server.address + auth.key
 Start-Process -FilePath ".\agent.exe" -ArgumentList "--config agent.yaml" -WindowStyle Hidden
 ```
 
-#### Android (arm64, ADB 直推)
+#### Android (arm64, ADB / SSH 部署)
 
-无需安装任何 App。从 Release 下载 `go-remote-v1.0.0-linux-arm64.zip`，取出其中的 `agent` 二进制即可（ARM64 Linux 二进制兼容 Android 内核）：
+无需安装任何 App。从 Release 下载 `go-remote-v1.0.0-linux-arm64.zip`，取出其中的 `agent` 二进制（ARM64 Linux 二进制兼容 Android 内核）。
+
+**ADB 方式**（USB 连接）：
 
 ```bash
-# 解压，只需 agent 文件
 unzip go-remote-v1.0.0-linux-arm64.zip
-# 推送 + 启动（带 watchdog 自动重启）
 adb push agent /data/local/tmp/go-remote-agent
 adb push agent.yaml /data/local/tmp/agent.yaml
 adb shell "pkill go-remote-agent; cd /data/local/tmp && sh -c 'while true; do ./go-remote-agent --config agent.yaml; sleep 5; done > agent.log 2>&1 &'"
 ```
+
+**SSH 方式**（手机已开 SSH，如 Termux 的 sshd 或 SSHelper）：
+
+```bash
+unzip go-remote-v1.0.0-linux-arm64.zip
+scp -P 8022 agent agent.yaml phone-ip:/data/data/com.termux/files/home/
+ssh -p 8022 phone-ip "pkill go-remote-agent; chmod +x ~/agent; cd ~ && sh -c 'while true; do ./agent --config agent.yaml; sleep 5; done > agent.log 2>&1 &'"
+```
+
+> SSH 端口取决于手机端：Termux sshd 默认 8022，SSHelper 默认 2222。
 
 #### 远程 ADB 调试场景
 
