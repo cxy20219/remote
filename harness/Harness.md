@@ -39,12 +39,13 @@ go-remote/
 │       └── reconnect.go     # 指数退避重连
 ├── config/                   # 配置文件（含 security 段）
 ├── docs/                     # swag init 自动生成（构建依赖）
-├── opencode/
-│   ├── OpenCode.md          # 本文件
-│   ├── docs/                # 设计文档、直通流程、经验教训
-│   ├── scripts/             # 部署脚本
-│   ├── references/          # 配置参考、TLS 指南、API 规范
-│   └── assets/              # 配置模板、预编译二进制
+├── harness/
+│   ├── Harness.md            # 本文件 — 项目总览与资源路由
+│   ├── workflow/             # 直通流程（稳定可执行路径）
+│   ├── experience/           # 经验教训与排查记录
+│   ├── scripts/              # 自动化部署和运维脚本
+│   ├── references/           # 设计文档、配置参考、API 规范
+│   └── assets/               # 配置模板、预编译二进制
 └── go.mod
 ```
 
@@ -81,6 +82,22 @@ go vet ./internal/...
 | `internal/agent/tunnel.go` | Agent 端隧道，`HandleLocalResponse` 加密数据 |
 | `internal/agent/handler.go` | Agent 消息处理，`handleTunnelData` 解密 |
 
+## harness 资源路由
+
+执行任何开发、部署、调试任务前，优先查阅对应资源：
+
+| 任务类型 | 首选资源 | 备用资源 |
+|----------|----------|----------|
+| 首次部署服务端 | [workflow/encrypted-tunnel-deploy-verify.md](workflow/encrypted-tunnel-deploy-verify.md) | [scripts/deploy-server.ps1](scripts/deploy-server.ps1) |
+| SSH 隧道直通内网 | [workflow/ssh-tunnel-direct-access.md](workflow/ssh-tunnel-direct-access.md) | [references/tunnel-design.md](references/tunnel-design.md) |
+| 编译/部署报错排查 | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) | [experience/encrypted-tunnel-lessons.md](experience/encrypted-tunnel-lessons.md) |
+| 部署环境纯运维坑 | [experience/remote-deployment-pitfalls.md](experience/remote-deployment-pitfalls.md) | — |
+| Gin 路由/认证问题 | [experience/gin-auth-route-tips.md](experience/gin-auth-route-tips.md) | — |
+| 配置字段说明 | [references/config-reference.md](references/config-reference.md) | [assets/server.yaml.template](assets/server.yaml.template) |
+| TLS 证书问题 | [references/tls-setup.md](references/tls-setup.md) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
+| 系统架构理解 | [references/project-structure.md](references/project-structure.md) | [references/server-design.md](references/server-design.md) |
+| 密码/密钥/公网地址 | **禁止写入 harness 文档**，使用占位符代替 | `CHANGE-ME` / `your-server-ip` 等 |
+
 ## 安全机制
 
 | 机制 | 位置 | 说明 |
@@ -112,7 +129,7 @@ security:
 7. 启动 Agent，确认加密日志
 8. 通过 API 创建隧道，验证加密数据转发
 
-详见: `opencode/docs/workflow/encrypted-tunnel-deploy-verify.md`
+详见: `harness/workflow/encrypted-tunnel-deploy-verify.md`
 
 ## 常见问题
 

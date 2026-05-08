@@ -1,5 +1,7 @@
 # 加密隧道部署与验证直通流程
 
+> 最后验证：2026-05-07 | 适用场景：首次部署、版本升级、加密功能验证
+
 ## 概述
 
 本文档记录 GoRemote 加密隧道的完整部署和验证流程：从零开始，在公网服务器部署含 AES-256-GCM 加密的服务端，在本地 Windows 启动 Agent，创建隧道并通过加密通道验证数据转发。
@@ -27,11 +29,11 @@ swag init -g cmd/server/main.go -o docs
 
 # 编译 Linux 服务端
 $env:GOOS="linux"; $env:GOARCH="amd64"
-go build -ldflags "-s -w" -o opencode/assets/bin/server-linux-amd64 ./cmd/server/
+go build -ldflags "-s -w" -o harness/assets/bin/server-linux-amd64 ./cmd/server/
 
 # 编译 Windows Agent
 $env:GOOS="windows"; $env:GOARCH="amd64"
-go build -ldflags "-s -w" -o opencode/assets/bin/agent-windows-amd64.exe ./cmd/agent/
+go build -ldflags "-s -w" -o harness/assets/bin/agent-windows-amd64.exe ./cmd/agent/
 ```
 
 > `-ldflags "-s -w"` 去除调试信息，减小二进制体积。
@@ -243,3 +245,4 @@ plink -batch -pw "PASSWORD" root@SERVER_IP "ss -tlnp | grep -E '10000|10001' || 
 - [加密隧道开发经验教训](../experience/encrypted-tunnel-lessons.md) — 本轮开发中踩过的坑
 - [SSH 隧道直通内网服务流程](./ssh-tunnel-direct-access.md) — 更早的无加密隧道流程
 - [GoRemote 调试开发经验](../experience/go-remote-debugging.md) — 综合调试排查手册
+- [服务端部署脚本](../scripts/deploy-server.ps1) — 自动化部署脚本
