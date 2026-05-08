@@ -39,29 +39,54 @@ chmod +x server
 
 ### 各平台 Agent 使用
 
-#### Linux / macOS / Windows
+### Agent 部署（所有平台）
+
+从 [Release](https://gitee.com/cxy20219/go-remote/releases) 下载对应平台的 zip，解压后修改 `agent.yaml` 中的 `server.address` 和 `auth.key`。
+
+#### Linux (x86_64 / arm64)
 
 ```bash
-cp agent.example.yaml agent.yaml
-# 修改 server.address 和 auth.key
-./agent --config agent.yaml
+tar xf go-remote-v1.0.0-linux-amd64.zip
+cd go-remote-v1.0.0-linux-amd64
+vim agent.yaml            # 修改 server.address + auth.key
+chmod +x agent
+nohup ./agent --config agent.yaml > agent.log 2>&1 &
 ```
 
-#### Android（ADB 直推方案）
-
-无需安装任何 App，通过 ADB 直接推送 ARM64 二进制：
+#### macOS (Intel / Apple Silicon)
 
 ```bash
-# 1. 交叉编译（或在 Release 页面下载预编译的 agent-linux-arm64）
+unzip go-remote-v1.0.0-darwin-arm64.zip
+cd go-remote-v1.0.0-darwin-arm64
+vim agent.yaml
+chmod +x agent
+nohup ./agent --config agent.yaml > agent.log 2>&1 &
+```
+
+#### Windows (x86_64)
+
+```powershell
+Expand-Archive go-remote-v1.0.0-windows-amd64.zip
+cd go-remote-v1.0.0-windows-amd64
+notepad agent.yaml         # 修改 server.address + auth.key
+Start-Process -FilePath ".\agent.exe" -ArgumentList "--config agent.yaml" -WindowStyle Hidden
+```
+
+#### Android (arm64, ADB 直推)
+
+无需安装任何 App，USB 连上手机即可：
+
+```bash
+# 解压 Release 包中的 agent-linux-arm64，或交叉编译
 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o agent-linux-arm64 ./cmd/agent
 
-# 2. 推送到手机并启动
+# 推送 + 启动（带 watchdog 自动重启）
 adb push agent-linux-arm64 /data/local/tmp/go-remote-agent
 adb push agent.yaml /data/local/tmp/agent.yaml
 adb shell "pkill go-remote-agent; cd /data/local/tmp && sh -c 'while true; do ./go-remote-agent --config agent.yaml; sleep 5; done > agent.log 2>&1 &'"
 ```
 
-Agent 被杀后会自动重启（watchdog 循环）。如需开机自启，安装 Termux + Termux:Boot，将启动脚本放入 `~/.termux/boot/`。
+Agent 被杀后 watchdog 自动拉起。配合 `adb tcpip 5555` 可实现远程 ADB 调试（见下方）。
 
 #### 远程 ADB 调试场景
 
