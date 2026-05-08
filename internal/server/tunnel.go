@@ -201,7 +201,7 @@ func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 	return nil
 }
 
-func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPort int, protocol string) (*Tunnel, error) {
+func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPort int, newPublicPort int, protocol string) (*Tunnel, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -214,7 +214,45 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 		return nil, fmt.Errorf("tunnel is not active, current status: %s", tunnel.Status)
 	}
 
-	if localAddr != tunnel.LocalAddr || localPort != tunnel.LocalPort || protocol != tunnel.Protocol {
+	// 处理公网端口变更
+	portChanged := newPublicPort > 0 && newPublicPort != tunnel.PublicPort
+	if portChanged {
+		// 校验端口范围
+		if newPublicPort < tm.portStart || newPublicPort > tm.portEnd {
+			return nil, fmt.Errorf("public port %d out of range [%d, %d]", newPublicPort, tm.portStart, tm.portEnd)
+		}
+		// 校验端口未被其他隧道占用
+		if existingID, used := tm.publicPorts[newPublicPort]; used && existingID != "" && existingID != tunnelID {
+			return nil, fmt.Errorf("public port %d already in use", newPublicPort)
+		}
+
+		// 关闭旧监听器和连接
+		tm.closeTunnelConnections(tunnelID)
+		if oldListener, ok := tm.listeners[tunnel.PublicPort]; ok {
+			oldListener.Close()
+			delete(tm.listeners, tunnel.PublicPort)
+		}
+
+		// 更新端口映射
+		oldPort := tunnel.PublicPort
+		delete(tm.publicPorts, oldPort)
+		tm.publicPorts[newPublicPort] = tunnelID
+		tunnel.PublicPort = newPublicPort
+
+		slog.Info("tunnel public port changed", "tunnel_id", tunnelID, "old_port", oldPort, "new_port", newPublicPort)
+
+		// 启动新监听器（内部不加锁，因为当前已持有锁）
+		if err := tm.startListener(newPublicPort, tunnelID); err != nil {
+			// 回滚端口映射
+			delete(tm.publicPorts, newPublicPort)
+			tm.publicPorts[tunnel.PublicPort] = tunnelID
+			return nil, fmt.Errorf("failed to start listener on new port %d: %w", newPublicPort, err)
+		}
+	}
+
+	// 通知 Agent 更新目标地址
+	targetChanged := localAddr != tunnel.LocalAddr || localPort != tunnel.LocalPort || protocol != tunnel.Protocol || portChanged
+	if targetChanged {
 		payloadJSON, _ := json.Marshal(common.TunnelClosePayload{TunnelID: tunnelID})
 		tunnel.Client.WriteJSON(common.Message{
 			Type:    "tunnel_close",
@@ -238,7 +276,7 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 		Payload: payloadJSON,
 	})
 
-	slog.Info("tunnel updated", "tunnel_id", tunnelID, "local_addr", localAddr, "local_port", localPort, "protocol", protocol)
+	slog.Info("tunnel updated", "tunnel_id", tunnelID, "public_port", tunnel.PublicPort, "local_addr", localAddr, "local_port", localPort, "protocol", protocol)
 	return tunnel, nil
 }
 
@@ -285,11 +323,15 @@ func (tm *TunnelManager) RemoveExternalConn(connID string) {
 	}
 }
 
-// Listen 开始监听公网端口
+// Listen 开始监听公网端口（加锁，外部调用）
 func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+	return tm.startListener(publicPort, tunnelID)
+}
 
+// startListener 启动监听器（不加锁，由调用方保证线程安全）
+func (tm *TunnelManager) startListener(publicPort int, tunnelID string) error {
 	addr := fmt.Sprintf(":%d", publicPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -299,9 +341,7 @@ func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 	tm.listeners[publicPort] = listener
 	slog.Info("tunnel listener started", "public_port", publicPort, "tunnel_id", tunnelID)
 
-	// 启动 accept goroutine
 	go tm.acceptLoop(publicPort, tunnelID)
-
 	return nil
 }
 

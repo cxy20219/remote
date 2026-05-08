@@ -221,9 +221,10 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 	tunnelID := c.Param("tunnel_id")
 
 	var req struct {
-		LocalAddr string `json:"local_addr"`
-		LocalPort int    `json:"local_port"`
-		Protocol  string `json:"protocol"`
+		LocalAddr  string `json:"local_addr"`
+		LocalPort  int    `json:"local_port"`
+		PublicPort int    `json:"public_port"`
+		Protocol   string `json:"protocol"`
 	}
 
 	body, err := io.ReadAll(c.Request.Body)
@@ -249,7 +250,7 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 		req.Protocol = "tcp"
 	}
 
-	tunnel, err := s.tunnelManager.UpdateTunnel(tunnelID, req.LocalAddr, req.LocalPort, req.Protocol)
+	tunnel, err := s.tunnelManager.UpdateTunnel(tunnelID, req.LocalAddr, req.LocalPort, req.PublicPort, req.Protocol)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

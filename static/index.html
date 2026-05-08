@@ -162,6 +162,7 @@ th,td{padding:8px 8px}
   <div class="modal">
     <h3>编辑隧道</h3>
     <input type="hidden" id="edit-tunnel-id">
+    <div class="form-group"><label>公网端口</label><input type="number" id="edit-public-port" placeholder="留空则不修改"></div>
     <div class="form-group"><label>内网地址</label><input type="text" id="edit-local-addr" value="127.0.0.1"></div>
     <div class="form-group"><label>内网端口</label><input type="number" id="edit-local-port" value="22"></div>
     <div class="form-group"><label>协议</label><select id="edit-protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
@@ -232,7 +233,7 @@ async function loadTunnels(){
     let h='<table><thead><tr><th>隧道 ID</th><th>公网端口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     d.tunnels.forEach(t=>{
       h+=`<tr><td><code>${t.TunnelID.substring(0,18)}&hellip;</code></td><td><span class="port-highlight">${t.PublicPort}</span></td><td><span class="mono">${t.LocalAddr}:${t.LocalPort}</span></td><td>${t.Protocol.toUpperCase()}</td><td>${new Date(t.CreatedAt).toLocaleString()}</td>`;
-      h+=`<td><button class="btn btn-ghost" onclick="openEditModal('${t.TunnelID}','${t.LocalAddr}',${t.LocalPort},'${t.Protocol}')">编辑</button> <button class="btn btn-danger" onclick="deleteTunnel('${t.TunnelID}')">删除</button></td></tr>`
+      h+=`<td><button class="btn btn-ghost" onclick="openEditModal('${t.TunnelID}','${t.LocalAddr}',${t.LocalPort},'${t.Protocol}',${t.PublicPort})">编辑</button> <button class="btn btn-danger" onclick="deleteTunnel('${t.TunnelID}')">删除</button></td></tr>`
     });
     h+='</tbody></table>';document.getElementById('tunnels').innerHTML=h
   }catch(e){document.getElementById('tunnels').innerHTML='<div class="empty">加载失败</div>'}
@@ -253,8 +254,10 @@ async function createTunnel(){
 
 async function deleteTunnel(id){if(!confirm('确定删除此隧道？'))return;try{const r=await fetch('/api/tunnels/'+id,{method:'DELETE'});const d=await r.json();if(r.ok){toast('已删除');loadTunnels()}else toast(d.error||'删除失败','error')}catch(e){toast('网络错误','error')}}
 
-function openEditModal(id,addr,port,proto){
+function openEditModal(id,addr,port,proto,pubPort){
   document.getElementById('edit-tunnel-id').value=id;
+  document.getElementById('edit-public-port').value='';
+  document.getElementById('edit-public-port').placeholder='当前: '+pubPort+'（留空不修改）';
   document.getElementById('edit-local-addr').value=addr;
   document.getElementById('edit-local-port').value=port;
   document.getElementById('edit-protocol').value=proto;
@@ -265,8 +268,11 @@ function closeEditModal(){document.getElementById('edit-modal').classList.remove
 async function saveTunnelEdit(){
   const id=document.getElementById('edit-tunnel-id').value;
   if(!id)return;
+  const pubPort=document.getElementById('edit-public-port').value;
   try{
-    const r=await fetch('/api/tunnels/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({local_addr:document.getElementById('edit-local-addr').value,local_port:parseInt(document.getElementById('edit-local-port').value),protocol:document.getElementById('edit-protocol').value})});
+    const body={local_addr:document.getElementById('edit-local-addr').value,local_port:parseInt(document.getElementById('edit-local-port').value),protocol:document.getElementById('edit-protocol').value};
+    if(pubPort)body.public_port=parseInt(pubPort);
+    const r=await fetch('/api/tunnels/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
     if(r.ok){toast('已更新');closeEditModal();loadTunnels()}else toast(d.error||'更新失败','error')
   }catch(e){toast('网络错误','error')}
