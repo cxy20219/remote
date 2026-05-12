@@ -20,11 +20,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$LocalBinary = "opencode\assets\bin\server-linux-amd64"
+$LocalBinary = "release/server-linux-amd64"
 $RemoteBinary = "$RemoteDir/server"
 
 if (-not (Test-Path $LocalBinary)) {
-    Write-Error "Binary not found: $LocalBinary"
+    Write-Error "Binary not found at $LocalBinary`nBuild with: `$env:GOOS=`"linux`"; `$env:GOARCH=`"amd64`"; go build -o release/server-linux-amd64 ./cmd/server/"
     exit 1
 }
 
@@ -69,7 +69,7 @@ Remote-Command $startCmd
 Start-Sleep -Seconds 3
 
 Write-Host "Checking health..."
-$health = Remote-Command "curl -sk https://localhost:8080/health 2>/dev/null || echo 'FAILED'"
+$health = Remote-Command "curl -s http://localhost:8080/health 2>/dev/null || echo 'FAILED'"
 if ($health -match "ok|status") {
     Write-Host "Server deployed successfully!" -ForegroundColor Green
 } else {

@@ -167,6 +167,8 @@ project/
 │   │   └── go-remote-debugging.md
 │   └── test/            # 测试文档
 │       └── ssh-tunnel-test-cases.md
+├── web/
+│   └── static.go         # go:embed 嵌入 static/ 文件到二进制
 ├── config/
 │   ├── server.yaml       # 服务端配置示例
 │   └── agent.yaml        # 客户端配置示例

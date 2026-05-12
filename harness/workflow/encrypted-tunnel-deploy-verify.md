@@ -1,6 +1,6 @@
 # 加密隧道部署与验证直通流程
 
-> 最后验证：2026-05-08 | 适用场景：首次部署、版本升级、加密功能验证、Release 打包
+> 最后验证：2026-05-12 | 适用场景：首次部署、版本升级、加密功能验证、Release 打包
 
 ## 概述
 
@@ -217,6 +217,50 @@ curl.exe -k -b cookies.txt -s https://SERVER_IP:8080/api/clients
 plink -batch -pw "PASSWORD" root@SERVER_IP "ss -tlnp | grep -E '10000|10001' || echo 'ports released'"
 ```
 
+## 步骤八：端口占用检测验证
+
+v1.1.0+ 支持实绑端口占用检测，`AllocatePort` 会自动跳过被系统占用的端口。
+
+### 8.1 在服务器上占用几个端口
+
+```powershell
+# 用 nc 占用端口
+plink -batch -pw "PASSWORD" root@SERVER_IP "bash -c 'nc -l 10002 & nc -l 10005 & nc -l 10010 & sleep 1; ss -tlnp | grep -E \"10002|10005|10010\"'"
+```
+
+### 8.2 创建隧道，验证自动跳过
+
+创建多个隧道，检查分配端口是否跳过了被占用的端口：
+
+```powershell
+# 登录 Web API
+curl.exe -c cookies.txt -s -X POST "http://SERVER_IP:8080/api/login" -H "Content-Type: application/json" -d '{"password":"admin123"}'
+
+# 创建隧道（使用不同的 client_id 和内网端口）
+curl.exe -b cookies.txt -s -X POST "http://SERVER_IP:8080/api/tunnels" -H "Content-Type: application/json" -d '{"client_id":"client-xxx","local_port":80,"protocol":"tcp"}'
+# 预期分配 10000（因为跳过了被占的 10002、10005、10010）
+```
+
+### 8.3 验证端口状态 API
+
+```powershell
+curl.exe -b cookies.txt -s "http://SERVER_IP:8080/api/port-status"
+```
+
+预期返回：
+```json
+{
+  "range_start": 10000,
+  "range_end": 20000,
+  "total_ports": 10001,
+  "allocated": 5,
+  "unavailable": [10002, 10005, 10010],
+  "available_count": 9989
+}
+```
+
+> `unavailable` 是惰性检测的——只有 `AllocatePort` 尝试分配时才会记录。如果某端口已被 Agent 占用后又释放，该端口不会出现在 `unavailable` 中，下次可重新分配。
+
 ## 验证清单
 
 部署完成后逐项确认：
@@ -227,46 +271,93 @@ plink -batch -pw "PASSWORD" root@SERVER_IP "ss -tlnp | grep -E '10000|10001' || 
 □ 健康检查通过: curl -k https://SERVER_IP:8080/health → {"status":"ok"}
 □ Agent 已注册且在线: GET /api/clients → status=online
 □ 隧道可创建: POST /api/tunnels → 返回 tunnel_id + public_port
+□ 端口占用检测: 被系统占用的端口自动跳过，/api/port-status 正确返回
 □ 加密隧道数据转发正常: curl 通过 tunnel 端口收到目标服务响应
 □ 端口释放正常: 杀 Agent 后隧道和端口全部清理
+□ Web 界面正常: 浏览器访问 http://SERVER_IP:8080/ 显示登录页
 ```
 
 ## 步骤八：制作 Release 发布包
 
-对外发布的 zip 包必须包含完整运行环境，遗漏 `static/` 目录会导致 Web 界面白屏。
+v1.1.0 起，Web 界面（index.html、login.html）已通过 go:embed 编译进服务端二进制，部署时无需附带 static/ 目录。Release 包只需二进制和配置模板。
 
-### 包内容清单
+### 包内容清单（v1.1.0+）
 
 ```
-go-remote-v1.0.0-linux-amd64.zip
-├── server                     # 服务端二进制
+go-remote-v1.1.0-linux-amd64.zip
+├── server                     # 服务端二进制（含内嵌 Web 界面）
 ├── agent                      # Agent 二进制
-├── static/
-│   ├── index.html             # 管理界面
-│   └── login.html             # 登录页
 ├── server.example.yaml        # 服务端配置模板
 ├── agent.example.yaml         # Agent 配置模板
 └── README.txt                 # 部署说明
 ```
 
-### 打包命令
+### 交叉编译（所有平台）
 
 ```powershell
-$p="linux-amd64"; $d="release/v1.0.0"; $t="$d\pkg"
-New-Item -ItemType Dir -Force -Path $t | Out-Null
-Copy-Item "$d\server-$p" "$t\server"
-Copy-Item "$d\agent-$p" "$t\agent"
-Copy-Item "config\server.example.yaml","config\agent.example.yaml" $t
-Copy-Item "static\index.html","static\login.html" "$t\static\" -Force
-Compress-Archive -Path "$t\*" -Dest "$d\go-remote-v1.0.0-$p.zip" -Force
+# 设置 Go 环境变量后分别编译
+# Linux amd64
+$env:GOOS="linux"; $env:GOARCH="amd64"
+go build -o release/server-linux-amd64 ./cmd/server/
+go build -o release/agent-linux-amd64 ./cmd/agent/
+
+# Linux arm64
+$env:GOOS="linux"; $env:GOARCH="arm64"
+go build -o release/server-linux-arm64 ./cmd/server/
+go build -o release/agent-linux-arm64 ./cmd/agent/
+
+# Windows amd64
+$env:GOOS="windows"; $env:GOARCH="amd64"
+go build -o release/server-windows-amd64.exe ./cmd/server/
+go build -o release/agent-windows-amd64.exe ./cmd/agent/
+
+# macOS amd64
+$env:GOOS="darwin"; $env:GOARCH="amd64"
+go build -o release/server-darwin-amd64 ./cmd/server/
+go build -o release/agent-darwin-amd64 ./cmd/agent/
+
+# macOS arm64
+$env:GOOS="darwin"; $env:GOARCH="arm64"
+go build -o release/server-darwin-arm64 ./cmd/server/
+go build -o release/agent-darwin-arm64 ./cmd/agent/
+```
+
+### 创建 Gitee Release
+
+> **编码注意**：PowerShell 传递中文到 Gitee API 时编码会损坏，需用 Go 程序发送 JSON 请求。详见 [Gitee Release 中文编码问题](../experience/gitee-release-utf8.md)。
+
+```powershell
+git tag v1.1.0
+git push origin v1.1.0
+
+# 用 Go 程序（而非 curl/PowerShell）创建 release 并指定 body
+# 参照 harness/experience/gitee-release-utf8.md 中的方案
+```
+
+### 上传二进制到 Release
+
+```powershell
+$releaseId = "YOUR_RELEASE_ID"
+$token = "YOUR_TOKEN"
+$baseUrl = "https://gitee.com/api/v5/repos/cxy20219/go-remote/releases/$releaseId/attach_files?access_token=$token"
+
+$files = @("server-linux-amd64","server-linux-arm64","agent-linux-amd64","agent-linux-arm64",
+           "server-windows-amd64.exe","agent-windows-amd64.exe",
+           "server-darwin-amd64","server-darwin-arm64","agent-darwin-amd64","agent-darwin-arm64")
+
+foreach ($f in $files) {
+    & curl.exe -s -X POST "$baseUrl" -F "file=@release/$f"
+    Start-Sleep -Milliseconds 500
+}
 ```
 
 ### 发布前自检
 
-- [ ] 解压 zip，确认 `static/` 目录存在且包含 `index.html` 和 `login.html`
+- [ ] 确认 `web/static.go` 和 `web/static/` 目录存在（go:embed 源文件）
+- [ ] 确认 `go build ./cmd/server/` 编译通过
+- [ ] 确认各平台二进制均重新编译（含最新改动）
 - [ ] 确认 `server.example.yaml` 中 `auth.key` 不是真实密钥
 - [ ] 确认 README.txt 不含公网 IP 或密码
-- [ ] 各平台二进制均重新编译（含最新改动）
 
 ## 注意事项
 

@@ -39,6 +39,8 @@ go-remote/
 │       └── reconnect.go     # 指数退避重连
 ├── config/                   # 配置文件（含 security 段）
 ├── docs/                     # swag init 自动生成（构建依赖）
+├── web/
+│   └── static.go             # go:embed 嵌入 static/ 到二进制
 ├── harness/
 │   ├── Harness.md            # 本文件 — 项目总览与资源路由
 │   ├── workflow/             # 直通流程（稳定可执行路径）
@@ -77,10 +79,11 @@ go vet ./internal/...
 |------|------|
 | `internal/common/crypto.go` | AES-256-GCM 加解密，密钥由 `auth.key` 派生 |
 | `internal/server/security.go` | 安全响应头、请求体大小限制、IP 速率限制 |
-| `internal/server/tunnel.go` | 隧道管理，`handleExternalConn` 加密外发数据 |
+| `internal/server/tunnel.go` | 隧道管理，端口占用检测，`handleExternalConn` 加密外发数据 |
 | `internal/server/handler.go` | 消息路由，`handleTunnelData` 解密接收数据 |
 | `internal/agent/tunnel.go` | Agent 端隧道，`HandleLocalResponse` 加密数据 |
 | `internal/agent/handler.go` | Agent 消息处理，`handleTunnelData` 解密 |
+| `web/static.go` | `go:embed static` 嵌入 Web 界面到服务端二进制 |
 
 ## harness 资源路由
 
@@ -98,6 +101,8 @@ go vet ./internal/...
 | 系统架构理解 | [references/project-structure.md](references/project-structure.md) | [references/server-design.md](references/server-design.md) |
 | 制作 Release 发布包 | [workflow/encrypted-tunnel-deploy-verify.md](workflow/encrypted-tunnel-deploy-verify.md#步骤八制作-release-发布包) | — |
 | 隧道功能端到端验证 | [references/ssh-tunnel-test-cases.md](references/ssh-tunnel-test-cases.md) | — |
+| 端口占用检测与排除 | [references/tunnel-design.md](references/tunnel-design.md#36-端口状态查询) | [experience/port-occupancy-testing.md](experience/port-occupancy-testing.md) |
+| 制作 Gitee Release 中文乱码 | [experience/gitee-release-utf8.md](experience/gitee-release-utf8.md) | — |
 | 密码/密钥/公网地址 | **禁止写入 harness 文档**，使用占位符代替 | `CHANGE-ME` / `your-server-ip` 等 |
 
 ## 安全机制
@@ -126,12 +131,33 @@ security:
 2. 交叉编译对应平台二进制
 3. 检查服务器磁盘空间（`df -h`）
 4. 停旧进程（`fuser -k 8080/tcp`）
-5. 上传二进制和配置
+5. **上传二进制和配置（无需 static/ 目录，Web 界面已通过 go:embed 编译进二进制）**
 6. 启动服务端，验证 `"tunnel data encryption enabled (AES-256-GCM)"`
 7. 启动 Agent，确认加密日志
 8. 通过 API 创建隧道，验证加密数据转发
 
 详见: `harness/workflow/encrypted-tunnel-deploy-verify.md`
+
+## API 端点
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/health` | 健康检查 |
+| GET | `/login.html` | Web 登录页（go:embed 嵌入） |
+| POST | `/api/login` | 管理员登录（速率限制保护） |
+| POST | `/api/logout` | 登出 |
+| GET | `/api/check-auth` | 认证状态检查 |
+| GET | `/api/clients` | 客户端列表（需认证） |
+| GET | `/api/clients/:id` | 客户端详情 |
+| GET | `/api/client-tunnels/:client_id` | 指定客户端的所有隧道 |
+| POST | `/api/tunnels` | 创建隧道 |
+| GET | `/api/tunnels` | 隧道列表 |
+| GET | `/api/tunnels/:id` | 隧道详情 |
+| PUT | `/api/tunnels/:id` | 更新隧道 |
+| DELETE | `/api/tunnels/:id` | 删除隧道 |
+| GET | `/api/port-status` | 端口范围使用状况（含被占端口列表） |
+| GET | `/static/*` | 静态资源（go:embed 嵌入） |
+| GET | `/` | Web 管理首页（go:embed 嵌入） |
 
 ## 常见问题
 
@@ -144,17 +170,8 @@ security:
 | 加密未启用 | 检查日志是否包含 `encryption enabled` |
 | curl JSON 请求乱码 | 用 `@file.json` 方式，`Out-File -Encoding ascii` |
 | Start-Process 找不到配置 | 加 `-WorkingDirectory` 参数 |
-| plink 主机密钥警告 | 用 `nc` 验证 tunnel，不依赖 SSH 层 |
-
-## API 端点
-
-- `GET /health` — 健康检查
-- `POST /api/login` — 管理员登录（速率限制保护）
-- `GET /api/clients` — 客户端列表（需认证）
-- `POST /api/tunnels` — 创建隧道
-- `GET /api/tunnels` — 隧道列表
-- `PUT /api/tunnels/:id` — 更新隧道
-- `DELETE /api/tunnels/:id` — 删除隧道
+| plink 主机密钥警告 | 同一服务器不同端口有独立的主机密钥缓存，用 `-hostkey` 参数指定 |
+| Gitee Release 中文乱码 | PowerShell 编码损坏中文，需用 Go 程序 `json.Marshal` 发送 API 请求 |
 
 ## 测试注意
 

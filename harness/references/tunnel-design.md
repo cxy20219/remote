@@ -118,13 +118,14 @@ type ExternalConn struct {
 
 // TunnelManager 隧道管理器
 type TunnelManager struct {
-    mu          sync.RWMutex
-    tunnels     map[string]*Tunnel    // tunnelID -> Tunnel
-    publicPorts map[int]string        // publicPort -> tunnelID
-    extConns    map[string]*ExternalConn // connID -> ExternalConn
-    portStart   int
-    portEnd     int
-    listeners   map[int]net.Listener  // publicPort -> 监听器
+    mu               sync.RWMutex
+    tunnels          map[string]*Tunnel    // tunnelID -> Tunnel
+    publicPorts      map[int]string        // publicPort -> tunnelID
+    extConns         map[string]*ExternalConn // connID -> ExternalConn
+    unavailablePorts map[int]struct{}      // 系统占用的端口（惰性检测）
+    portStart        int
+    portEnd          int
+    listeners        map[int]net.Listener  // publicPort -> 监听器
 }
 ```
 
@@ -155,10 +156,16 @@ func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 
 ### 3.3 核心流程
 
-**创建隧道**：
+**创建隧道（含端口占用检测）**：
 1. Agent 发送 `tunnel_open`（包含 localAddr:localPort）
-2. Server 分配公网端口，调用 `Listen()` 启动监听
-3. Server 返回 `tunnel_open_ack`（包含 tunnelID, publicPort）
+2. Server `AllocatePort()` 遍历端口范围，对每个候选端口 `net.Listen` 试探：
+   - 绑定成功 → 关闭监听，标记为已分配
+   - 绑定失败 → 记录到 `unavailablePorts`，跳过
+3. Server 调用 `Listen()` 启动正式监听，返回 `tunnel_open_ack`
+
+**端口释放（联动清理）**：
+- `ReleasePort()` 清除 `publicPorts` 和 `unavailablePorts` 中的标记
+- 删除隧道后，之前被系统占用的端口可被重新检测
 
 **数据转发**：
 ```
@@ -171,8 +178,33 @@ func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
                          │ 首次收到该 conn_id → 连接本地服务
                          │ Agent 发送 tunnel_data(conn_id=x, data=响应)
                          ▼
-                   Server 收到 tunnel_data → 写入外部 TCP 连接
+                    Server 收到 tunnel_data → 写入外部 TCP 连接
 ```
+
+### 3.6 端口状态查询
+
+`GET /api/port-status` 返回端口范围的使用状况（需认证）：
+
+```json
+{
+  "range_start": 10000,
+  "range_end": 20000,
+  "total_ports": 10001,
+  "allocated": 5,
+  "unavailable": [10002, 10005, 10010],
+  "available_count": 9993
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `range_start` / `range_end` | 配置的端口范围 |
+| `total_ports` | 端口总数 = end - start + 1 |
+| `allocated` | 已由隧道占用的端口数 |
+| `unavailable` | 被系统其他进程占用的端口列表（惰性检测，仅在 `AllocatePort` 尝试时发现） |
+| `available_count` | 可用端口数 = total - allocated - len(unavailable) |
+
+**实现**：`internal/server/tunnel.go` 中的 `GetPortStatus()` 方法，读锁保护。`unavailablePorts` 通过 `AllocatePort` 的实绑 `net.Listen` 试探填充，`ReleasePort` 释放时同时清除标记。
 
 ---
 
@@ -233,8 +265,10 @@ type TunnelManager struct {
 | POST | /api/tunnels | 创建端口映射 |
 | GET | /api/tunnels | 列出所有隧道 |
 | GET | /api/tunnels/:tunnel_id | 获取隧道详情 |
+| PUT | /api/tunnels/:tunnel_id | 更新隧道 |
 | DELETE | /api/tunnels/:tunnel_id | 删除端口映射 |
 | GET | /api/clients/:client_id/tunnels | 获取指定客户端的隧道 |
+| GET | /api/port-status | 端口范围使用状况 |
 
 ### 5.2 API 详情
 

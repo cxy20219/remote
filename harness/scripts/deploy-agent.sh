@@ -11,7 +11,7 @@ SSH_USER="${2:?}"
 SSH_PASS="${3:?}"
 SERVER_ADDR="${4:?}"
 CONFIG_PATH="${5:-../assets/agent.yaml.template}"
-BINARY_PATH="../../bin/agent"
+BINARY_PATH="release/agent-linux-amd64"
 REMOTE_DIR="/opt/goremote"
 
 echo "=== GoRemote Agent Deploy ==="
@@ -21,7 +21,7 @@ echo "Server: ${SERVER_ADDR}"
 # 1. Check binary
 if [ ! -f "$BINARY_PATH" ]; then
     echo "ERROR: Binary not found at $BINARY_PATH"
-    echo "Build with: GOOS=linux GOARCH=amd64 go build -o bin/agent ./cmd/agent"
+    echo "Build with: GOOS=linux GOARCH=amd64 go build -o release/agent-linux-amd64 ./cmd/agent"
     exit 1
 fi
 
