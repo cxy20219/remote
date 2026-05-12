@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"embed"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
@@ -76,7 +77,7 @@ func TestNewServer_TLSEnabled(t *testing.T) {
 		Tunnel: TunnelConfig{Enabled: false},
 	}
 
-	srv := NewServer(config)
+	srv := NewServer(config, embed.FS{})
 
 	if !srv.tlsEnabled {
 		t.Fatal("tlsEnabled should be true")
@@ -96,7 +97,7 @@ func TestNewServer_TLSDisabled(t *testing.T) {
 		Tunnel: TunnelConfig{Enabled: false},
 	}
 
-	srv := NewServer(config)
+	srv := NewServer(config, embed.FS{})
 
 	if srv.tlsEnabled {
 		t.Fatal("tlsEnabled should be false")
@@ -130,7 +131,7 @@ func TestServerTLS_WebSocketUpgradeAndRegister(t *testing.T) {
 		Tunnel:    TunnelConfig{Enabled: false},
 	}
 
-	srv := NewServer(config)
+	srv := NewServer(config, embed.FS{})
 	srv.Addr = addr
 
 	go func() {
@@ -201,7 +202,7 @@ func TestServerTLS_RejectPlainWS(t *testing.T) {
 		Tunnel:    TunnelConfig{Enabled: false},
 	}
 
-	srv := NewServer(config)
+	srv := NewServer(config, embed.FS{})
 	srv.Addr = addr
 
 	go func() {

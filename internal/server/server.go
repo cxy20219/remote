@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,7 +29,8 @@ type Server struct {
 	tlsCert    string
 	tlsKey     string
 
-	config *Config
+	config   *Config
+	staticFS embed.FS
 
 	clients       *ClientManager
 	handler       *Handler
@@ -42,7 +45,7 @@ type Server struct {
 }
 
 // NewServer creates a new Server
-func NewServer(config *Config) *Server {
+func NewServer(config *Config, staticFS embed.FS) *Server {
 	// Validate TLS certificate files if TLS is enabled
 	if config.Server.TLS.Enabled {
 		if config.Server.TLS.Cert == "" || config.Server.TLS.Key == "" {
@@ -56,6 +59,7 @@ func NewServer(config *Config) *Server {
 		tlsCert:    config.Server.TLS.Cert,
 		tlsKey:     config.Server.TLS.Key,
 		config:     config,
+		staticFS:   staticFS,
 		clients:    NewClientManager(),
 		handler:    nil,
 	}
@@ -113,7 +117,12 @@ func (s *Server) Start() error {
 	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter), s.handleLogin)
 	s.engine.POST("/api/logout", s.handleLogout)
 	s.engine.GET("/api/check-auth", s.handleCheckAuth)
-	s.engine.StaticFile("/login.html", "./static/login.html")
+
+	staticSub, _ := fs.Sub(s.staticFS, "static")
+	s.engine.GET("/login.html", func(c *gin.Context) {
+		data, _ := fs.ReadFile(staticSub, "login.html")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+	})
 
 	// Protected routes
 	protected := s.engine.Group("/")
@@ -128,8 +137,11 @@ func (s *Server) Start() error {
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
 		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
 		protected.GET("/api/port-status", s.handleAPIPortStatus)
-		protected.Static("/static", "./static")
-		protected.StaticFile("/", "./static/index.html")
+		protected.StaticFS("/static", http.FS(staticSub))
+		protected.GET("/", func(c *gin.Context) {
+			data, _ := fs.ReadFile(staticSub, "index.html")
+			c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+		})
 		if s.config.Swagger.Enabled {
 			protected.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 		}
