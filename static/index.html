@@ -125,6 +125,22 @@ th,td{padding:8px 8px}
       <div class="stat-icon purple">&#8644;</div>
       <div class="stat-info"><div class="stat-value" id="stat-tunnels">0</div><div class="stat-label">活跃隧道</div></div>
     </div>
+    <div class="stat-card">
+      <div class="stat-icon green">&#9733;</div>
+      <div class="stat-info"><div class="stat-value" id="stat-ports">-</div><div class="stat-label">可用端口</div></div>
+    </div>
+  </div>
+
+  <div class="card" id="port-status-card" style="display:none">
+    <div class="card-header"><h2>端口范围状态</h2></div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px">
+      <div style="flex:1;min-width:180px"><div style="font-size:12px;color:#94a3b8;margin-bottom:4px">端口范围</div><div style="font-size:15px;font-weight:600;color:#1e293b" id="ps-range">-</div></div>
+      <div style="flex:1;min-width:180px"><div style="font-size:12px;color:#94a3b8;margin-bottom:4px">总计 / 已分配 / 可用 / 被占用</div><div style="font-size:15px;font-weight:600" id="ps-summary">-</div></div>
+    </div>
+    <div id="ps-unavailable" style="display:none">
+      <div style="font-size:12px;color:#ef4444;font-weight:600;margin-bottom:6px">被系统占用的端口：</div>
+      <div id="ps-unavailable-ports" style="font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px;color:#64748b;line-height:1.8"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -247,12 +263,12 @@ async function createTunnel(){
   try{
     const r=await fetch('/api/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:cid,local_port:parseInt(port),protocol:proto})});
     const d=await r.json();
-    if(r.ok){toast('隧道创建成功 &middot; 公网端口 '+d.public_port);document.getElementById('example-port').textContent=d.public_port;loadTunnels()}
+    if(r.ok){toast('隧道创建成功 &middot; 公网端口 '+d.public_port);document.getElementById('example-port').textContent=d.public_port;loadTunnels();loadPortStatus()}
     else toast(d.error||'创建失败','error')
   }catch(e){toast('网络错误','error')}
 }
 
-async function deleteTunnel(id){if(!confirm('确定删除此隧道？'))return;try{const r=await fetch('/api/tunnels/'+id,{method:'DELETE'});const d=await r.json();if(r.ok){toast('已删除');loadTunnels()}else toast(d.error||'删除失败','error')}catch(e){toast('网络错误','error')}}
+async function deleteTunnel(id){if(!confirm('确定删除此隧道？'))return;try{const r=await fetch('/api/tunnels/'+id,{method:'DELETE'});const d=await r.json();if(r.ok){toast('已删除');loadTunnels();loadPortStatus()}else toast(d.error||'删除失败','error')}catch(e){toast('网络错误','error')}}
 
 function openEditModal(id,addr,port,proto,pubPort){
   document.getElementById('edit-tunnel-id').value=id;
@@ -280,8 +296,33 @@ async function saveTunnelEdit(){
 
 async function logout(){await fetch('/api/logout',{method:'POST'});window.location.href='/login.html'}
 
-checkAuth();checkHealth();loadClients();loadTunnels();
-setInterval(()=>{checkHealth();loadClients();loadTunnels()},10000);
+async function loadPortStatus(){
+  try{
+    const r=await fetch('/api/port-status');
+    if(!r.ok)return;
+    const d=await r.json();
+    const card=document.getElementById('port-status-card');
+    card.style.display='';
+    document.getElementById('ps-range').textContent=d.range_start+' - '+d.range_end;
+    const avail=Math.max(0,d.available_count);
+    document.getElementById('stat-ports').textContent=avail;
+    document.getElementById('stat-ports').style.color=avail===0?'#ef4444':avail<50?'#f59e0b':'#22c55e';
+    const summary=document.getElementById('ps-summary');
+    summary.innerHTML='<span style="color:#334155">'+d.total_ports+'</span> / <span style="color:#3b82f6">'+d.allocated+'</span> / <span style="color:#22c55e">'+avail+'</span> / <span style="color:#ef4444">'+d.unavailable.length+'</span>';
+    const unavailDiv=document.getElementById('ps-unavailable');
+    const unavailPorts=document.getElementById('ps-unavailable-ports');
+    if(d.unavailable&&d.unavailable.length>0){
+      unavailDiv.style.display='';
+      const show=d.unavailable.slice(0,50);
+      unavailPorts.textContent=show.join(', ')+(d.unavailable.length>50?' ...等共 '+d.unavailable.length+' 个':'');
+    }else{
+      unavailDiv.style.display='none';
+    }
+  }catch(e){}
+}
+
+checkAuth();checkHealth();loadClients();loadTunnels();loadPortStatus();
+setInterval(()=>{checkHealth();loadClients();loadTunnels();loadPortStatus()},10000);
 </script>
 </body>
 </html>

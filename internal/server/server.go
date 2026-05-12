@@ -127,6 +127,7 @@ func (s *Server) Start() error {
 		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
 		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
+		protected.GET("/api/port-status", s.handleAPIPortStatus)
 		protected.Static("/static", "./static")
 		protected.StaticFile("/", "./static/index.html")
 		if s.config.Swagger.Enabled {

@@ -35,48 +35,63 @@ type ExternalConn struct {
 
 // TunnelManager 隧道管理器
 type TunnelManager struct {
-	mu          sync.RWMutex
-	tunnels     map[string]*Tunnel       // tunnelID -> Tunnel
-	publicPorts map[int]string           // publicPort -> tunnelID
-	extConns    map[string]*ExternalConn // connID -> ExternalConn
-	portStart   int
-	portEnd     int
-	listeners   map[int]net.Listener // publicPort -> 监听器
-	server      *Server
+	mu                 sync.RWMutex
+	tunnels            map[string]*Tunnel       // tunnelID -> Tunnel
+	publicPorts        map[int]string           // publicPort -> tunnelID
+	extConns           map[string]*ExternalConn // connID -> ExternalConn
+	unavailablePorts   map[int]struct{}         // 系统占用的端口（惰性检测）
+	portStart          int
+	portEnd            int
+	listeners          map[int]net.Listener // publicPort -> 监听器
+	server             *Server
 }
 
 // NewTunnelManager creates a new TunnelManager
 func NewTunnelManager(server *Server, portStart, portEnd int) *TunnelManager {
 	return &TunnelManager{
-		tunnels:     make(map[string]*Tunnel),
-		publicPorts: make(map[int]string),
-		extConns:    make(map[string]*ExternalConn),
-		portStart:   portStart,
-		portEnd:     portEnd,
-		listeners:   make(map[int]net.Listener),
-		server:      server,
+		tunnels:          make(map[string]*Tunnel),
+		publicPorts:      make(map[int]string),
+		extConns:         make(map[string]*ExternalConn),
+		unavailablePorts: make(map[int]struct{}),
+		portStart:        portStart,
+		portEnd:          portEnd,
+		listeners:         make(map[int]net.Listener),
+		server:           server,
 	}
 }
 
-// AllocatePort 分配一个可用端口
+// AllocatePort 分配一个可用端口（实绑检测，跳过系统占用端口）
 func (tm *TunnelManager) AllocatePort() (int, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
 	for port := tm.portStart; port <= tm.portEnd; port++ {
-		if _, used := tm.publicPorts[port]; !used {
-			tm.publicPorts[port] = "" // 临时标记为已用
-			return port, nil
+		if _, used := tm.publicPorts[port]; used {
+			continue
 		}
+		if _, unavailable := tm.unavailablePorts[port]; unavailable {
+			continue
+		}
+		// 试探绑定，确认端口可用
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			tm.unavailablePorts[port] = struct{}{}
+			slog.Warn("port occupied by system, skipping", "port", port, "error", err)
+			continue
+		}
+		ln.Close()
+		tm.publicPorts[port] = "" // 临时标记为已用
+		return port, nil
 	}
 	return 0, fmt.Errorf("no available ports in range %d-%d", tm.portStart, tm.portEnd)
 }
 
-// ReleasePort 释放端口
+// ReleasePort 释放端口（同时从 unavailablePorts 移除，下次可重新检测）
 func (tm *TunnelManager) ReleasePort(port int) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	delete(tm.publicPorts, port)
+	delete(tm.unavailablePorts, port)
 }
 
 // CreateTunnel 创建隧道
@@ -442,6 +457,38 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 			})
 			return
 		}
+	}
+}
+
+// PortStatus 端口范围状态摘要
+type PortStatus struct {
+	RangeStart     int   `json:"range_start"`
+	RangeEnd       int   `json:"range_end"`
+	TotalPorts     int   `json:"total_ports"`
+	Allocated      int   `json:"allocated"`
+	Unavailable    []int `json:"unavailable"`
+	AvailableCount int   `json:"available_count"`
+}
+
+// GetPortStatus 返回端口范围使用状况
+func (tm *TunnelManager) GetPortStatus() PortStatus {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	total := tm.portEnd - tm.portStart + 1
+	unavailable := make([]int, 0, len(tm.unavailablePorts))
+	for port := range tm.unavailablePorts {
+		unavailable = append(unavailable, port)
+	}
+	sort.Ints(unavailable)
+
+	return PortStatus{
+		RangeStart:     tm.portStart,
+		RangeEnd:      tm.portEnd,
+		TotalPorts:    total,
+		Allocated:     len(tm.publicPorts),
+		Unavailable:   unavailable,
+		AvailableCount: total - len(tm.publicPorts) - len(tm.unavailablePorts),
 	}
 }
 

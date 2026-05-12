@@ -272,3 +272,13 @@ func (s *Server) handleAPIListClientTunnels(c *gin.Context) {
 		"total":   len(tunnels),
 	})
 }
+
+func (s *Server) handleAPIPortStatus(c *gin.Context) {
+	if s.tunnelManager == nil {
+		c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "tunnel is not enabled"})
+		return
+	}
+
+	status := s.tunnelManager.GetPortStatus()
+	c.JSON(http.StatusOK, status)
+}
