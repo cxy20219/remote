@@ -60,9 +60,10 @@ type AdminConfig struct {
 
 // SecurityConfig holds security-related configuration
 type SecurityConfig struct {
-	AllowedOrigins []string `yaml:"allowed_origins"` // WebSocket origin whitelist (empty = allow all)
-	LoginRateLimit int      `yaml:"login_rate_limit"` // max login attempts per minute per IP (0 to disable, default 5)
-	MaxBodySizeMB  int      `yaml:"max_body_size_mb"` // max HTTP request body size in MB (0 for no limit)
+	AllowedOrigins  []string `yaml:"allowed_origins"`   // WebSocket origin whitelist (empty = allow all)
+	LoginRateLimit  int      `yaml:"login_rate_limit"`  // max login attempts per minute per IP (0 to disable, default 5)
+	MaxBodySizeMB   int      `yaml:"max_body_size_mb"`  // max HTTP request body size in MB (0 for no limit)
+	MaxConnPerMin   int      `yaml:"max_conn_per_min"`  // max connections per minute per IP (0 to disable, default 10), anti-scanning
 }
 
 // HeartbeatConfig holds heartbeat configuration
@@ -104,6 +105,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Security.LoginRateLimit == 0 {
 		config.Security.LoginRateLimit = 5
+	}
+	if config.Security.MaxConnPerMin == 0 {
+		config.Security.MaxConnPerMin = 10
 	}
 	if config.Heartbeat.Timeout == 0 {
 		config.Heartbeat.Timeout = 90

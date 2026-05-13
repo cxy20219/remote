@@ -282,3 +282,72 @@ func (s *Server) handleAPIPortStatus(c *gin.Context) {
 	status := s.tunnelManager.GetPortStatus()
 	c.JSON(http.StatusOK, status)
 }
+
+// handleAPIGetWhitelist returns the IP whitelist for a specific client.
+// @Summary 获取客户端IP白名单
+// @Description 获取指定客户端的IP白名单列表
+// @Tags clients
+// @Produce json
+// @Param id path string true "客户端ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 404 {object} map[string]string
+// @Router /api/clients/{id}/whitelist [get]
+func (s *Server) handleAPIGetWhitelist(c *gin.Context) {
+	clientID := c.Param("id")
+
+	client, ok := s.clients.Get(clientID)
+	if !ok {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"client_id":    client.ClientID,
+		"hostname":     client.Hostname,
+		"ip_whitelist": client.IPWhitelist,
+	})
+}
+
+// handleAPIUpdateWhitelist updates the IP whitelist for a specific client.
+// @Summary 更新客户端IP白名单
+// @Description 设置指定客户端的IP白名单（覆盖），白名单中的IP不受限流限制
+// @Tags clients
+// @Accept json
+// @Produce json
+// @Param id path string true "客户端ID"
+// @Param body body object true "IP白名单"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Router /api/clients/{id}/whitelist [put]
+func (s *Server) handleAPIUpdateWhitelist(c *gin.Context) {
+	clientID := c.Param("id")
+
+	client, ok := s.clients.Get(clientID)
+	if !ok {
+		c.JSON(http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+
+	var req struct {
+		IPs []string `json:"ips"`
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	s.clients.SetIPWhitelist(clientID, req.IPs)
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"client_id":    client.ClientID,
+		"hostname":     client.Hostname,
+		"ip_whitelist": s.clients.GetIPWhitelist(clientID),
+	})
+}

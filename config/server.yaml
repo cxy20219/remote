@@ -17,6 +17,8 @@ security:
   login_rate_limit: 5
   # Max HTTP request body size in MB
   max_body_size_mb: 10
+  # Max connections per minute per IP (anti-scanning, 0 to disable, default 10)
+  max_conn_per_min: 10
 
 heartbeat:
   interval: 30

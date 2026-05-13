@@ -1,12 +1,44 @@
 package server
 
 import (
+	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+// isIPWhitelisted checks if an IP address is in the whitelist.
+// Supports exact IP match and CIDR notation (e.g. "192.168.1.0/24").
+func isIPWhitelisted(ipStr string, whitelist []string) bool {
+	if len(whitelist) == 0 {
+		return false
+	}
+	parsedIP := net.ParseIP(ipStr)
+	if parsedIP == nil {
+		return false
+	}
+	for _, entry := range whitelist {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			_, ipnet, err := net.ParseCIDR(entry)
+			if err == nil && ipnet.Contains(parsedIP) {
+				return true
+			}
+		} else {
+			if entry == ipStr {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // SecurityHeadersMiddleware adds common security headers to all responses.
 func SecurityHeadersMiddleware() gin.HandlerFunc {
@@ -100,4 +132,35 @@ func LoginRateLimitMiddleware(rl *RateLimiter) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// ConnRateLimitMiddleware returns a Gin middleware that rate-limits WebSocket connections per IP.
+// IPs present in any connected client's whitelist bypass the rate limit.
+func ConnRateLimitMiddleware(rl *RateLimiter, cm *ClientManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if rl == nil {
+			c.Next()
+			return
+		}
+		ip := extractIP(c.ClientIP())
+		if cm.IsIPWhitelisted(ip) {
+			c.Next()
+			return
+		}
+		if !rl.Allow(ip) {
+			slog.Warn("ws connection rate limited", "ip", ip)
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "connection rate limit exceeded"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// extractIP strips the port from an address string.
+func extractIP(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
 }

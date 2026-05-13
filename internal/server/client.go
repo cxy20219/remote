@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,27 +12,30 @@ import (
 
 // Client represents a connected agent
 type Client struct {
-	ClientID string          `json:"client_id"`
-	Hostname string          `json:"hostname"`
-	OS       string          `json:"os"`
-	Conn     *websocket.Conn `json:"-"`
-	RegTime  time.Time       `json:"reg_time"`
-	LastPing time.Time       `json:"last_ping"`
-	Status   string          `json:"status"` // online/offline
+	ClientID    string          `json:"client_id"`
+	Hostname    string          `json:"hostname"`
+	OS          string          `json:"os"`
+	Conn        *websocket.Conn `json:"-"`
+	RegTime     time.Time       `json:"reg_time"`
+	LastPing    time.Time       `json:"last_ping"`
+	Status      string          `json:"status"` // online/offline
+	IPWhitelist []string        `json:"ip_whitelist"` // IPs that bypass rate limiting for this client's tunnels
 
 	writeMu sync.Mutex
 }
 
 // ClientManager manages connected clients
 type ClientManager struct {
-	mu      sync.RWMutex
-	clients map[string]*Client // clientID -> Client
+	mu              sync.RWMutex
+	clients         map[string]*Client // clientID -> Client
+	whitelistStore  map[string][]string // hostname -> IP whitelist (persists across reconnections)
 }
 
 // NewClientManager creates a new ClientManager
 func NewClientManager() *ClientManager {
 	return &ClientManager{
-		clients: make(map[string]*Client),
+		clients:        make(map[string]*Client),
+		whitelistStore: make(map[string][]string),
 	}
 }
 
@@ -131,4 +135,73 @@ func (c *Client) WriteMessage(messageType int, data []byte) error {
 	}
 
 	return c.Conn.WriteMessage(messageType, data)
+}
+
+// GetIPWhitelist returns the IP whitelist for a client by ID.
+func (m *ClientManager) GetIPWhitelist(clientID string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	client, ok := m.clients[clientID]
+	if !ok {
+		return nil
+	}
+	result := make([]string, len(client.IPWhitelist))
+	copy(result, client.IPWhitelist)
+	return result
+}
+
+// SetIPWhitelist sets the IP whitelist for a client and persists it by hostname.
+func (m *ClientManager) SetIPWhitelist(clientID string, ips []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	client, ok := m.clients[clientID]
+	if !ok {
+		return
+	}
+	deduped := deduplicateIPs(ips)
+	client.IPWhitelist = deduped
+	if client.Hostname != "" {
+		m.whitelistStore[client.Hostname] = deduped
+	}
+}
+
+// RestoreWhitelist restores a client's IP whitelist from the persistent store by hostname.
+func (m *ClientManager) RestoreWhitelist(client *Client) {
+	if client.Hostname == "" {
+		return
+	}
+	m.mu.RLock()
+	ips, ok := m.whitelistStore[client.Hostname]
+	m.mu.RUnlock()
+	if ok && len(ips) > 0 {
+		client.IPWhitelist = make([]string, len(ips))
+		copy(client.IPWhitelist, ips)
+	}
+}
+
+// IsIPWhitelisted checks if the given IP is in any connected client's whitelist.
+func (m *ClientManager) IsIPWhitelisted(ip string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, client := range m.clients {
+		if isIPWhitelisted(ip, client.IPWhitelist) {
+			return true
+		}
+	}
+	return false
+}
+
+// deduplicateIPs removes duplicate entries from an IP list.
+func deduplicateIPs(ips []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if ip == "" || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		result = append(result, ip)
+	}
+	return result
 }

@@ -38,6 +38,8 @@ type Server struct {
 	adminAuth     *AdminAuth
 	crypto        *common.CryptoContext
 	loginLimiter  *RateLimiter
+	connLimiter   *RateLimiter
+	portLimiter   *RateLimiter
 
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
@@ -81,6 +83,12 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 
 	s.loginLimiter = NewRateLimiter(config.Security.LoginRateLimit, time.Minute)
 
+	if config.Security.MaxConnPerMin > 0 {
+		s.connLimiter = NewRateLimiter(config.Security.MaxConnPerMin, time.Minute)
+		s.portLimiter = NewRateLimiter(config.Security.MaxConnPerMin, time.Minute)
+		slog.Info("connection rate limiting enabled", "max_conn_per_min", config.Security.MaxConnPerMin)
+	}
+
 	// Initialize tunnel manager
 	if config.Tunnel.Enabled {
 		s.tunnelManager = NewTunnelManager(s, config.Tunnel.PortRangeStart, config.Tunnel.PortRangeEnd)
@@ -112,7 +120,7 @@ func (s *Server) Start() error {
 	}
 
 	// Public routes (no auth required)
-	s.engine.GET("/ws", s.handleConn)
+	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s.clients), s.handleConn)
 	s.engine.GET("/health", s.handleHealth)
 	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter), s.handleLogin)
 	s.engine.POST("/api/logout", s.handleLogout)
@@ -132,6 +140,8 @@ func (s *Server) Start() error {
 		protected.GET("/api/clients/:id", s.handleAPIClientDetail)
 		protected.GET("/api/client-tunnels/:client_id", s.handleAPIListClientTunnels)
 		protected.POST("/api/tunnels", s.handleAPICreateTunnel)
+		protected.GET("/api/clients/:id/whitelist", s.handleAPIGetWhitelist)
+		protected.PUT("/api/clients/:id/whitelist", s.handleAPIUpdateWhitelist)
 		protected.GET("/api/tunnels", s.handleAPIListTunnels)
 		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)

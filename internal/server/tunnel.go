@@ -388,6 +388,27 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 			continue
 		}
 
+		remoteIP := extractIP(conn.RemoteAddr().String())
+
+		// Check if IP is whitelisted for this client's tunnels
+		if tm.server.clients != nil && tunnel.ClientID != "" {
+			whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID)
+			if isIPWhitelisted(remoteIP, whitelist) {
+				slog.Debug("external connection whitelisted, bypassing rate limit",
+					"remote_ip", remoteIP, "tunnel_id", tunnelID, "client_id", tunnel.ClientID)
+			} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
+				slog.Warn("external connection rate limited (anti-scanning)",
+					"remote_ip", remoteIP, "tunnel_id", tunnelID)
+				conn.Close()
+				continue
+			}
+		} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
+			slog.Warn("external connection rate limited (anti-scanning)",
+				"remote_ip", remoteIP, "tunnel_id", tunnelID)
+			conn.Close()
+			continue
+		}
+
 		// 生成 connID 并处理连接
 		connID := fmt.Sprintf("%s-%d", tunnelID, time.Now().UnixNano())
 		go tm.handleExternalConn(connID, tunnel, conn)

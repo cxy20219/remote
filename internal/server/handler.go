@@ -50,6 +50,8 @@ func (h *Handler) handleRegister(client *Client, msg *common.Message) error {
 
 	client.ClientID = fmt.Sprintf("client-%s", generateUUID())
 
+	h.server.clients.RestoreWhitelist(client)
+
 	h.server.clients.Add(client)
 
 	slog.Info("client registered",
