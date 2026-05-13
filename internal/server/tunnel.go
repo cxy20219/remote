@@ -390,8 +390,20 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 
 		remoteIP := extractIP(conn.RemoteAddr().String())
 
-		// Check if IP is whitelisted for this client's tunnels
-		if tm.server.clients != nil && tunnel.ClientID != "" {
+		// Check global blacklist first
+		if tm.server.blacklist.IsBlacklisted(remoteIP) {
+			slog.Warn("external connection from blacklisted IP, rejecting",
+				"remote_ip", remoteIP, "tunnel_id", tunnelID)
+			conn.Close()
+			continue
+		}
+
+		// Check global whitelist
+		if tm.server.IsGloballyWhitelisted(remoteIP) {
+			slog.Debug("external connection globally whitelisted, bypassing rate limit",
+				"remote_ip", remoteIP, "tunnel_id", tunnelID)
+		} else if tm.server.clients != nil && tunnel.ClientID != "" {
+			// Check if IP is whitelisted for this client's tunnels
 			whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID)
 			if isIPWhitelisted(remoteIP, whitelist) {
 				slog.Debug("external connection whitelisted, bypassing rate limit",
@@ -399,12 +411,14 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 			} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
 				slog.Warn("external connection rate limited (anti-scanning)",
 					"remote_ip", remoteIP, "tunnel_id", tunnelID)
+				tm.server.blacklist.AddViolation(remoteIP)
 				conn.Close()
 				continue
 			}
 		} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
 			slog.Warn("external connection rate limited (anti-scanning)",
 				"remote_ip", remoteIP, "tunnel_id", tunnelID)
+			tm.server.blacklist.AddViolation(remoteIP)
 			conn.Close()
 			continue
 		}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -32,14 +33,17 @@ type Server struct {
 	config   *Config
 	staticFS embed.FS
 
-	clients       *ClientManager
-	handler       *Handler
-	tunnelManager *TunnelManager
-	adminAuth     *AdminAuth
-	crypto        *common.CryptoContext
-	loginLimiter  *RateLimiter
-	connLimiter   *RateLimiter
-	portLimiter   *RateLimiter
+	clients         *ClientManager
+	handler          *Handler
+	tunnelManager   *TunnelManager
+	adminAuth       *AdminAuth
+	crypto          *common.CryptoContext
+	loginLimiter    *RateLimiter
+	connLimiter     *RateLimiter
+	portLimiter     *RateLimiter
+	blacklist       *BlacklistManager
+	globalWhitelist []string
+	globalWLMu      sync.RWMutex
 
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
@@ -68,6 +72,9 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 
 	s.handler = NewHandler(s)
 	s.adminAuth = NewAdminAuth(config.Admin.Password)
+	s.blacklist = NewBlacklistManager(config.Security.BlacklistThreshold)
+	s.globalWhitelist = make([]string, len(config.Security.GlobalWhitelist))
+	copy(s.globalWhitelist, config.Security.GlobalWhitelist)
 
 	if config.Auth.Key != "" {
 		crypto, err := common.NewCryptoContext(config.Auth.Key)
@@ -120,9 +127,9 @@ func (s *Server) Start() error {
 	}
 
 	// Public routes (no auth required)
-	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s.clients), s.handleConn)
+	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s), s.handleConn)
 	s.engine.GET("/health", s.handleHealth)
-	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter), s.handleLogin)
+	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLogin)
 	s.engine.POST("/api/logout", s.handleLogout)
 	s.engine.GET("/api/check-auth", s.handleCheckAuth)
 
@@ -142,6 +149,13 @@ func (s *Server) Start() error {
 		protected.POST("/api/tunnels", s.handleAPICreateTunnel)
 		protected.GET("/api/clients/:id/whitelist", s.handleAPIGetWhitelist)
 		protected.PUT("/api/clients/:id/whitelist", s.handleAPIUpdateWhitelist)
+		protected.GET("/api/security/global-whitelist", s.handleAPIGetGlobalWhitelist)
+		protected.PUT("/api/security/global-whitelist", s.handleAPIUpdateGlobalWhitelist)
+		protected.GET("/api/security/blacklist", s.handleAPIGetBlacklist)
+		protected.POST("/api/security/blacklist", s.handleAPIAddBlacklist)
+		protected.DELETE("/api/security/blacklist/:ip", s.handleAPIRemoveBlacklist)
+		protected.GET("/api/security/blacklist-threshold", s.handleAPIGetBlacklistThreshold)
+		protected.PUT("/api/security/blacklist-threshold", s.handleAPIUpdateBlacklistThreshold)
 		protected.GET("/api/tunnels", s.handleAPIListTunnels)
 		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
@@ -366,4 +380,28 @@ func (s *Server) buildOriginChecker(allowedOrigins []string) func(r *http.Reques
 
 func generateUUID() string {
 	return uuid.New().String()
+}
+
+// GetGlobalWhitelist returns a copy of the global whitelist.
+func (s *Server) GetGlobalWhitelist() []string {
+	s.globalWLMu.RLock()
+	defer s.globalWLMu.RUnlock()
+	result := make([]string, len(s.globalWhitelist))
+	copy(result, s.globalWhitelist)
+	return result
+}
+
+// SetGlobalWhitelist replaces the global whitelist.
+func (s *Server) SetGlobalWhitelist(ips []string) {
+	deduped := deduplicateIPs(ips)
+	s.globalWLMu.Lock()
+	defer s.globalWLMu.Unlock()
+	s.globalWhitelist = deduped
+}
+
+// IsGloballyWhitelisted checks if an IP is in the global whitelist.
+func (s *Server) IsGloballyWhitelisted(ip string) bool {
+	s.globalWLMu.RLock()
+	defer s.globalWLMu.RUnlock()
+	return isIPWhitelisted(ip, s.globalWhitelist)
 }

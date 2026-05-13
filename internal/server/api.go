@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -349,5 +350,133 @@ func (s *Server) handleAPIUpdateWhitelist(c *gin.Context) {
 		"client_id":    client.ClientID,
 		"hostname":     client.Hostname,
 		"ip_whitelist": s.clients.GetIPWhitelist(clientID),
+	})
+}
+
+func (s *Server) handleAPIGetGlobalWhitelist(c *gin.Context) {
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"global_whitelist": s.GetGlobalWhitelist(),
+	})
+}
+
+func (s *Server) handleAPIUpdateGlobalWhitelist(c *gin.Context) {
+	var req struct {
+		IPs []string `json:"ips"`
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	s.SetGlobalWhitelist(req.IPs)
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"global_whitelist": s.GetGlobalWhitelist(),
+	})
+}
+
+func (s *Server) handleAPIGetBlacklist(c *gin.Context) {
+	entries := s.blacklist.List()
+	violations := s.blacklist.AllViolations()
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"blacklist":  entries,
+		"violations": violations,
+		"threshold":  s.blacklist.GetThreshold(),
+	})
+}
+
+func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
+	var req struct {
+		IP       string `json:"ip"`
+		Reason   string `json:"reason"`
+		Duration int    `json:"duration_minutes"`
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if req.IP == "" {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "ip is required"})
+		return
+	}
+
+	if net.ParseIP(req.IP) == nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid IP address"})
+		return
+	}
+
+	reason := req.Reason
+	if reason == "" {
+		reason = "manual"
+	}
+
+	var duration time.Duration
+	if req.Duration > 0 {
+		duration = time.Duration(req.Duration) * time.Minute
+	}
+
+	s.blacklist.AddManual(req.IP, reason, duration)
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"ip":      req.IP,
+		"reason":  reason,
+		"message": "IP added to blacklist",
+	})
+}
+
+func (s *Server) handleAPIRemoveBlacklist(c *gin.Context) {
+	ip := c.Param("ip")
+	if ip == "" {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "ip is required"})
+		return
+	}
+
+	s.blacklist.Remove(ip)
+	c.JSON(http.StatusOK, map[string]string{"message": "IP removed from blacklist"})
+}
+
+func (s *Server) handleAPIGetBlacklistThreshold(c *gin.Context) {
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"threshold": s.blacklist.GetThreshold(),
+	})
+}
+
+func (s *Server) handleAPIUpdateBlacklistThreshold(c *gin.Context) {
+	var req struct {
+		Threshold int `json:"threshold"`
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if req.Threshold < 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "threshold must be >= 0"})
+		return
+	}
+
+	s.blacklist.SetThreshold(req.Threshold)
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"threshold": s.blacklist.GetThreshold(),
 	})
 }

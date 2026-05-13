@@ -65,12 +65,6 @@ code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;b
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
 
-.ssh-box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
-.ssh-box .cmd{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:14px;color:#2563eb;word-break:break-all;flex:1;font-weight:600}
-.ssh-box .hint{font-size:11px;color:#94a3b8;margin-top:5px;font-weight:400}
-.copy-btn{padding:8px 18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;color:#3b82f6;cursor:pointer;font-size:12px;font-weight:600;transition:all .2s}
-.copy-btn:hover{background:#dbeafe}
-.copy-btn.copied{background:#f0fdf4;border-color:#bbf7d0;color:#16a34a}
 
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:100;backdrop-filter:blur(4px)}
 .modal-overlay.show{display:flex;align-items:center;justify-content:center}
@@ -95,11 +89,25 @@ code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;b
 .wl-tag .wl-remove{cursor:pointer;color:#94a3b8;font-size:14px;line-height:1;transition:color .15s}
 .wl-tag .wl-remove:hover{color:#ef4444}
 
+.bl-tag{display:inline-flex;align-items:center;gap:4px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:4px 10px;font-size:12px;color:#ef4444;font-family:'SF Mono','Cascadia Code','Consolas',monospace}
+.bl-tag .bl-remove{cursor:pointer;color:#94a3b8;font-size:14px;line-height:1;transition:color .15s}
+.bl-tag .bl-remove:hover{color:#16a34a}
+
+.sec-tabs{display:flex;gap:0;margin-bottom:18px;border-bottom:2px solid #f1f5f9}
+.sec-tab{padding:10px 20px;cursor:pointer;font-size:13px;font-weight:600;color:#94a3b8;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s}
+.sec-tab:hover{color:#334155}
+.sec-tab.active{color:#3b82f6;border-bottom-color:#3b82f6}
+
+.sec-panel{display:none}
+.sec-panel.active{display:block}
+
+.violation-bar{height:4px;background:#f1f5f9;border-radius:2px;margin-top:6px;overflow:hidden}
+.violation-fill{height:100%;background:linear-gradient(90deg,#f59e0b,#ef4444);border-radius:2px;transition:width .3s}
+
 @media(max-width:768px){
 .stats{grid-template-columns:1fr}
 .form-row{flex-direction:column}
 .form-group input,.form-group select{width:100%}
-.ssh-box{flex-direction:column;align-items:flex-start}
 .topbar{flex-direction:column;align-items:flex-start}
 table{font-size:11px}
 th,td{padding:8px 8px}
@@ -148,6 +156,39 @@ th,td{padding:8px 8px}
   </div>
 
   <div class="card">
+    <div class="card-header"><h2>&#128737; 安全设置</h2></div>
+    <div class="sec-tabs">
+      <div class="sec-tab active" onclick="switchSecTab('gwl')">全局白名单</div>
+      <div class="sec-tab" onclick="switchSecTab('bl')">黑名单管理</div>
+    </div>
+    <div class="sec-panel active" id="sec-gwl">
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:14px">全局白名单中的 IP 绕过所有限流检查（登录、WebSocket 连接、端口扫描防护），支持 CIDR</p>
+      <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap" id="gwl-tags"></div>
+      <div class="form-row" style="margin-bottom:0">
+        <div class="form-group" style="flex:1"><label>添加 IP / CIDR</label><input type="text" id="gwl-new-ip" placeholder="如 10.0.0.1 或 192.168.1.0/24" onkeydown="if(event.key==='Enter')addGlobalWLIP()"></div>
+        <button class="btn btn-primary" style="align-self:end" onclick="addGlobalWLIP()">添加</button>
+      </div>
+    </div>
+    <div class="sec-panel" id="sec-bl">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <p style="font-size:12px;color:#94a3b8;margin:0">IP 累计触发限流达阈值后自动拉黑，也可手动添加</p>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:12px;color:#64748b">自动拉黑阈值：</span>
+          <input type="number" id="bl-threshold" style="width:60px;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;text-align:center" min="0">
+          <button class="btn btn-ghost" onclick="updateBLThreshold()" style="padding:4px 10px;font-size:11px">保存</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+        <div class="form-group" style="flex:1"><label style="font-size:12px">IP 地址</label><input type="text" id="bl-new-ip" placeholder="如 1.2.3.4" onkeydown="if(event.key==='Enter')addBlacklistIP()"></div>
+        <div class="form-group" style="flex:1"><label style="font-size:12px">原因</label><input type="text" id="bl-new-reason" placeholder="手动拉黑"></div>
+        <div class="form-group" style="width:100px"><label style="font-size:12px">封禁时长(分)</label><input type="number" id="bl-new-duration" placeholder="0=永久" min="0"></div>
+        <button class="btn btn-danger" style="align-self:end;padding:8px 14px" onclick="addBlacklistIP()">拉黑</button>
+      </div>
+      <div id="bl-list"></div>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-header">
       <h2><span class="dot ok" id="health-dot"></span>在线客户端</h2>
       <span class="refresh-dot" title="每10秒自动刷新">&#8635;</span>
@@ -166,16 +207,6 @@ th,td{padding:8px 8px}
     <div id="tunnels" style="margin-top:4px"><div class="empty">加载中...</div></div>
   </div>
 
-  <div class="card">
-    <div class="card-header"><h2>连接命令</h2></div>
-    <div class="ssh-box">
-      <div>
-        <div class="cmd">ssh 用户名@your-server-ip -p&nbsp;<span id="example-port">10000</span></div>
-        <div class="hint">创建隧道后端口号自动更新 &middot; 点击按钮复制</div>
-      </div>
-      <button class="copy-btn" onclick="copyCommand()">复制命令</button>
-    </div>
-  </div>
 </div>
 
 <div class="modal-overlay" id="edit-modal">
@@ -219,15 +250,6 @@ function toast(msg,type='success'){
   const el=document.createElement('div');
   el.className='toast-item '+type;el.textContent=msg;t.appendChild(el);
   setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity .3s';setTimeout(()=>el.remove(),300)},4000)
-}
-
-function copyCommand(){
-  const port=document.getElementById('example-port').textContent;
-  const cmd='ssh 用户名@your-server-ip -p '+port;
-  navigator.clipboard.writeText(cmd).then(()=>{
-    const btn=event.target;btn.textContent='已复制';btn.classList.add('copied');
-    setTimeout(()=>{btn.textContent='复制命令';btn.classList.remove('copied')},2000)
-  }).catch(()=>toast('复制失败','error'))
 }
 
 async function checkHealth(){
@@ -288,7 +310,7 @@ async function createTunnel(){
   try{
     const r=await fetch('/api/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:cid,local_port:parseInt(port),protocol:proto})});
     const d=await r.json();
-    if(r.ok){toast('隧道创建成功 &middot; 公网端口 '+d.public_port);document.getElementById('example-port').textContent=d.public_port;loadTunnels();loadPortStatus()}
+    if(r.ok){toast('隧道创建成功 &middot; 公网端口 '+d.public_port);loadTunnels();loadPortStatus()}
     else toast(d.error||'创建失败','error')
   }catch(e){toast('网络错误','error')}
 }
@@ -399,7 +421,131 @@ async function loadPortStatus(){
   }catch(e){}
 }
 
-checkAuth();checkHealth();loadClients();loadTunnels();loadPortStatus();
+// --- Security: Global Whitelist ---
+let gwlIPs=[];
+
+async function loadGlobalWhitelist(){
+  try{
+    const r=await fetch('/api/security/global-whitelist');
+    const d=await r.json();
+    gwlIPs=d.global_whitelist||[];
+    renderGWLTags()
+  }catch(e){gwlIPs=[];renderGWLTags()}
+}
+
+function renderGWLTags(){
+  const container=document.getElementById('gwl-tags');
+  if(!gwlIPs.length){
+    container.innerHTML='<span style="color:#94a3b8;font-size:12px">暂无全局白名单 IP</span>';
+    return
+  }
+  container.innerHTML=gwlIPs.map((ip,i)=>`<span class="wl-tag">${ip}<span class="wl-remove" onclick="removeGWLIP(${i})">&times;</span></span>`).join('')
+}
+
+async function saveGlobalWhitelist(){
+  try{
+    const r=await fetch('/api/security/global-whitelist',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ips:gwlIPs})});
+    if(!r.ok)toast('保存全局白名单失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
+async function addGlobalWLIP(){
+  const input=document.getElementById('gwl-new-ip');
+  const ip=input.value.trim();
+  if(!ip)return;
+  if(gwlIPs.includes(ip)){toast('IP 已存在','error');return}
+  gwlIPs.push(ip);
+  input.value='';
+  renderGWLTags();
+  await saveGlobalWhitelist()
+}
+
+async function removeGWLIP(index){
+  gwlIPs.splice(index,1);
+  renderGWLTags();
+  await saveGlobalWhitelist()
+}
+
+// --- Security: Blacklist ---
+function switchSecTab(tab){
+  document.querySelectorAll('.sec-tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.sec-panel').forEach(p=>p.classList.remove('active'));
+  if(tab==='gwl'){
+    document.querySelector('.sec-tab:nth-child(1)').classList.add('active');
+    document.getElementById('sec-gwl').classList.add('active');
+  }else{
+    document.querySelector('.sec-tab:nth-child(2)').classList.add('active');
+    document.getElementById('sec-bl').classList.add('active');
+    loadBlacklist()
+  }
+}
+
+async function loadBlacklist(){
+  try{
+    const r=await fetch('/api/security/blacklist');
+    const d=await r.json();
+    document.getElementById('bl-threshold').value=d.threshold||0;
+    renderBlacklist(d.blacklist||[],d.violations||{},d.threshold||0)
+  }catch(e){document.getElementById('bl-list').innerHTML='<div class="empty">加载失败</div>'}
+}
+
+function renderBlacklist(entries,violations,threshold){
+  const container=document.getElementById('bl-list');
+  if(!entries||!entries.length){
+    container.innerHTML='<div class="empty">暂无黑名单 IP</div>';
+    return
+  }
+  let h='<table><thead><tr><th>IP</th><th>原因</th><th>添加时间</th><th>过期时间</th><th>操作</th></tr></thead><tbody>';
+  entries.forEach(e=>{
+    const exp=e.expires_at&&e.expires_at!=='0001-01-01T00:00:00Z'?new Date(e.expires_at).toLocaleString():'永久';
+    h+=`<tr><td><code>${e.ip}</code></td><td style="font-size:12px">${e.reason}</td><td style="font-size:12px">${new Date(e.added_at).toLocaleString()}</td><td style="font-size:12px">${exp}</td><td><button class="btn btn-ghost" onclick="removeBlacklistIP('${e.ip}')">解除</button></td></tr>`;
+  });
+  h+='</tbody></table>';
+  // Show violations
+  const vKeys=Object.keys(violations||{});
+  if(vKeys.length>0){
+    h+='<div style="margin-top:14px"><div style="font-size:12px;color:#94a3b8;margin-bottom:8px;font-weight:600">限流违规计数（阈值: '+threshold+'）</div>';
+    vKeys.forEach(ip=>{
+      const count=violations[ip];
+      const pct=threshold>0?Math.min(100,Math.round(count/threshold*100)):0;
+      h+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><code style="font-size:12px;min-width:100px">${ip}</code><div class="violation-bar" style="flex:1"><div class="violation-fill" style="width:${pct}%"></div></div><span style="font-size:11px;color:#64748b">${count}/${threshold}</span></div>`;
+    });
+    h+='</div>';
+  }
+  container.innerHTML=h
+}
+
+async function addBlacklistIP(){
+  const ip=document.getElementById('bl-new-ip').value.trim();
+  const reason=document.getElementById('bl-new-reason').value.trim();
+  const duration=parseInt(document.getElementById('bl-new-duration').value)||0;
+  if(!ip){toast('请输入 IP 地址','error');return}
+  try{
+    const r=await fetch('/api/security/blacklist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,reason,duration_minutes:duration})});
+    const d=await r.json();
+    if(r.ok){toast('已拉黑 '+ip);document.getElementById('bl-new-ip').value='';document.getElementById('bl-new-reason').value='';document.getElementById('bl-new-duration').value='';loadBlacklist()}
+    else toast(d.error||'拉黑失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
+async function removeBlacklistIP(ip){
+  try{
+    const r=await fetch('/api/security/blacklist/'+encodeURIComponent(ip),{method:'DELETE'});
+    if(r.ok){toast('已解除拉黑');loadBlacklist()}
+    else{const d=await r.json();toast(d.error||'解除失败','error')}
+  }catch(e){toast('网络错误','error')}
+}
+
+async function updateBLThreshold(){
+  const threshold=parseInt(document.getElementById('bl-threshold').value)||0;
+  try{
+    const r=await fetch('/api/security/blacklist-threshold',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold})});
+    if(r.ok)toast('阈值已更新为 '+threshold);
+    else toast('更新失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
+checkAuth();checkHealth();loadClients();loadTunnels();loadPortStatus();loadGlobalWhitelist();
 setInterval(()=>{checkHealth();loadClients();loadTunnels();loadPortStatus()},10000);
 </script>
 </body>

@@ -60,10 +60,12 @@ type AdminConfig struct {
 
 // SecurityConfig holds security-related configuration
 type SecurityConfig struct {
-	AllowedOrigins  []string `yaml:"allowed_origins"`   // WebSocket origin whitelist (empty = allow all)
-	LoginRateLimit  int      `yaml:"login_rate_limit"`  // max login attempts per minute per IP (0 to disable, default 5)
-	MaxBodySizeMB   int      `yaml:"max_body_size_mb"`  // max HTTP request body size in MB (0 for no limit)
-	MaxConnPerMin   int      `yaml:"max_conn_per_min"`  // max connections per minute per IP (0 to disable, default 10), anti-scanning
+	AllowedOrigins     []string `yaml:"allowed_origins"`      // WebSocket origin whitelist (empty = allow all)
+	LoginRateLimit     int      `yaml:"login_rate_limit"`     // max login attempts per minute per IP (0 to disable, default 5)
+	MaxBodySizeMB      int      `yaml:"max_body_size_mb"`     // max HTTP request body size in MB (0 for no limit)
+	MaxConnPerMin      int      `yaml:"max_conn_per_min"`     // max connections per minute per IP (0 to disable, default 10), anti-scanning
+	GlobalWhitelist    []string `yaml:"global_whitelist"`     // global IP whitelist, bypass all rate limits
+	BlacklistThreshold int      `yaml:"blacklist_threshold"`  // cumulative rate-limit violations before auto-blacklist (0 to disable, default 100)
 }
 
 // HeartbeatConfig holds heartbeat configuration
@@ -108,6 +110,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Security.MaxConnPerMin == 0 {
 		config.Security.MaxConnPerMin = 10
+	}
+	if config.Security.BlacklistThreshold == 0 {
+		config.Security.BlacklistThreshold = 100
+	}
+	if config.Security.GlobalWhitelist == nil {
+		config.Security.GlobalWhitelist = []string{}
 	}
 	if config.Heartbeat.Timeout == 0 {
 		config.Heartbeat.Timeout = 90

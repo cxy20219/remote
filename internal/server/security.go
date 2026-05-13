@@ -40,6 +40,176 @@ func isIPWhitelisted(ipStr string, whitelist []string) bool {
 	return false
 }
 
+// BlacklistEntry represents a single blacklisted IP with metadata.
+type BlacklistEntry struct {
+	IP        string    `json:"ip"`
+	Reason    string    `json:"reason"`
+	AddedAt   time.Time `json:"added_at"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+}
+
+// IsExpired returns true if the entry has a non-zero expiration time that has passed.
+func (e BlacklistEntry) IsExpired() bool {
+	return !e.ExpiresAt.IsZero() && time.Now().After(e.ExpiresAt)
+}
+
+// BlacklistManager manages IPs that are blocked due to rate-limit violations or manual addition.
+type BlacklistManager struct {
+	mu        sync.RWMutex
+	entries   map[string]*BlacklistEntry
+	violation map[string]int
+	threshold int
+}
+
+// NewBlacklistManager creates a new BlacklistManager with the given auto-blacklist threshold.
+func NewBlacklistManager(threshold int) *BlacklistManager {
+	bm := &BlacklistManager{
+		entries:   make(map[string]*BlacklistEntry),
+		violation: make(map[string]int),
+		threshold: threshold,
+	}
+	go bm.cleanupLoop()
+	return bm
+}
+
+// SetThreshold updates the auto-blacklist threshold.
+func (bm *BlacklistManager) SetThreshold(threshold int) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	bm.threshold = threshold
+}
+
+// GetThreshold returns the current auto-blacklist threshold.
+func (bm *BlacklistManager) GetThreshold() int {
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+	return bm.threshold
+}
+
+// IsBlacklisted returns true if the IP is currently blacklisted and not expired.
+func (bm *BlacklistManager) IsBlacklisted(ip string) bool {
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+	entry, exists := bm.entries[ip]
+	if !exists {
+		return false
+	}
+	if entry.IsExpired() {
+		return false
+	}
+	return true
+}
+
+// AddViolation records a rate-limit violation for an IP.
+// If cumulative violations reach the threshold, the IP is auto-blacklisted.
+// Returns true if the IP was auto-blacklisted.
+func (bm *BlacklistManager) AddViolation(ip string) bool {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+
+	if bm.threshold <= 0 {
+		return false
+	}
+
+	if entry, exists := bm.entries[ip]; exists && !entry.IsExpired() {
+		return false
+	}
+
+	bm.violation[ip]++
+	if bm.violation[ip] >= bm.threshold {
+		bm.entries[ip] = &BlacklistEntry{
+			IP:      ip,
+			Reason:  "auto: rate-limit violations reached threshold",
+			AddedAt: time.Now(),
+		}
+		delete(bm.violation, ip)
+		slog.Warn("IP auto-blacklisted", "ip", ip, "threshold", bm.threshold)
+		return true
+	}
+	return false
+}
+
+// AddManual adds an IP to the blacklist manually.
+func (bm *BlacklistManager) AddManual(ip string, reason string, duration time.Duration) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+
+	entry := &BlacklistEntry{
+		IP:      ip,
+		Reason:  reason,
+		AddedAt: time.Now(),
+	}
+	if duration > 0 {
+		entry.ExpiresAt = time.Now().Add(duration)
+	}
+	bm.entries[ip] = entry
+	delete(bm.violation, ip)
+	slog.Info("IP manually blacklisted", "ip", ip, "reason", reason)
+}
+
+// Remove removes an IP from the blacklist.
+func (bm *BlacklistManager) Remove(ip string) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	delete(bm.entries, ip)
+	delete(bm.violation, ip)
+}
+
+// List returns all current blacklist entries (excluding expired ones).
+func (bm *BlacklistManager) List() []BlacklistEntry {
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+
+	result := make([]BlacklistEntry, 0, len(bm.entries))
+	for _, entry := range bm.entries {
+		if !entry.IsExpired() {
+			result = append(result, *entry)
+		}
+	}
+	return result
+}
+
+// GetViolationCount returns the current violation count for an IP.
+func (bm *BlacklistManager) GetViolationCount(ip string) int {
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+	return bm.violation[ip]
+}
+
+// AllViolations returns all IPs with their current violation counts.
+func (bm *BlacklistManager) AllViolations() map[string]int {
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+
+	result := make(map[string]int, len(bm.violation))
+	for ip, count := range bm.violation {
+		result[ip] = count
+	}
+	return result
+}
+
+func (bm *BlacklistManager) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		bm.mu.Lock()
+		now := time.Now()
+		for ip, entry := range bm.entries {
+			if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+				delete(bm.entries, ip)
+				delete(bm.violation, ip)
+			}
+		}
+		for ip := range bm.violation {
+			if _, exists := bm.entries[ip]; !exists {
+				delete(bm.violation, ip)
+			}
+		}
+		bm.mu.Unlock()
+	}
+}
+
 // SecurityHeadersMiddleware adds common security headers to all responses.
 func SecurityHeadersMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -123,10 +293,22 @@ func (rl *RateLimiter) cleanupLoop() {
 }
 
 // LoginRateLimitMiddleware returns a Gin middleware that rate-limits login attempts.
-func LoginRateLimitMiddleware(rl *RateLimiter) gin.HandlerFunc {
+func LoginRateLimitMiddleware(rl *RateLimiter, s *Server) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
+
+		if s.IsGloballyWhitelisted(ip) || s.clients.IsIPWhitelisted(ip) {
+			c.Next()
+			return
+		}
+
+		if s.blacklist.IsBlacklisted(ip) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "IP is blacklisted"})
+			return
+		}
+
 		if !rl.Allow(ip) {
+			s.blacklist.AddViolation(ip)
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests, try again later"})
 			return
 		}
@@ -135,19 +317,29 @@ func LoginRateLimitMiddleware(rl *RateLimiter) gin.HandlerFunc {
 }
 
 // ConnRateLimitMiddleware returns a Gin middleware that rate-limits WebSocket connections per IP.
-// IPs present in any connected client's whitelist bypass the rate limit.
-func ConnRateLimitMiddleware(rl *RateLimiter, cm *ClientManager) gin.HandlerFunc {
+// IPs present in global whitelist or any client's whitelist bypass the rate limit.
+// Blacklisted IPs are directly rejected.
+func ConnRateLimitMiddleware(rl *RateLimiter, s *Server) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if rl == nil {
 			c.Next()
 			return
 		}
 		ip := extractIP(c.ClientIP())
-		if cm.IsIPWhitelisted(ip) {
+
+		if s.IsGloballyWhitelisted(ip) || s.clients.IsIPWhitelisted(ip) {
 			c.Next()
 			return
 		}
+
+		if s.blacklist.IsBlacklisted(ip) {
+			slog.Warn("ws connection from blacklisted IP rejected", "ip", ip)
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "IP is blacklisted"})
+			return
+		}
+
 		if !rl.Allow(ip) {
+			s.blacklist.AddViolation(ip)
 			slog.Warn("ws connection rate limited", "ip", ip)
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "connection rate limit exceeded"})
 			return

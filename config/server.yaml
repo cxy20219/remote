@@ -19,6 +19,10 @@ security:
   max_body_size_mb: 10
   # Max connections per minute per IP (anti-scanning, 0 to disable, default 10)
   max_conn_per_min: 10
+  # Global IP whitelist, bypass all rate limits (supports CIDR)
+  global_whitelist: []
+  # Cumulative rate-limit violations before auto-blacklist (0 to disable, default 100)
+  blacklist_threshold: 100
 
 heartbeat:
   interval: 30
