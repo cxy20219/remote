@@ -229,7 +229,55 @@ sort.Slice(tunnels, func(i, j int) bool {
 - [ ] 防火墙是否放行：`iptables -L -n | grep port`
 - [ ] 加密是否生效：查看服务端/Agent 日志
 
-### 5.4 验证隧道连通性
+### 5.4 自动黑名单功能测试
+
+服务端支持基于累计限流违规的自动 IP 黑名单：
+
+```powershell
+# 1. 降低阈值以便快速触发（默认100）
+curl.exe -k -b cookies.txt -s -X PUT "http://server:8080/api/security/blacklist-threshold" `
+  -H "Content-Type: application/json" -d '{"threshold":3}'
+
+# 2. 发送超过限流次数的请求触发违规累计
+# 以 login_rate_limit=5 为例，发送6次请求
+$body = '{"password":"admin123"}'; 1..6 | ForEach-Object {
+  $r = curl.exe -k -s -c cookies.txt -X POST "http://server:8080/api/login" -H "Content-Type: application/json" -d $body
+  Write-Host "$_ : $r"
+}
+# 第6次应返回 "too many requests"，并触发 AddViolation
+
+# 3. 阈值到达后自动拉黑
+# 后续请求返回 403: "IP is blacklisted"
+
+# 4. 查看黑名单状态
+curl.exe -k -b cookies.txt -s "http://server:8080/api/security/blacklist"
+
+# 5. 恢复（从服务器本地执行）
+plink root@host "bash /path/to/recover.sh"
+```
+
+### 5.5 从服务器本地访问 API（IP 被黑名单时）
+
+当本地 IP 被误拉黑时，通过 plink 从服务器 localhost 执行 curl：
+
+```bash
+# 登录获取 token（127.0.0.1 不受黑名单限制）
+TOKEN=$(curl -s -X POST http://localhost:8080/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"password":"admin123"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+# 注意 cookie 名称是 go_remote_token，不是 token
+curl -s -X DELETE "http://localhost:8080/api/security/blacklist/1.2.3.4" \
+  -H "Cookie: go_remote_token=$TOKEN"
+```
+
+**关键要点**：
+- admin auth cookie 名称为 `go_remote_token`（见 `admin_auth.go:89`）
+- 前端 API 通过 cookie 校验，`/api/login` 返回的 JSON 中的 token 字段也是此值
+- 本地 IP 被黑名单不影响服务器 127.0.0.1 的 API 访问
+- 恢复脚本适合写入临时文件后通过 pscp 上传执行
+
+### 5.6 验证隧道连通性
 
 ```bash
 # 从服务器自身通过 tunnel 端口测试（最可靠）
@@ -285,6 +333,68 @@ ls -lh /path/to/server.log # 日志文件常见 1GB+
 | TLS 握手被拒 | 证书无 SAN | 重新生成带 SAN 的证书 |
 | plink 主机密钥警告 | 新端口首次连接 | 用 `nc` 验证连通性，不依赖 SSH 层 |
 | `swag init` 后编译失败 | 包名不匹配 | 确认 `-o docs` 输出目录与代码 import 一致 |
+| 请求返回 403 "IP is blacklisted" | IP 被自动拉黑 | `DELETE /api/security/blacklist/:ip` 解除，或从服务器 localhost 执行 |
+| 登录返回 "invalid request" | JSON 请求体格式错误 | 用 `-d @file.json`，确保正确 Content-Type |
+| 服务器本地 curl 返回 "unauthorized" | cookie 名称错误 | cookie 名称为 `go_remote_token`，非 `token` |
+| IP 已被黑名单无法登录 | 无管理入口 | 通过 plink 从服务器 localhost 调用 API 解除 |
+
+### Android agent adb 部署要点
+
+```powershell
+# 检查手机架构
+adb shell getprop ro.product.cpu.abi  # → arm64-v8a
+
+# 推送二进制（arm64）和配置
+adb push release/agent-linux-arm64 /data/local/tmp/agent
+adb push release/agent-android.yaml /data/local/tmp/agent.yaml
+
+# 启动（adb shell 下直接运行，超时后进程继续）
+adb shell "/data/local/tmp/agent --config /data/local/tmp/agent.yaml &"
+
+# 验证注册
+curl.exe -k -b cookies.txt -s "http://server:8080/api/clients" | Select-String "android"
+```
+
+**注意**：
+- Android 上 hostname 可能显示为 `localhost`，可在 agent 配置中显式设置 `agent.hostname`
+- `adb shell` 断开后进程会继续运行（类似 nohup）
+- 二进制需与架构匹配（arm64-v8a 使用 `linux/arm64`）
+
+## 9. 安全功能测试
+
+### 9.1 全局白名单验证
+
+```powershell
+# 添加 IP 到全局白名单
+'{"ips":["YOUR_PUBLIC_IP"]}' | Out-File gwl.json -Encoding ascii
+curl.exe -k -b cookies.txt -s -X PUT "http://server:8080/api/security/global-whitelist" `
+  -H "Content-Type: application/json" -d "@gwl.json"
+# → {"global_whitelist":["YOUR_PUBLIC_IP"]}
+
+# 验证旁路限流：白名单 IP 连续多次请求不应被限流
+1..10 | ForEach-Object {
+  '{"password":"admin123"}' | Out-File "log$_.json" -Encoding ascii
+  $r = curl.exe -k -c cookies.txt -s -X POST "http://server:8080/api/login" -H "Content-Type: application/json" -d "@log$_.json"
+  Write-Host "$_ : $r"
+}
+# 全部应返回 {"status":"ok","token":"..."}，无 "too many requests"
+```
+
+### 9.2 黑名单管理 API
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/security/blacklist` | 黑名单列表 + 违规计数 + 阈值 |
+| POST | `/api/security/blacklist` | 手动拉黑 IP（body: `{"ip":"...","reason":"...","duration_minutes":N}`） |
+| DELETE | `/api/security/blacklist/:ip` | 解除拉黑 |
+| GET/PUT | `/api/security/blacklist-threshold` | 读取/修改自动拉黑阈值 |
+
+### 9.3 自动拉黑触发条件
+
+1. 每 IP 限流违规累计达阈值（`blacklist_threshold`，默认 100）
+2. 违规计数跨窗口累积（不随时间窗口重置）
+3. 手动添加的 IP 可设 `expires_at`（`duration_minutes` 字段）
+4. 黑名单 IP 直接被拒绝，不再执行限流检查
 
 ## 相关文档
 
@@ -292,3 +402,4 @@ ls -lh /path/to/server.log # 日志文件常见 1GB+
 - [加密隧道开发实战经验](./encrypted-tunnel-lessons.md)
 - [远程部署常见坑点](./remote-deployment-pitfalls.md)
 - [Gin 路由与管理员认证实现经验](./gin-auth-route-tips.md)
+- [配置字段参考](../references/config-reference.md)

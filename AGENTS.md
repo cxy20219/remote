@@ -1,11 +1,11 @@
 > 在执行任何操作前，必须先根据下方的文件索引进行查阅和使用以获取足够的上下文信息，确认信息充分后再行动
 # 文档索引，按需查阅
 
-- [Harness 开发指南](harness/Harness.md)：技术栈、目录结构、常用命令、开发规范、安全机制、环境配置、构建部署、常见问题、资源路由
+- [Harness 开发指南](harness/Harness.md)：技术栈、目录结构、常用命令、开发规范、安全机制（含全局白名单/黑名单）、API 端点（含安全 API）、环境配置、构建部署、常见问题、资源路由
 - [加密隧道部署与验证流程](harness/workflow/encrypted-tunnel-deploy-verify.md)：加密隧道从零部署到功能验证的全流程，含交叉编译、磁盘检查、部署启动、隧道创建、连通性验证、断线清理、端口占用检测验证（最后验证：2026-05-12）
 - [SSH 隧道直通内网服务流程](harness/workflow/ssh-tunnel-direct-access.md)：SSH 隧道从公网访问内网服务的完整流程，包括隧道创建、SSH 直连内网、部署服务、问题排查等实操步骤
 - [Gitee Release 发布流程](harness/workflow/gitee-release-publish.md)：交叉编译全平台二进制、创建 Gitee Release、上传附件的完整步骤，含 API 调用注意事项和失败回退
-- [GoRemote 调试开发经验](harness/experience/go-remote-debugging.md)：综合调试排查手册（已整合跨平台技巧和部署调试），涵盖 TLS、PowerShell 坑点、Agent 启动、配置管理、隧道调试、交叉编译、磁盘管理和常见错误速查
+- [GoRemote 调试开发经验](harness/experience/go-remote-debugging.md)：综合调试排查手册（已整合跨平台技巧和部署调试），涵盖 TLS、PowerShell 坑点、Agent 启动、配置管理、隧道调试、交叉编译、磁盘管理、安全功能测试（全局白名单/黑名单）、Android adb 部署和常见错误速查
 - [加密隧道开发实战经验](harness/experience/encrypted-tunnel-lessons.md)：加密功能开发中的踩坑记录，包括 Go stdlib crypto/hkdf 不可用、磁盘满导致上传失败、swag 文档缺失、PowerShell curl 转义、plink 主机密钥、Python stub 等
 - [远程部署常见坑点](harness/experience/remote-deployment-pitfalls.md)：五大部署坑点 — binary in use 无法覆盖、Permission denied、进程杀不掉用 fuser、nohup 启动卡住、服务器目录混淆
 - [Gin 路由与管理员认证实现经验](harness/experience/gin-auth-route-tips.md)：路由规划 Public vs Protected、Middleware 重定向循环、Static vs StaticFile 区别、ShouldBindJSON Content-Type 要求、Cookie 设置与清除、返回格式自动适配

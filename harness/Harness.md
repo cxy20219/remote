@@ -105,6 +105,8 @@ go vet ./internal/...
 | 端口占用检测与排除 | [references/tunnel-design.md](references/tunnel-design.md#36-端口状态查询) | [experience/encrypted-tunnel-lessons.md](experience/encrypted-tunnel-lessons.md) |
 | 制作 Gitee Release 中文乱码 | [experience/gitee-release-utf8.md](experience/gitee-release-utf8.md) | [workflow/gitee-release-publish.md](workflow/gitee-release-publish.md) |
 | 密码/密钥/公网地址 | **禁止写入 harness 文档**，使用占位符代替 | `CHANGE-ME` / `your-server-ip` 等 |
+| 全局白名单/黑名单管理 | [经验: go-remote-debugging.md#9](experience/go-remote-debugging.md#9-安全功能测试) | [config-reference.md](references/config-reference.md) |
+| 自动拉黑测试与恢复 | [经验: go-remote-debugging.md#54](experience/go-remote-debugging.md#54-自动黑名单功能测试) | [经验: go-remote-debugging.md#55](experience/go-remote-debugging.md#55-从服务器本地访问-apiip-被黑名单时) |
 
 ## 安全机制
 
@@ -117,7 +119,9 @@ go vet ./internal/...
 | 登录速率限制 | `server/security.go` | `security.login_rate_limit`，默认 5/min/IP |
 | WS 连接限流 | `server/security.go` | `security.max_conn_per_min`，默认 10/min/IP |
 | 隧道端口防扫描 | `server/tunnel.go` | `security.max_conn_per_min`，默认 10/min/IP |
-| IP 白名单绕过限流 | `server/client.go` + `server/security.go` | 白名单内 IP 不受 `max_conn_per_min` 限制 |
+| IP 白名单绕过限流 | `server/client.go` + `server/security.go` | 每客户端白名单 IP 不受 `max_conn_per_min` 限制 |
+| 全局白名单绕过所有限流 | `server/security.go` + `server/server.go` | `security.global_whitelist` 中的 IP 跳过所有限流检查（登录/WS/端口扫描） |
+| 黑名单自动阻止 | `server/security.go`（BlacklistManager） | 累计限流违规达阈值自动拉黑，黑名单 IP 直接拒绝 |
 | TLS 传输加密 | `server/server.go` / `agent/connector.go` | `server.tls.enabled: true` 启用 |
 
 ## 配置（security 段）
@@ -128,6 +132,8 @@ security:
   login_rate_limit: 5       # 登录速率限制（次/分/IP）
   max_body_size_mb: 10      # 请求体最大 MB
   max_conn_per_min: 10      # WS 连接和隧道端口防扫描（次/分/IP，0=禁用）
+  global_whitelist: []      # 全局 IP 白名单（支持 CIDR），绕过所有限流
+  blacklist_threshold: 100  # 累计违规自动拉黑阈值（0=禁用）
 ```
 
 ## 构建部署
@@ -142,7 +148,9 @@ security:
    - `"connection rate limiting enabled","max_conn_per_min":10`
 7. 启动 Agent，确认连接和注册日志
 8. 通过 API 创建隧道，验证数据转发和防扫描
-9. 通过前端管理 IP 白名单
+9. 通过前端管理 IP 白名单和黑名单
+   - 前端卡片顺序：统计 → 端口范围状态 → 安全设置 → 在线客户端 → 创建隧道
+   - 安全设置卡片包含"全局白名单"和"黑名单管理"两个标签页
 
 详见: `harness/workflow/encrypted-tunnel-deploy-verify.md`
 
@@ -166,6 +174,13 @@ security:
 | PUT | `/api/tunnels/:id` | 更新隧道 |
 | DELETE | `/api/tunnels/:id` | 删除隧道 |
 | GET | `/api/port-status` | 端口范围使用状况（含被占端口列表） |
+| GET | `/api/security/global-whitelist` | 获取全局白名单列表 |
+| PUT | `/api/security/global-whitelist` | 更新全局白名单（JSON: `{"ips":[...]}`） |
+| GET | `/api/security/blacklist` | 黑名单列表 + 违规计数 + 阈值 |
+| POST | `/api/security/blacklist` | 手动拉黑 IP（JSON: `{"ip":"...","reason":"...","duration_minutes":N}`） |
+| DELETE | `/api/security/blacklist/:ip` | 解除 IP 拉黑 |
+| GET | `/api/security/blacklist-threshold` | 获取自动拉黑阈值 |
+| PUT | `/api/security/blacklist-threshold` | 修改自动拉黑阈值（JSON: `{"threshold":N}`） |
 | GET | `/static/*` | 静态资源（go:embed 嵌入） |
 | GET | `/` | Web 管理首页（go:embed 嵌入） |
 
@@ -187,6 +202,10 @@ security:
 | 隧道端口从外网连不上 | 检查云安全组/防火墙是否放通了对应端口范围（默认 10000-20000） |
 | Gitee Release 中文乱码 | PowerShell 编码损坏中文，用 `-F` 方式可避免 |
 | PowerShell stdin 管道到 python3 失效 | 改用临时文件传递 JSON |
+| 请求返回 403 "IP is blacklisted" | IP 被自动拉黑，`DELETE /api/security/blacklist/:ip` 解除 |
+| IP 被黑名单后无法登录管理 | 通过 plink 从服务器 localhost 调用 API 恢复 |
+| 全局白名单不生效 | 确认使用 PUT 接口时 JSON 字段名为 `ips`（不是 `global_whitelist`） |
+| Android adb 部署 agent hostname 显示 localhost | agent 配置中显式设置 `agent.hostname: "android"` |
 
 ## 测试注意
 

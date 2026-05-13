@@ -32,6 +32,8 @@
 | `login_rate_limit` | int | `5` | 每分钟每 IP 最大登录尝试次数（0=禁用） |
 | `max_body_size_mb` | int | `10` | HTTP 请求体最大大小（MB，0=无限制） |
 | `max_conn_per_min` | int | `10` | WebSocket 连接和隧道端口每分钟每 IP 最大连接数（防扫描，0=禁用） |
+| `global_whitelist` | []string | `[]` | 全局 IP 白名单，支持 CIDR（如 `192.168.1.0/24`）；白名单内 IP 绕过所有限流检查 |
+| `blacklist_threshold` | int | `100` | 累计限流违规次数阈值；达到后 IP 自动拉黑，后续请求直接拒绝（0=禁用自动拉黑） |
 
 ### heartbeat
 
@@ -167,6 +169,9 @@ security:
   login_rate_limit: 5
   max_body_size_mb: 10
   max_conn_per_min: 10
+  global_whitelist:
+    - "10.0.0.0/8"
+  blacklist_threshold: 100
 
 heartbeat:
   interval: 30
