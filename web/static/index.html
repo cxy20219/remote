@@ -225,12 +225,16 @@ async function checkHealth(){
   }
 }
 
+let clientMap={};
+
 async function loadClients(){
   try{
     const r=await fetch('/api/clients');const d=await r.json();
     const sel=document.getElementById('client-select');
     sel.innerHTML='<option value="">请选择...</option>';
     document.getElementById('stat-clients').textContent=d.total;
+    clientMap={};
+    d.clients.forEach(c=>{clientMap[c.client_id]=c.hostname});
     if(!d.clients.length){document.getElementById('clients').innerHTML='<div class="empty">暂无在线客户端 &mdash; 请在内网机器启动 Agent</div>';return}
     let h='<table><thead><tr><th>客户端 ID</th><th>主机名</th><th>系统</th><th>状态</th><th>最后心跳</th></tr></thead><tbody>';
     d.clients.forEach(c=>{
@@ -246,9 +250,10 @@ async function loadTunnels(){
     const r=await fetch('/api/tunnels');const d=await r.json();
     document.getElementById('stat-tunnels').textContent=d.total;
     if(!d.tunnels.length){document.getElementById('tunnels').innerHTML='<div class="empty">暂无隧道 &mdash; 选择客户端并创建</div>';return}
-    let h='<table><thead><tr><th>隧道 ID</th><th>公网端口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+    let h='<table><thead><tr><th>隧道 ID</th><th>客户端 ID</th><th>主机名</th><th>公网端口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     d.tunnels.forEach(t=>{
-      h+=`<tr><td><code>${t.TunnelID.substring(0,18)}&hellip;</code></td><td><span class="port-highlight">${t.PublicPort}</span></td><td><span class="mono">${t.LocalAddr}:${t.LocalPort}</span></td><td>${t.Protocol.toUpperCase()}</td><td>${new Date(t.CreatedAt).toLocaleString()}</td>`;
+      const host=clientMap[t.ClientID]||t.ClientID.substring(0,12)+'&hellip;';
+      h+=`<tr><td><code>${t.TunnelID.substring(0,18)}&hellip;</code></td><td><code>${t.ClientID.substring(0,18)}&hellip;</code></td><td>${host}</td><td><span class="port-highlight">${t.PublicPort}</span></td><td><span class="mono">${t.LocalAddr}:${t.LocalPort}</span></td><td>${t.Protocol.toUpperCase()}</td><td>${new Date(t.CreatedAt).toLocaleString()}</td>`;
       h+=`<td><button class="btn btn-ghost" onclick="openEditModal('${t.TunnelID}','${t.LocalAddr}',${t.LocalPort},'${t.Protocol}',${t.PublicPort})">编辑</button> <button class="btn btn-danger" onclick="deleteTunnel('${t.TunnelID}')">删除</button></td></tr>`
     });
     h+='</tbody></table>';document.getElementById('tunnels').innerHTML=h
