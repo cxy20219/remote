@@ -324,40 +324,17 @@ go build -o release/agent-darwin-arm64 ./cmd/agent/
 
 ### 创建 Gitee Release
 
-> **编码注意**：PowerShell 传递中文到 Gitee API 时编码会损坏，需用 Go 程序发送 JSON 请求。详见 [Gitee Release 中文编码问题](../experience/gitee-release-utf8.md)。
+详见独立流程：[Gitee Release 发布流程](../workflow/gitee-release-publish.md)
 
-```powershell
-git tag v1.1.0
-git push origin v1.1.0
-
-# 用 Go 程序（而非 curl/PowerShell）创建 release 并指定 body
-# 参照 harness/experience/gitee-release-utf8.md 中的方案
-```
-
-### 上传二进制到 Release
-
-```powershell
-$releaseId = "YOUR_RELEASE_ID"
-$token = "YOUR_TOKEN"
-$baseUrl = "https://gitee.com/api/v5/repos/cxy20219/go-remote/releases/$releaseId/attach_files?access_token=$token"
-
-$files = @("server-linux-amd64","server-linux-arm64","agent-linux-amd64","agent-linux-arm64",
-           "server-windows-amd64.exe","agent-windows-amd64.exe",
-           "server-darwin-amd64","server-darwin-arm64","agent-darwin-amd64","agent-darwin-arm64")
-
-foreach ($f in $files) {
-    & curl.exe -s -X POST "$baseUrl" -F "file=@release/$f"
-    Start-Sleep -Milliseconds 500
-}
-```
+此文档涵盖了完整的交叉编译 → tag → API创建 → 上传附件的全流程，并已解决中文编码和 API 参数问题。
 
 ### 发布前自检
 
 - [ ] 确认 `web/static.go` 和 `web/static/` 目录存在（go:embed 源文件）
 - [ ] 确认 `go build ./cmd/server/` 编译通过
 - [ ] 确认各平台二进制均重新编译（含最新改动）
-- [ ] 确认 `server.example.yaml` 中 `auth.key` 不是真实密钥
-- [ ] 确认 README.txt 不含公网 IP 或密码
+- [ ] 确认 `server.yaml` 中 `auth.key` 不是真实密钥
+- [ ] 确认配置和代码中不含公网 IP、密码或令牌
 
 ## 注意事项
 

@@ -235,6 +235,6 @@ curl http://your-server-ip:10005/
 
 ## 相关文档
 
-- [服务端设计文档](../server-design.md) - GoRemote 服务端架构
-- [客户端设计文档](../agent-design.md) - GoRemote Agent 架构
-- [项目结构文档](../project-structure.md) - 项目目录结构说明
+- [服务端设计文档](../references/server-design.md) - GoRemote 服务端架构
+- [客户端设计文档](../references/agent-design.md) - GoRemote Agent 架构
+- [项目结构文档](../references/project-structure.md) - 项目目录结构说明

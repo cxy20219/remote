@@ -31,6 +31,7 @@
 | `allowed_origins` | []string | `[]` | WebSocket Origin 白名单（空=允许所有，生产建议配置） |
 | `login_rate_limit` | int | `5` | 每分钟每 IP 最大登录尝试次数（0=禁用） |
 | `max_body_size_mb` | int | `10` | HTTP 请求体最大大小（MB，0=无限制） |
+| `max_conn_per_min` | int | `10` | WebSocket 连接和隧道端口每分钟每 IP 最大连接数（防扫描，0=禁用） |
 
 ### heartbeat
 
@@ -161,6 +162,11 @@ auth:
 
 admin:
   password: "your-admin-password"
+
+security:
+  login_rate_limit: 5
+  max_body_size_mb: 10
+  max_conn_per_min: 10
 
 heartbeat:
   interval: 30

@@ -50,8 +50,8 @@ GoRemote 是一个基于 WebSocket 的内网穿透系统，通过 SSH 隧道实�
 - **[服务端设计文档](./server-design.md)** - 服务端架构、消息协议、接口设计
 - **[客户端设计文档](./agent-design.md)** - 客户端架构、重连机制
 - **[隧道设计文档](./tunnel-design.md)** - 隧道架构、数据传输、安全机制
-- **[SSH 隧道直通测试用例](./test/ssh-tunnel-test-cases.md)** - SSH 隧道测试用例
-- **[GoRemote 调试开发经验](./experience/go-remote-debugging.md)** - 开发调试经验总结
+- **[SSH 隧道直通测试用例](./ssh-tunnel-test-cases.md)** - SSH 隧道测试用例
+- **[GoRemote 调试开发经验](../experience/go-remote-debugging.md)** - 开发调试经验总结
 
 ## 4. 消息协议
 

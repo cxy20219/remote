@@ -93,6 +93,26 @@ type TunnelErrorPayload struct {
 
 ## 3. 服务端设计
 
+### 3.0 端口防扫描（anti-scanning）
+
+每个隧道端口连接受独立限流保护：同一 IP 每分钟最多发起 `max_conn_per_min` 次 TCP 连接（默认 10），超限连接被立即拒绝并记录 WARN 日志。IP 白名单中的地址绕过此限制。
+
+```
+TCP Conn —▶ 端口 10000
+                │
+                ▼
+         ┌──────────────┐
+         │ portLimiter  │
+         │ .Allow(ip)   │──── 允许 ──▶ acceptLoop → 转发 Agent
+         └──────┬───────┘
+                │ 拒绝
+                ▼
+         WARN "rate limited (anti-scanning)"
+         关闭连接
+```
+
+**实现**：`internal/server/tunnel.go` 中 `acceptLoop` 在 `net.Listener.Accept()` 后立即检查 `portLimiter.Allow(remoteIP)`，白名单 IP 调用 `IsIPWhitelisted()` 做 passthrough。
+
 ### 3.1 数据结构
 
 ```go

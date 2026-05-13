@@ -40,9 +40,10 @@
 | 组件 | 职责 |
 |------|------|
 | WebSocket Server | 监听端口，接收客户端连接 |
-| Client Manager | 维护客户端在线状态，client_id ↔ 连接映射 |
-| Tunnel Manager | 管理端口映射隧道 |
+| Client Manager | 维护客户端在线状态，client_id ↔ 连接映射，IP 白名单存储 |
+| Tunnel Manager | 管理端口映射隧道，含端口防扫描限流（portLimiter） |
 | Handler | 消息路由，分发给对应处理函数 |
+| Security | 安全中间件：响应头、Body 限大、登录限流、WS 限流（connLimiter）、IP 白名单检查 |
 | Logger | 日志记录 |
 
 ## 3. 数据结构
@@ -51,13 +52,14 @@
 
 ```go
 type Client struct {
-    ClientID  string           // 唯一标识 (UUID)
-    Hostname  string           // 主机名
-    OS        string           // 操作系统 (linux/windows)
-    Conn      *websocket.Conn  // WebSocket连接
-    RegTime   time.Time        // 注册时间
-    LastPing  time.Time        // 最后心跳时间
-    Status    string           // online/offline
+    ClientID    string           // 唯一标识 (UUID)
+    Hostname    string           // 主机名
+    OS          string           // 操作系统 (linux/windows)
+    Conn        *websocket.Conn  // WebSocket连接
+    RegTime     time.Time        // 注册时间
+    LastPing    time.Time        // 最后心跳时间
+    Status      string           // online/offline
+    IPWhitelist []string         // IP 白名单（精确 IP 或 CIDR）
 }
 ```
 
@@ -188,6 +190,11 @@ type Server struct {
     handler       *Handler
     tunnelManager *TunnelManager
 
+    // Rate limiter 实例
+    loginLimiter  *RateLimiter  // 登录限流（login_rate_limit/min/IP）
+    connLimiter   *RateLimiter  // WS 连接限流（max_conn_per_min/IP）
+    portLimiter   *RateLimiter  // 隧道端口防扫描（max_conn_per_min/IP）
+
     upgrader websocket.Upgrader
     engine   *gin.Engine
 }
@@ -213,6 +220,10 @@ type ClientManager struct {
 - `Get(clientID string) (*Client, bool)` - 获取客户端
 - `List() []*Client` - 获取所有客户端
 - `Broadcast(msg []byte)` - 广播消息
+- `GetIPWhitelist(clientID string) []string` - 获取客户端 IP 白名单
+- `SetIPWhitelist(clientID string, ips []string)` - 设置客户端 IP 白名单
+- `RestoreWhitelist(client *Client)` - 按 hostname 从持久存储恢复白名单
+- `IsIPWhitelisted(ip string) bool` - 检查 IP 是否在任何客户端白名单中
 
 ### 5.3 Handler 消息处理
 
@@ -303,8 +314,10 @@ log:
 
 | Method | Path | 描述 |
 |--------|------|------|
-| GET | /api/clients | 获取在线客户端列表 |
+| GET | /api/clients | 获取在线客户端列表（含 ip_whitelist 字段） |
 | GET | /api/clients/:id | 获取客户端详情 |
+| GET | /api/clients/:id/whitelist | 获取客户端 IP 白名单 |
+| PUT | /api/clients/:id/whitelist | 更新客户端 IP 白名单（JSON: {"ips":[...]}） |
 | GET | /api/clients/:client_id/tunnels | 获取指定客户端的隧道 |
 | POST | /api/tunnels | 创建端口映射 |
 | GET | /api/tunnels | 获取所有隧道 |

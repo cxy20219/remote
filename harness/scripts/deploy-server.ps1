@@ -36,8 +36,14 @@ function Remote-Command {
     param([string]$Cmd)
     $output = & plink.exe @plinkArgs "$SshUser@$ServerIp" $Cmd 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Remote command failed: $output"
+        Write-Warning "Remote command failed (non-zero exit): $output"
     }
+    return $output
+}
+
+function Remote-Command-AllowFail {
+    param([string]$Cmd)
+    $output = & plink.exe @plinkArgs "$SshUser@$ServerIp" $Cmd 2>&1
     return $output
 }
 
@@ -45,7 +51,8 @@ Write-Host "Creating remote directory..."
 Remote-Command "mkdir -p $RemoteDir"
 
 Write-Host "Stopping existing server..."
-Remote-Command "fuser -k 8080/tcp 2>/dev/null; pkill -9 -f 'server --config' 2>/dev/null; echo OK"
+# Use AllowFail variant for stop commands — they exit non-zero when nothing to kill
+Remote-Command-AllowFail "fuser -k 8080/tcp 2>/dev/null; pkill -9 -f 'server --config' 2>/dev/null; echo OK"
 
 Write-Host "Uploading binary..."
 $LocalBinaryFull = (Resolve-Path $LocalBinary).Path
@@ -64,7 +71,8 @@ if ($ConfigFile -and (Test-Path $ConfigFile)) {
 
 Write-Host "Starting server..."
 $startCmd = "cd $RemoteDir && nohup ./server --config $RemoteDir/server.yaml </dev/null > $RemoteDir/server.log 2>&1 &"
-Remote-Command $startCmd
+# nohup & may cause plink to hang; use AllowFail variant with pipeline to unblock
+$null = & plink.exe @plinkArgs "$SshUser@$ServerIp" $startCmd 2>&1 | Out-Null
 
 Start-Sleep -Seconds 3
 

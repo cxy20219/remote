@@ -4,6 +4,7 @@
 - [Harness 开发指南](harness/Harness.md)：技术栈、目录结构、常用命令、开发规范、安全机制、环境配置、构建部署、常见问题、资源路由
 - [加密隧道部署与验证流程](harness/workflow/encrypted-tunnel-deploy-verify.md)：加密隧道从零部署到功能验证的全流程，含交叉编译、磁盘检查、部署启动、隧道创建、连通性验证、断线清理、端口占用检测验证（最后验证：2026-05-12）
 - [SSH 隧道直通内网服务流程](harness/workflow/ssh-tunnel-direct-access.md)：SSH 隧道从公网访问内网服务的完整流程，包括隧道创建、SSH 直连内网、部署服务、问题排查等实操步骤
+- [Gitee Release 发布流程](harness/workflow/gitee-release-publish.md)：交叉编译全平台二进制、创建 Gitee Release、上传附件的完整步骤，含 API 调用注意事项和失败回退
 - [GoRemote 调试开发经验](harness/experience/go-remote-debugging.md)：综合调试排查手册（已整合跨平台技巧和部署调试），涵盖 TLS、PowerShell 坑点、Agent 启动、配置管理、隧道调试、交叉编译、磁盘管理和常见错误速查
 - [加密隧道开发实战经验](harness/experience/encrypted-tunnel-lessons.md)：加密功能开发中的踩坑记录，包括 Go stdlib crypto/hkdf 不可用、磁盘满导致上传失败、swag 文档缺失、PowerShell curl 转义、plink 主机密钥、Python stub 等
 - [远程部署常见坑点](harness/experience/remote-deployment-pitfalls.md)：五大部署坑点 — binary in use 无法覆盖、Permission denied、进程杀不掉用 fuser、nohup 启动卡住、服务器目录混淆
@@ -23,3 +24,4 @@
 - [Swagger API 规范](harness/references/swagger-api.yaml)：REST API 完整 YAML 规范（swag init 自动生成）
 - [服务端配置模板](harness/assets/server.yaml.template)：生产环境服务端配置模板，含 security 段
 - [客户端配置模板](harness/assets/agent.yaml.template)：生产环境客户端配置模板
+

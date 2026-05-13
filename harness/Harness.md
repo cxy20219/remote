@@ -99,10 +99,11 @@ go vet ./internal/...
 | 配置字段说明 | [references/config-reference.md](references/config-reference.md) | [assets/server.yaml.template](assets/server.yaml.template) |
 | TLS 证书问题 | [references/tls-setup.md](references/tls-setup.md) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
 | 系统架构理解 | [references/project-structure.md](references/project-structure.md) | [references/server-design.md](references/server-design.md) |
-| 制作 Release 发布包 | [workflow/encrypted-tunnel-deploy-verify.md](workflow/encrypted-tunnel-deploy-verify.md#步骤八制作-release-发布包) | — |
+| 制作 Release 并发布到 Gitee | [workflow/gitee-release-publish.md](workflow/gitee-release-publish.md) | [experience/gitee-release-utf8.md](experience/gitee-release-utf8.md) |
+| 连接限流/防扫描/白名单排查 | [references/tunnel-design.md](references/tunnel-design.md#30-端口防扫描anti-scanning) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
 | 隧道功能端到端验证 | [references/ssh-tunnel-test-cases.md](references/ssh-tunnel-test-cases.md) | — |
-| 端口占用检测与排除 | [references/tunnel-design.md](references/tunnel-design.md#36-端口状态查询) | [experience/port-occupancy-testing.md](experience/port-occupancy-testing.md) |
-| 制作 Gitee Release 中文乱码 | [experience/gitee-release-utf8.md](experience/gitee-release-utf8.md) | — |
+| 端口占用检测与排除 | [references/tunnel-design.md](references/tunnel-design.md#36-端口状态查询) | [experience/encrypted-tunnel-lessons.md](experience/encrypted-tunnel-lessons.md) |
+| 制作 Gitee Release 中文乱码 | [experience/gitee-release-utf8.md](experience/gitee-release-utf8.md) | [workflow/gitee-release-publish.md](workflow/gitee-release-publish.md) |
 | 密码/密钥/公网地址 | **禁止写入 harness 文档**，使用占位符代替 | `CHANGE-ME` / `your-server-ip` 等 |
 
 ## 安全机制
@@ -114,15 +115,19 @@ go vet ./internal/...
 | 安全响应头 | `server/security.go` | X-Content-Type-Options、X-Frame-Options 等 |
 | Body 大小限制 | `server/security.go` | `security.max_body_size_mb`，默认 10MB |
 | 登录速率限制 | `server/security.go` | `security.login_rate_limit`，默认 5/min/IP |
+| WS 连接限流 | `server/security.go` | `security.max_conn_per_min`，默认 10/min/IP |
+| 隧道端口防扫描 | `server/tunnel.go` | `security.max_conn_per_min`，默认 10/min/IP |
+| IP 白名单绕过限流 | `server/client.go` + `server/security.go` | 白名单内 IP 不受 `max_conn_per_min` 限制 |
 | TLS 传输加密 | `server/server.go` / `agent/connector.go` | `server.tls.enabled: true` 启用 |
 
-## 配置（新增 security 段）
+## 配置（security 段）
 
 ```yaml
 security:
   allowed_origins: []       # WebSocket Origin 白名单
   login_rate_limit: 5       # 登录速率限制（次/分/IP）
   max_body_size_mb: 10      # 请求体最大 MB
+  max_conn_per_min: 10      # WS 连接和隧道端口防扫描（次/分/IP，0=禁用）
 ```
 
 ## 构建部署
@@ -132,9 +137,12 @@ security:
 3. 检查服务器磁盘空间（`df -h`）
 4. 停旧进程（`fuser -k 8080/tcp`）
 5. **上传二进制和配置（无需 static/ 目录，Web 界面已通过 go:embed 编译进二进制）**
-6. 启动服务端，验证 `"tunnel data encryption enabled (AES-256-GCM)"`
-7. 启动 Agent，确认加密日志
-8. 通过 API 创建隧道，验证加密数据转发
+6. 启动服务端，验证两条关键日志：
+   - `"tunnel data encryption enabled (AES-256-GCM)"`
+   - `"connection rate limiting enabled","max_conn_per_min":10`
+7. 启动 Agent，确认连接和注册日志
+8. 通过 API 创建隧道，验证数据转发和防扫描
+9. 通过前端管理 IP 白名单
 
 详见: `harness/workflow/encrypted-tunnel-deploy-verify.md`
 
@@ -147,8 +155,10 @@ security:
 | POST | `/api/login` | 管理员登录（速率限制保护） |
 | POST | `/api/logout` | 登出 |
 | GET | `/api/check-auth` | 认证状态检查 |
-| GET | `/api/clients` | 客户端列表（需认证） |
+| GET | `/api/clients` | 客户端列表（含 ip_whitelist 字段，需认证） |
 | GET | `/api/clients/:id` | 客户端详情 |
+| GET | `/api/clients/:id/whitelist` | 获取客户端 IP 白名单 |
+| PUT | `/api/clients/:id/whitelist` | 更新客户端 IP 白名单（JSON: {"ips":[...]}） |
 | GET | `/api/client-tunnels/:client_id` | 指定客户端的所有隧道 |
 | POST | `/api/tunnels` | 创建隧道 |
 | GET | `/api/tunnels` | 隧道列表 |
@@ -171,7 +181,12 @@ security:
 | curl JSON 请求乱码 | 用 `@file.json` 方式，`Out-File -Encoding ascii` |
 | Start-Process 找不到配置 | 加 `-WorkingDirectory` 参数 |
 | plink 主机密钥警告 | 同一服务器不同端口有独立的主机密钥缓存，用 `-hostkey` 参数指定 |
-| Gitee Release 中文乱码 | PowerShell 编码损坏中文，需用 Go 程序 `json.Marshal` 发送 API 请求 |
+| deploy-server.ps1 停进程报错中断 | 脚本中 `fuser`/`pkill` 退出码非零，已改为 `Remote-Command-AllowFail` |
+| nohup 启动后 plink 不返回 | 用 `$null = & plink ... | Out-Null` 异步处理 |
+| WS/tunnel 连接被限流 | 日志含 `"connection rate limited"`，检查 `max_conn_per_min` 配置或加入 IP 白名单 |
+| 隧道端口从外网连不上 | 检查云安全组/防火墙是否放通了对应端口范围（默认 10000-20000） |
+| Gitee Release 中文乱码 | PowerShell 编码损坏中文，用 `-F` 方式可避免 |
+| PowerShell stdin 管道到 python3 失效 | 改用临时文件传递 JSON |
 
 ## 测试注意
 
