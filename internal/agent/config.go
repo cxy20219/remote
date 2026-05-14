@@ -7,65 +7,69 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds agent configuration
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Auth       AuthConfig       `yaml:"auth"`
-	Agent      AgentConfig      `yaml:"agent"`
-	Heartbeat  HeartbeatConfig `yaml:"heartbeat"`
-	Reconnect  ReconnectConfig  `yaml:"reconnect"`
-	Log        LogConfig        `yaml:"log"`
-	Tunnel     TunnelConfig     `yaml:"tunnel"`
+	Server    ServerConfig     `yaml:"server"`
+	Agent     AgentConfig     `yaml:"agent"`
+	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
+	Reconnect ReconnectConfig `yaml:"reconnect"`
+	Log       LogConfig       `yaml:"log"`
+	Tunnel    TunnelConfig    `yaml:"tunnel"`
 }
 
-// ServerConfig holds server connection configuration
 type ServerConfig struct {
-	Address string     `yaml:"address"`
-	TLS    TLSConfig  `yaml:"tls"`
+	Address string    `yaml:"address"`
+	TLS    TLSConfig `yaml:"tls"`
 }
 
-// TLSConfig holds TLS configuration
 type TLSConfig struct {
 	Enabled            bool   `yaml:"enabled"`
-	CA                 string `yaml:"ca"`                   // CA certificate to verify server
-	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"` // skip server certificate verification
+	CA                 string `yaml:"ca"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
 }
 
-// AuthConfig holds authentication configuration
-type AuthConfig struct {
-	Key string `yaml:"key"`
-}
-
-// AgentConfig holds agent identification
 type AgentConfig struct {
-	Hostname string `yaml:"hostname"` // empty for auto-detect
-	OS       string `yaml:"os"`       // empty for auto-detect
+	Hostname string `yaml:"hostname"`
+	OS       string `yaml:"os"`
 }
 
-// HeartbeatConfig holds heartbeat configuration
 type HeartbeatConfig struct {
-	Interval int `yaml:"interval"` // heartbeat interval in seconds
+	Interval int `yaml:"interval"`
 }
 
-// ReconnectConfig holds reconnection configuration
 type ReconnectConfig struct {
-	Interval   int `yaml:"interval"`    // initial reconnect interval in seconds
-	MaxAttempts int  `yaml:"max_attempts"` // max reconnect attempts, 0 = infinite
-	MaxInterval int  `yaml:"max_interval"` // max reconnect interval in seconds
+	Interval    int `yaml:"interval"`
+	MaxAttempts int `yaml:"max_attempts"`
+	MaxInterval int `yaml:"max_interval"`
 }
 
-// LogConfig holds logging configuration
 type LogConfig struct {
-	Level string `yaml:"level"` // debug/info/warn/error
-	File  string `yaml:"file"`  // empty for stdout
+	Level string `yaml:"level"`
+	File  string `yaml:"file"`
 }
 
-// TunnelConfig holds tunnel configuration
 type TunnelConfig struct {
-	Enabled  bool `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
 }
 
-// LoadConfig loads configuration from a YAML file
+func DefaultConfig() *Config {
+	return &Config{
+		Server: ServerConfig{
+			Address: "localhost:8080",
+		},
+		Heartbeat: HeartbeatConfig{
+			Interval: 30,
+		},
+		Reconnect: ReconnectConfig{
+			Interval:    5,
+			MaxAttempts: 0,
+			MaxInterval: 60,
+		},
+		Log: LogConfig{
+			Level: "info",
+		},
+	}
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -77,7 +81,6 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Set defaults
 	if config.Server.Address == "" {
 		config.Server.Address = "localhost:8080"
 	}

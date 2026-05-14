@@ -3,7 +3,7 @@ package agent
 import "testing"
 
 func TestConnectorCloseReconnectCycleRecreatesDoneChannel(t *testing.T) {
-	c := NewConnector("localhost:8080", false, "", "secret", false)
+	c := NewConnector("localhost:8080", false, "", false, nil)
 
 	firstDone := c.Done()
 	if err := c.Close(); err != nil {

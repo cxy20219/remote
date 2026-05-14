@@ -1,5 +1,7 @@
-# GoRemote Server Deployment Script for Linux
+# GoRemote Server Zero-Config Deployment Script for Linux
 # Usage: .\deploy-server.ps1 -ServerIp "1.2.3.4" -SshUser "root" -SshPassword "xxx"
+# 关联流程: ../workflow/zero-config-deploy-verify.md
+# 依赖: plink.exe, pscp.exe (PuTTY 工具链)
 
 param(
     [Parameter(Mandatory=$true)]
@@ -13,83 +15,58 @@ param(
 
     [string]$SshPort = "22",
 
-    [string]$RemoteDir = "/opt/goremote",
+    [string]$RemoteDir = "/root/goremote",
 
-    [string]$ConfigFile = ""
+    [string]$LocalBinary = "harness/assets/bin/server-linux-amd64",
+
+    [int]$ServerPort = 8080
 )
 
 $ErrorActionPreference = "Stop"
-
-$LocalBinary = "release/server-linux-amd64"
 $RemoteBinary = "$RemoteDir/server"
 
 if (-not (Test-Path $LocalBinary)) {
-    Write-Error "Binary not found at $LocalBinary`nBuild with: `$env:GOOS=`"linux`"; `$env:GOARCH=`"amd64`"; go build -o release/server-linux-amd64 ./cmd/server/"
+    Write-Error "Binary not found at $LocalBinary`nBuild with: `$env:GOOS=`"linux`"; `$env:GOARCH=`"amd64`"; go build -o $LocalBinary ./cmd/server/"
     exit 1
 }
 
-Write-Host "Deploying GoRemote Server to $ServerIp..."
+Write-Host "=== Deploying GoRemote Server (Zero-Config) ===" -ForegroundColor Cyan
+Write-Host "Target: $SshUser@$ServerIp`:$SshPort"
 
-$plinkArgs = "-batch", "-pw", $SshPassword, "-P", $SshPort
+function Remote-Command { param([string]$Cmd) & plink.exe -batch -pw $SshPassword -P $SshPort "$SshUser@$ServerIp" $Cmd 2>&1 }
+function Remote-Command-AllowFail { param([string]$Cmd) & plink.exe -batch -pw $SshPassword -P $SshPort "$SshUser@$ServerIp" $Cmd 2>&1 }
 
-function Remote-Command {
-    param([string]$Cmd)
-    $output = & plink.exe @plinkArgs "$SshUser@$ServerIp" $Cmd 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Remote command failed (non-zero exit): $output"
-    }
-    return $output
-}
+Write-Host "[1/5] Creating remote directory..."
+Remote-Command "mkdir -p $RemoteDir/data" | Out-Null
 
-function Remote-Command-AllowFail {
-    param([string]$Cmd)
-    $output = & plink.exe @plinkArgs "$SshUser@$ServerIp" $Cmd 2>&1
-    return $output
-}
+Write-Host "[2/5] Stopping existing server..."
+Remote-Command-AllowFail 'kill -9 $(pgrep -f "./server") 2>/dev/null; echo stopped' | Out-Null
 
-Write-Host "Creating remote directory..."
-Remote-Command "mkdir -p $RemoteDir"
-
-Write-Host "Stopping existing server..."
-# Use AllowFail variant for stop commands — they exit non-zero when nothing to kill
-Remote-Command-AllowFail "fuser -k 8080/tcp 2>/dev/null; pkill -9 -f 'server --config' 2>/dev/null; echo OK"
-
-Write-Host "Uploading binary..."
+Write-Host "[3/5] Uploading binary..."
 $LocalBinaryFull = (Resolve-Path $LocalBinary).Path
 & pscp.exe -P $SshPort -pw $SshPassword $LocalBinaryFull "$SshUser@$ServerIp`:$RemoteBinary" 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to upload binary" }
 
-Write-Host "Setting permissions..."
-Remote-Command "chmod +x $RemoteBinary"
+Write-Host "[4/5] Starting server..."
+Remote-Command "chmod +x $RemoteBinary" | Out-Null
+$null = & plink.exe -batch -pw $SshPassword -P $SshPort "$SshUser@$ServerIp" "cd $RemoteDir && nohup ./server --data $RemoteDir/data > $RemoteDir/server.log 2>&1 &" 2>&1 | Out-Null
 
-if ($ConfigFile -and (Test-Path $ConfigFile)) {
-    Write-Host "Uploading config..."
-    $RemoteConfig = "$RemoteDir/server.yaml"
-    & pscp.exe -P $SshPort -pw $SshPassword $ConfigFile "$SshUser@$ServerIp`:$RemoteConfig" 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to upload config" }
-}
+Start-Sleep -Seconds 2
 
-Write-Host "Starting server..."
-$startCmd = "cd $RemoteDir && nohup ./server --config $RemoteDir/server.yaml </dev/null > $RemoteDir/server.log 2>&1 &"
-# nohup & may cause plink to hang; use AllowFail variant with pipeline to unblock
-$null = & plink.exe @plinkArgs "$SshUser@$ServerIp" $startCmd 2>&1 | Out-Null
-
-Start-Sleep -Seconds 3
-
-Write-Host "Checking health..."
-$health = Remote-Command "curl -s http://localhost:8080/health 2>/dev/null || echo 'FAILED'"
-if ($health -match "ok|status") {
-    Write-Host "Server deployed successfully!" -ForegroundColor Green
+Write-Host "[5/5] Verifying health..."
+$health = Remote-Command "curl -s http://localhost:$ServerPort/health 2>/dev/null || echo FAILED"
+if ($health -match '"ok"') {
+    Write-Host "Health check passed!" -ForegroundColor Green
 } else {
-    Write-Warning "Health check may have failed. Check logs at $RemoteDir/server.log"
-    Write-Host "Last 10 lines of log:"
-    Remote-Command "tail -10 $RemoteDir/server.log"
+    Write-Warning "Health check may have failed. Check logs."
+    Remote-Command "tail -5 $RemoteDir/server.log"
 }
 
-Write-Host "`nDeployment Summary:"
-Write-Host "  Server IP: $ServerIp"
-Write-Host "  Remote Dir: $RemoteDir"
-Write-Host "  Binary: $RemoteBinary"
-Write-Host "  Config: $RemoteDir/server.yaml"
-Write-Host "  Log: $RemoteDir/server.log"
-Write-Host "  Health: https://$ServerIp`:8080/health"
+# Show admin password
+Write-Host "`n=== Deployment Summary ===" -ForegroundColor Cyan
+Write-Host "Server: http://$ServerIp`:$ServerPort"
+$pwd = Remote-Command "grep -o 'password\":\"[^\"]*\"' $RemoteDir/server.log | head -1 | cut -d'\"' -f4"
+if ($pwd) {
+    Write-Host "Admin password (first-run only): $pwd" -ForegroundColor Yellow
+}
+Write-Host "Log: $RemoteDir/server.log"

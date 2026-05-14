@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GoRemote · 隧道管理</title>
+<title>GoRemote · 设备与隧道管理</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#f0f4f8 0%,#e2e8f0 100%);color:#334155;min-height:100vh}
-.container{max-width:1100px;margin:0 auto;padding:28px 20px}
+.container{max-width:1140px;margin:0 auto;padding:28px 20px}
 
 .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px;flex-wrap:wrap;gap:12px}
 .logo{display:flex;align-items:center;gap:10px}
@@ -16,14 +16,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .logout-btn{padding:7px 16px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;color:#64748b;cursor:pointer;font-size:13px;transition:all .2s;box-shadow:0 1px 2px rgba(0,0,0,.04)}
 .logout-btn:hover{color:#ef4444;border-color:#fecaca;background:#fef2f2}
 
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:24px}
-.stat-card{background:#fff;border-radius:14px;padding:20px 24px;display:flex;align-items:center;gap:16px;box-shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);transition:transform .15s}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:24px}
+.stat-card{background:#fff;border-radius:14px;padding:18px 22px;display:flex;align-items:center;gap:14px;box-shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);transition:transform .15s}
 .stat-card:hover{transform:translateY(-1px)}
-.stat-icon{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:19px}
+.stat-icon{width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:17px}
 .stat-icon.blue{background:#eff6ff;color:#3b82f6}
 .stat-icon.green{background:#f0fdf4;color:#22c55e}
 .stat-icon.purple{background:#f5f3ff;color:#8b5cf6}
-.stat-info .stat-value{font-size:26px;font-weight:700;color:#0f172a;line-height:1.2}
+.stat-icon.amber{background:#fffbeb;color:#f59e0b}
+.stat-icon.red{background:#fef2f2;color:#ef4444}
+.stat-info .stat-value{font-size:24px;font-weight:700;color:#0f172a;line-height:1.2}
 .stat-info .stat-label{font-size:12px;color:#94a3b8;font-weight:500}
 
 .card{background:#fff;border-radius:16px;padding:24px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04)}
@@ -31,6 +33,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .card-header h2{font-size:15px;font-weight:600;color:#1e293b;display:flex;align-items:center;gap:8px}
 .card-header h2 .dot{width:7px;height:7px;border-radius:50%;display:inline-block;box-shadow:0 0 6px currentColor}
 .card-header h2 .dot.ok{background:#22c55e;color:#22c55e}
+.card-header h2 .dot.warn{background:#f59e0b;color:#f59e0b}
 .card-header h2 .dot.err{background:#ef4444;color:#ef4444;animation:blink 1s infinite}
 @keyframes blink{50%{opacity:.4}}
 
@@ -45,10 +48,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .btn{padding:9px 18px;border:none;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;transition:all .15s;white-space:nowrap;letter-spacing:.1px}
 .btn-primary{background:#3b82f6;color:#fff;box-shadow:0 1px 2px rgba(59,130,246,.3)}
 .btn-primary:hover{background:#2563eb;box-shadow:0 2px 4px rgba(59,130,246,.4)}
+.btn-success{background:#22c55e;color:#fff;box-shadow:0 1px 2px rgba(34,197,94,.3);font-size:12px;padding:5px 14px}
+.btn-success:hover{background:#16a34a}
 .btn-danger{background:#fef2f2;color:#ef4444;border:1px solid #fecaca;font-size:12px;padding:5px 12px}
 .btn-danger:hover{background:#fee2e2}
 .btn-ghost{background:#f8fafc;color:#64748b;border:1px solid #e2e8f0;font-size:12px;padding:5px 12px}
 .btn-ghost:hover{background:#f1f5f9;color:#334155}
+.btn-warn{background:#fffbeb;color:#f59e0b;border:1px solid #fde68a;font-size:12px;padding:5px 12px}
+.btn-warn:hover{background:#fef3c7}
 
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead th{text-align:left;padding:10px 14px;color:#94a3b8;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;border-bottom:2px solid #f1f5f9;background:#fafbfc}
@@ -58,17 +65,20 @@ tbody tr:hover td{background:#f8fafc}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
 .badge-online{background:#f0fdf4;color:#16a34a}
 .badge-active{background:#eff6ff;color:#2563eb}
-.badge-online::before,.badge-active::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge-pending{background:#fffbeb;color:#d97706}
+.badge-online::before,.badge-active::before,.badge-pending::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge-offline{background:#f1f5f9;color:#94a3b8}
+.badge-enc-on{background:#f0fdf4;color:#16a34a;font-size:11px;padding:2px 8px;border-radius:4px}
+.badge-enc-off{background:#f1f5f9;color:#94a3b8;font-size:11px;padding:2px 8px;border-radius:4px}
 
 .port-highlight{font-family:'SF Mono','Cascadia Code','Consolas',monospace;color:#3b82f6;font-weight:700;font-size:14px}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
 
-
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:100;backdrop-filter:blur(4px)}
 .modal-overlay.show{display:flex;align-items:center;justify-content:center}
-.modal{background:#fff;border-radius:18px;padding:28px;width:420px;max-width:92%;box-shadow:0 25px 50px rgba(0,0,0,.15);animation:slideUp .2s}
+.modal{background:#fff;border-radius:18px;padding:28px;width:440px;max-width:92%;box-shadow:0 25px 50px rgba(0,0,0,.15);animation:slideUp .2s}
 @keyframes slideUp{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
 .modal h3{font-size:16px;color:#1e293b;margin-bottom:20px;font-weight:600}
 .modal .form-group{margin-bottom:14px}
@@ -88,29 +98,33 @@ code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;b
 .wl-tag{display:inline-flex;align-items:center;gap:4px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:4px 10px;font-size:12px;color:#3b82f6;font-family:'SF Mono','Cascadia Code','Consolas',monospace}
 .wl-tag .wl-remove{cursor:pointer;color:#94a3b8;font-size:14px;line-height:1;transition:color .15s}
 .wl-tag .wl-remove:hover{color:#ef4444}
-
 .bl-tag{display:inline-flex;align-items:center;gap:4px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:4px 10px;font-size:12px;color:#ef4444;font-family:'SF Mono','Cascadia Code','Consolas',monospace}
 .bl-tag .bl-remove{cursor:pointer;color:#94a3b8;font-size:14px;line-height:1;transition:color .15s}
 .bl-tag .bl-remove:hover{color:#16a34a}
+
+.violation-bar{height:4px;background:#f1f5f9;border-radius:2px;margin-top:6px;overflow:hidden}
+.violation-fill{height:100%;background:linear-gradient(90deg,#f59e0b,#ef4444);border-radius:2px;transition:width .3s}
 
 .sec-tabs{display:flex;gap:0;margin-bottom:18px;border-bottom:2px solid #f1f5f9}
 .sec-tab{padding:10px 20px;cursor:pointer;font-size:13px;font-weight:600;color:#94a3b8;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s}
 .sec-tab:hover{color:#334155}
 .sec-tab.active{color:#3b82f6;border-bottom-color:#3b82f6}
-
 .sec-panel{display:none}
 .sec-panel.active{display:block}
 
-.violation-bar{height:4px;background:#f1f5f9;border-radius:2px;margin-top:6px;overflow:hidden}
-.violation-fill{height:100%;background:linear-gradient(90deg,#f59e0b,#ef4444);border-radius:2px;transition:width .3s}
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px}
+.settings-grid .sg-item{display:flex;flex-direction:column;gap:4px}
+.settings-grid .sg-item label{font-size:12px;color:#64748b;font-weight:500}
+.settings-grid .sg-item input,.settings-grid .sg-item select{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;font-size:13px;color:#334155}
 
 @media(max-width:768px){
-.stats{grid-template-columns:1fr}
+.stats{grid-template-columns:1fr 1fr}
 .form-row{flex-direction:column}
 .form-group input,.form-group select{width:100%}
 .topbar{flex-direction:column;align-items:flex-start}
 table{font-size:11px}
 th,td{padding:8px 8px}
+.settings-grid{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -131,11 +145,15 @@ th,td{padding:8px 8px}
     </div>
     <div class="stat-card">
       <div class="stat-icon green">&#9632;</div>
-      <div class="stat-info"><div class="stat-value" id="stat-clients">0</div><div class="stat-label">在线客户端</div></div>
+      <div class="stat-info"><div class="stat-value" id="stat-online">0</div><div class="stat-label">在线设备</div></div>
     </div>
     <div class="stat-card">
-      <div class="stat-icon purple">&#8644;</div>
+      <div class="stat-icon amber">&#8644;</div>
       <div class="stat-info"><div class="stat-value" id="stat-tunnels">0</div><div class="stat-label">活跃隧道</div></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon red">&#9888;</div>
+      <div class="stat-info"><div class="stat-value" id="stat-pending">0</div><div class="stat-label">待审批</div></div>
     </div>
     <div class="stat-card">
       <div class="stat-icon green">&#9733;</div>
@@ -143,6 +161,37 @@ th,td{padding:8px 8px}
     </div>
   </div>
 
+  <!-- Pending Devices -->
+  <div class="card" id="pending-card" style="display:none">
+    <div class="card-header">
+      <h2><span class="dot warn" id="pending-dot"></span>&#9888; 待审批设备 (<span id="pending-count">0</span>)</h2>
+    </div>
+    <div id="pending-devices"><div class="empty">暂无待审批设备</div></div>
+  </div>
+
+  <!-- Authorized Devices -->
+  <div class="card">
+    <div class="card-header">
+      <h2><span class="dot ok"></span>已授权设备</h2>
+      <span class="refresh-dot" title="每10秒自动刷新">&#8635;</span>
+    </div>
+    <div id="devices"><div class="empty">加载中...</div></div>
+  </div>
+
+  <!-- Create Tunnel -->
+  <div class="card">
+    <div class="card-header"><h2>创建隧道</h2></div>
+    <div class="form-row">
+      <div class="form-group"><label>目标设备</label><select id="client-select"><option value="">请选择...</option></select></div>
+      <div class="form-group"><label>内网地址</label><input type="text" id="local-addr" value="127.0.0.1" placeholder="127.0.0.1"></div>
+      <div class="form-group"><label>内网端口</label><input type="number" id="local-port" value="22" placeholder="22"></div>
+      <div class="form-group"><label>协议</label><select id="protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
+      <button class="btn btn-primary" onclick="createTunnel()">创建隧道</button>
+    </div>
+    <div id="tunnels" style="margin-top:4px"><div class="empty">加载中...</div></div>
+  </div>
+
+  <!-- Port Status -->
   <div class="card" id="port-status-card" style="display:none">
     <div class="card-header"><h2>端口范围状态</h2></div>
     <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px">
@@ -155,6 +204,7 @@ th,td{padding:8px 8px}
     </div>
   </div>
 
+  <!-- Security -->
   <div class="card">
     <div class="card-header"><h2>&#128737; 安全设置</h2></div>
     <div class="sec-tabs">
@@ -188,27 +238,48 @@ th,td{padding:8px 8px}
     </div>
   </div>
 
+  <!-- Settings -->
   <div class="card">
-    <div class="card-header">
-      <h2><span class="dot ok" id="health-dot"></span>在线客户端</h2>
-      <span class="refresh-dot" title="每10秒自动刷新">&#8635;</span>
+    <div class="card-header"><h2>&#9881; 服务端设置</h2></div>
+    <div class="settings-grid" id="settings-grid">
+      <div class="sg-item"><label>端口范围起始</label><input type="number" id="set-port-start"></div>
+      <div class="sg-item"><label>端口范围结束</label><input type="number" id="set-port-end"></div>
+      <div class="sg-item"><label>每设备最大隧道数</label><input type="number" id="set-max-tunnels"></div>
+      <div class="sg-item"><label>默认内网地址</label><input type="text" id="set-local-addr"></div>
+      <div class="sg-item"><label>连接限流(/分)</label><input type="number" id="set-conn-limit"></div>
+      <div class="sg-item"><label>登录限流(/分)</label><input type="number" id="set-login-limit"></div>
+      <div class="sg-item"><label>心跳间隔(秒)</label><input type="number" id="set-hb-interval"></div>
+      <div class="sg-item"><label>心跳超时(秒)</label><input type="number" id="set-hb-timeout"></div>
     </div>
-    <div id="clients"><div class="empty">加载中...</div></div>
-  </div>
-
-  <div class="card">
-    <div class="card-header"><h2>创建隧道</h2></div>
-    <div class="form-row">
-      <div class="form-group"><label>目标客户端</label><select id="client-select"><option value="">请选择...</option></select></div>
-      <div class="form-group"><label>内网端口</label><input type="number" id="local-port" value="22" placeholder="22"></div>
-      <div class="form-group"><label>协议</label><select id="protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
-      <button class="btn btn-primary" onclick="createTunnel()">创建隧道</button>
+    <div style="margin-top:16px">
+      <button class="btn btn-primary" onclick="saveSettings()">保存设置</button>
     </div>
-    <div id="tunnels" style="margin-top:4px"><div class="empty">加载中...</div></div>
   </div>
-
 </div>
 
+<!-- Device Config Modal -->
+<div class="modal-overlay" id="device-modal">
+  <div class="modal" style="width:480px">
+    <h3 id="device-modal-title">设备配置</h3>
+    <input type="hidden" id="device-modal-id">
+    <div class="form-group"><label>设备别名</label><input type="text" id="device-modal-name" placeholder="如 my-server"></div>
+    <div class="form-group" style="margin-bottom:6px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="device-modal-enc" style="width:auto">
+        隧道数据加密 (AES-256-GCM)
+      </label>
+    </div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:14px">关闭加密后隧道数据将以明文传输</div>
+    <div class="form-group"><label>IP 白名单 (每行一个，支持 CIDR)</label><textarea id="device-modal-wl" rows="3" style="width:100%;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;font-size:13px;font-family:'SF Mono','Cascadia Code','Consolas',monospace;resize:vertical" placeholder="10.0.0.0/8&#10;192.168.1.0/24"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeDeviceModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveDeviceConfig()">保存</button>
+      <button class="btn btn-danger" onclick="regenDeviceKey()" style="margin-left:auto">重新生成密钥</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tunnel Edit Modal -->
 <div class="modal-overlay" id="edit-modal">
   <div class="modal">
     <h3>编辑隧道</h3>
@@ -220,22 +291,6 @@ th,td{padding:8px 8px}
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeEditModal()">取消</button>
       <button class="btn btn-primary" onclick="saveTunnelEdit()">保存</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay" id="wl-modal">
-  <div class="modal" style="width:480px">
-    <h3>IP 白名单</h3>
-    <p style="font-size:12px;color:#94a3b8;margin-bottom:14px">白名单中的 IP 连接此客户端的隧道时不受限流限制，支持 CIDR（如 192.168.1.0/24）</p>
-    <input type="hidden" id="wl-client-id">
-    <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap" id="wl-tags"></div>
-    <div class="form-row" style="margin-bottom:0">
-      <div class="form-group" style="flex:1"><label>添加 IP / CIDR</label><input type="text" id="wl-new-ip" placeholder="如 10.0.0.1 或 192.168.1.0/24"></div>
-      <button class="btn btn-primary" style="align-self:end" onclick="addWhitelistIP()">添加</button>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="closeWLModal()">关闭</button>
     </div>
   </div>
 </div>
@@ -258,59 +313,196 @@ async function checkHealth(){
     const ok=d.status==='ok';
     document.getElementById('stat-health').textContent=ok?'正常':'异常';
     document.getElementById('stat-health').style.color=ok?'#22c55e':'#ef4444';
-    const dot=document.getElementById('health-dot');
-    dot.className='dot '+(ok?'ok':'err');
   }catch(e){
     document.getElementById('stat-health').textContent='离线';
     document.getElementById('stat-health').style.color='#ef4444';
-    document.getElementById('health-dot').className='dot err';
   }
 }
 
-let clientMap={};
-
-async function loadClients(){
+// --- Settings ---
+async function loadSettings(){
   try{
-    const r=await fetch('/api/clients');const d=await r.json();
-    const sel=document.getElementById('client-select');
-    sel.innerHTML='<option value="">请选择...</option>';
-    document.getElementById('stat-clients').textContent=d.total;
-    clientMap={};
-    d.clients.forEach(c=>{clientMap[c.client_id]=c.hostname});
-    if(!d.clients.length){document.getElementById('clients').innerHTML='<div class="empty">暂无在线客户端 &mdash; 请在内网机器启动 Agent</div>';return}
-    let h='<table><thead><tr><th>客户端 ID</th><th>主机名</th><th>系统</th><th>状态</th><th>最后心跳</th><th>操作</th></tr></thead><tbody>';
-    d.clients.forEach(c=>{
-      h+=`<tr><td><code>${c.client_id.substring(0,18)}&hellip;</code></td><td>${c.hostname}</td><td>${c.os}</td><td><span class="badge badge-online">online</span></td><td>${new Date(c.last_ping).toLocaleTimeString()}</td><td><button class="btn btn-ghost" onclick="openWLModal('${c.client_id}')">白名单</button></td></tr>`;
-      sel.innerHTML+=`<option value="${c.client_id}">${c.hostname} &middot; ${c.os}</option>`
-    });
-    h+='</tbody></table>';document.getElementById('clients').innerHTML=h
-  }catch(e){document.getElementById('clients').innerHTML='<div class="empty">加载失败</div>'}
+    const r=await fetch('/api/settings');const d=await r.json();
+    document.getElementById('set-port-start').value=d.port_range_start||'';
+    document.getElementById('set-port-end').value=d.port_range_end||'';
+    document.getElementById('set-max-tunnels').value=d.max_tunnels_per_client||'';
+    document.getElementById('set-local-addr').value=d.default_local_addr||'';
+    document.getElementById('set-conn-limit').value=d.max_conn_per_min||'';
+    document.getElementById('set-login-limit').value=d.login_rate_limit||'';
+    document.getElementById('set-hb-interval').value=d.heartbeat_interval||'';
+    document.getElementById('set-hb-timeout').value=d.heartbeat_timeout||'';
+  }catch(e){}
 }
 
+async function saveSettings(){
+  const body={
+    port_range_start:parseInt(document.getElementById('set-port-start').value)||0,
+    port_range_end:parseInt(document.getElementById('set-port-end').value)||0,
+    max_tunnels_per_client:parseInt(document.getElementById('set-max-tunnels').value)||0,
+    default_local_addr:document.getElementById('set-local-addr').value,
+    max_conn_per_min:parseInt(document.getElementById('set-conn-limit').value)||0,
+    login_rate_limit:parseInt(document.getElementById('set-login-limit').value)||0,
+    heartbeat_interval:parseInt(document.getElementById('set-hb-interval').value)||0,
+    heartbeat_timeout:parseInt(document.getElementById('set-hb-timeout').value)||0,
+  };
+  try{
+    const r=await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok)toast('设置已保存');else toast('保存失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
+// --- Devices ---
+let deviceList=[];
+
+async function loadDevices(){
+  try{
+    const r=await fetch('/api/devices');const d=await r.json();
+    deviceList=d.devices||[];
+    const online=d.devices.filter(x=>x.online).length;
+    document.getElementById('stat-online').textContent=online;
+    
+    // Update client select for tunnel creation
+    const sel=document.getElementById('client-select');
+    const oldVal=sel.value;
+    sel.innerHTML='<option value="">请选择...</option>';
+    d.devices.filter(x=>x.status==='authorized'&&x.online).forEach(c=>{
+      const name=c.name||c.hostname||c.id.substring(0,12);
+      sel.innerHTML+=`<option value="${c.id}">${name}</option>`;
+    });
+    sel.value=oldVal;
+
+    renderDevices();
+  }catch(e){document.getElementById('devices').innerHTML='<div class="empty">加载失败</div>'}
+}
+
+function renderDevices(){
+  const authorized=deviceList.filter(d=>d.status==='authorized');
+  if(!authorized.length){document.getElementById('devices').innerHTML='<div class="empty">暂无已授权设备</div>';return}
+  let h='<table><thead><tr><th>别名</th><th>主机名</th><th>系统</th><th>加密</th><th>状态</th><th>审批时间</th><th>操作</th></tr></thead><tbody>';
+  authorized.forEach(d=>{
+    const encBadge=d.enc_enabled?'<span class="badge badge-enc-on">&#128274; 加密</span>':'<span class="badge badge-enc-off">&#128275; 明文</span>';
+    const onBadge=d.online?'<span class="badge badge-online">在线</span>':'<span class="badge badge-offline">离线</span>';
+    const approved=d.approved_at?new Date(d.approved_at).toLocaleDateString():'-';
+    h+=`<tr><td><strong>${d.name||d.hostname}</strong></td><td>${d.hostname}</td><td>${d.os}</td><td>${encBadge}</td><td>${onBadge}</td><td style="font-size:12px">${approved}</td><td><button class="btn btn-ghost" onclick="openDeviceModal('${d.id}')">配置</button> <button class="btn btn-danger" onclick="deleteDevice('${d.id}','${d.name||d.hostname}')">删除</button></td></tr>`;
+  });
+  h+='</tbody></table>';
+  document.getElementById('devices').innerHTML=h;
+}
+
+// --- Pending Devices ---
+async function loadPendingDevices(){
+  try{
+    const r=await fetch('/api/devices/pending');const d=await r.json();
+    const devices=d.devices||[];
+    document.getElementById('stat-pending').textContent=devices.length;
+    const dot=document.getElementById('pending-dot');
+    const card=document.getElementById('pending-card');
+    if(devices.length>0){
+      card.style.display='';
+      dot.className='dot warn';
+      document.getElementById('pending-count').textContent=devices.length;
+    }else{
+      card.style.display='none';
+      return;
+    }
+    let h='<table><thead><tr><th>设备 ID</th><th>主机名</th><th>系统</th><th>IP</th><th>连接时间</th><th>操作</th></tr></thead><tbody>';
+    devices.forEach(d=>{
+      const time=d.first_seen?new Date(d.first_seen).toLocaleString():'-';
+      h+=`<tr><td><code>${d.id}</code></td><td>${d.hostname}</td><td>${d.os}</td><td><code>${d.remote_ip||'-'}</code></td><td style="font-size:12px">${time}</td><td><button class="btn btn-success" onclick="approveDevice('${d.id}')">批准</button> <button class="btn btn-danger" onclick="denyDevice('${d.id}')">拒绝</button></td></tr>`;
+    });
+    h+='</tbody></table>';
+    document.getElementById('pending-devices').innerHTML=h;
+  }catch(e){document.getElementById('pending-devices').innerHTML='<div class="empty">加载失败</div>'}
+}
+
+async function approveDevice(id){
+  try{
+    const r=await fetch('/api/devices/pending/'+id+'/approve',{method:'POST'});
+    const d=await r.json();
+    if(r.ok){toast('设备已批准');loadDevices();loadPendingDevices()}
+    else toast(d.error||'批准失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
+async function denyDevice(id){
+  if(!confirm('确定拒绝此设备？'))return;
+  try{
+    const r=await fetch('/api/devices/pending/'+id+'/deny',{method:'POST'});
+    if(r.ok){toast('已拒绝');loadPendingDevices()}
+    else{const d=await r.json();toast(d.error||'操作失败','error')}
+  }catch(e){toast('网络错误','error')}
+}
+
+async function deleteDevice(id,name){
+  if(!confirm('确定删除设备 "'+(name||id)+'"？设备将断开连接且需重新注册。'))return;
+  try{
+    const r=await fetch('/api/devices/'+id,{method:'DELETE'});
+    if(r.ok){toast('已删除');loadDevices()}
+    else{const d=await r.json();toast(d.error||'删除失败','error')}
+  }catch(e){toast('网络错误','error')}
+}
+
+// --- Device Config Modal ---
+function openDeviceModal(id){
+  const d=deviceList.find(x=>x.id===id);
+  if(!d)return;
+  document.getElementById('device-modal-id').value=id;
+  document.getElementById('device-modal-name').value=d.name||'';
+  document.getElementById('device-modal-enc').checked=d.enc_enabled;
+  document.getElementById('device-modal-wl').value=(d.ip_whitelist||[]).join('\n');
+  document.getElementById('device-modal-title').textContent='设备配置 - '+(d.name||d.hostname||id.substring(0,12));
+  document.getElementById('device-modal').classList.add('show');
+}
+function closeDeviceModal(){document.getElementById('device-modal').classList.remove('show')}
+
+async function saveDeviceConfig(){
+  const id=document.getElementById('device-modal-id').value;
+  const name=document.getElementById('device-modal-name').value;
+  const encEnabled=document.getElementById('device-modal-enc').checked;
+  const wlText=document.getElementById('device-modal-wl').value;
+  const ips=wlText.split('\n').map(s=>s.trim()).filter(s=>s);
+  try{
+    const r=await fetch('/api/devices/'+id+'/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,enc_enabled:encEnabled,ip_whitelist:ips})});
+    if(r.ok){toast('配置已保存');closeDeviceModal();loadDevices()}else{const d=await r.json();toast(d.error||'保存失败','error')}
+  }catch(e){toast('网络错误','error')}
+}
+
+async function regenDeviceKey(){
+  const id=document.getElementById('device-modal-id').value;
+  if(!confirm('确定重新生成加密密钥？设备将自动接收新密钥。'))return;
+  try{
+    const r=await fetch('/api/devices/'+id+'/regen-key',{method:'PUT'});
+    if(r.ok){toast('密钥已重新生成');closeDeviceModal();loadDevices()}else{const d=await r.json();toast(d.error||'操作失败','error')}
+  }catch(e){toast('网络错误','error')}
+}
+
+// --- Tunnels ---
 async function loadTunnels(){
   try{
     const r=await fetch('/api/tunnels');const d=await r.json();
     document.getElementById('stat-tunnels').textContent=d.total;
-    if(!d.tunnels.length){document.getElementById('tunnels').innerHTML='<div class="empty">暂无隧道 &mdash; 选择客户端并创建</div>';return}
-    let h='<table><thead><tr><th>隧道 ID</th><th>客户端 ID</th><th>主机名</th><th>公网端口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+    if(!d.tunnels.length){document.getElementById('tunnels').innerHTML='<div class="empty">暂无隧道</div>';return}
+    let h='<table><thead><tr><th>隧道 ID</th><th>设备</th><th>公网端口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     d.tunnels.forEach(t=>{
-      const host=clientMap[t.ClientID]||t.ClientID.substring(0,12)+'&hellip;';
-      h+=`<tr><td><code>${t.TunnelID.substring(0,18)}&hellip;</code></td><td><code>${t.ClientID.substring(0,18)}&hellip;</code></td><td>${host}</td><td><span class="port-highlight">${t.PublicPort}</span></td><td><span class="mono">${t.LocalAddr}:${t.LocalPort}</span></td><td>${t.Protocol.toUpperCase()}</td><td>${new Date(t.CreatedAt).toLocaleString()}</td>`;
-      h+=`<td><button class="btn btn-ghost" onclick="openEditModal('${t.TunnelID}','${t.LocalAddr}',${t.LocalPort},'${t.Protocol}',${t.PublicPort})">编辑</button> <button class="btn btn-danger" onclick="deleteTunnel('${t.TunnelID}')">删除</button></td></tr>`
+      const device=deviceList.find(x=>x.id===t.ClientID);
+      const host=device?(device.name||device.hostname):t.ClientID.substring(0,12)+'\u2026';
+      h+=`<tr><td><code>${t.TunnelID.substring(0,18)}&hellip;</code></td><td>${host}</td><td><span class="port-highlight">${t.PublicPort}</span></td><td><span class="mono">${t.LocalAddr}:${t.LocalPort}</span></td><td>${t.Protocol.toUpperCase()}</td><td>${new Date(t.CreatedAt).toLocaleString()}</td>`;
+      h+=`<td><button class="btn btn-ghost" onclick="openEditModal('${t.TunnelID}','${t.LocalAddr}',${t.LocalPort},'${t.Protocol}',${t.PublicPort})">编辑</button> <button class="btn btn-danger" onclick="deleteTunnel('${t.TunnelID}')">删除</button></td></tr>`;
     });
-    h+='</tbody></table>';document.getElementById('tunnels').innerHTML=h
+    h+='</tbody></table>';document.getElementById('tunnels').innerHTML=h;
   }catch(e){document.getElementById('tunnels').innerHTML='<div class="empty">加载失败</div>'}
 }
 
 async function createTunnel(){
   const cid=document.getElementById('client-select').value;
+  const addr=document.getElementById('local-addr').value;
   const port=document.getElementById('local-port').value;
   const proto=document.getElementById('protocol').value;
-  if(!cid)return toast('请先选择客户端','error');
+  if(!cid)return toast('请先选择设备','error');
   try{
-    const r=await fetch('/api/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:cid,local_port:parseInt(port),protocol:proto})});
+    const r=await fetch('/api/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:cid,local_addr:addr,local_port:parseInt(port),protocol:proto})});
     const d=await r.json();
-    if(r.ok){toast('隧道创建成功 &middot; 公网端口 '+d.public_port);loadTunnels();loadPortStatus()}
+    if(r.ok){toast('隧道创建成功 · 公网端口 '+d.public_port);loadTunnels();loadPortStatus()}
     else toast(d.error||'创建失败','error')
   }catch(e){toast('网络错误','error')}
 }
@@ -336,88 +528,23 @@ async function saveTunnelEdit(){
     const body={local_addr:document.getElementById('edit-local-addr').value,local_port:parseInt(document.getElementById('edit-local-port').value),protocol:document.getElementById('edit-protocol').value};
     if(pubPort)body.public_port=parseInt(pubPort);
     const r=await fetch('/api/tunnels/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const d=await r.json();
-    if(r.ok){toast('已更新');closeEditModal();loadTunnels()}else toast(d.error||'更新失败','error')
+    if(r.ok){toast('已更新');closeEditModal();loadTunnels()}else toast((await r.json()).error||'更新失败','error')
   }catch(e){toast('网络错误','error')}
 }
 
-async function logout(){await fetch('/api/logout',{method:'POST'});window.location.href='/login.html'}
-
-let wlIPs=[];
-
-function openWLModal(clientId){
-  document.getElementById('wl-client-id').value=clientId;
-  loadWhitelist(clientId);
-  document.getElementById('wl-modal').classList.add('show')
-}
-function closeWLModal(){document.getElementById('wl-modal').classList.remove('show')}
-
-async function loadWhitelist(clientId){
-  try{
-    const r=await fetch('/api/clients/'+clientId+'/whitelist');
-    const d=await r.json();
-    wlIPs=d.ip_whitelist||[];
-    renderWLTags()
-  }catch(e){wlIPs=[];renderWLTags()}
-}
-
-function renderWLTags(){
-  const container=document.getElementById('wl-tags');
-  if(!wlIPs.length){
-    container.innerHTML='<span style="color:#94a3b8;font-size:12px">暂无白名单 IP</span>';
-    return
-  }
-  container.innerHTML=wlIPs.map((ip,i)=>`<span class="wl-tag">${ip}<span class="wl-remove" onclick="removeWLIP(${i})">&times;</span></span>`).join('')
-}
-
-async function saveWhitelist(){
-  const clientId=document.getElementById('wl-client-id').value;
-  if(!clientId)return;
-  try{
-    const r=await fetch('/api/clients/'+clientId+'/whitelist',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ips:wlIPs})});
-    if(!r.ok)toast('保存白名单失败','error')
-  }catch(e){toast('网络错误','error')}
-}
-
-async function addWhitelistIP(){
-  const input=document.getElementById('wl-new-ip');
-  const ip=input.value.trim();
-  if(!ip)return;
-  if(wlIPs.includes(ip)){toast('IP 已存在','error');return}
-  wlIPs.push(ip);
-  input.value='';
-  renderWLTags();
-  await saveWhitelist()
-}
-
-async function removeWLIP(index){
-  wlIPs.splice(index,1);
-  renderWLTags();
-  await saveWhitelist()
-}
-
+// --- Port Status ---
 async function loadPortStatus(){
   try{
-    const r=await fetch('/api/port-status');
-    if(!r.ok)return;
-    const d=await r.json();
-    const card=document.getElementById('port-status-card');
-    card.style.display='';
+    const r=await fetch('/api/port-status');if(!r.ok)return;const d=await r.json();
+    document.getElementById('port-status-card').style.display='';
     document.getElementById('ps-range').textContent=d.range_start+' - '+d.range_end;
     const avail=Math.max(0,d.available_count);
     document.getElementById('stat-ports').textContent=avail;
     document.getElementById('stat-ports').style.color=avail===0?'#ef4444':avail<50?'#f59e0b':'#22c55e';
-    const summary=document.getElementById('ps-summary');
-    summary.innerHTML='<span style="color:#334155">'+d.total_ports+'</span> / <span style="color:#3b82f6">'+d.allocated+'</span> / <span style="color:#22c55e">'+avail+'</span> / <span style="color:#ef4444">'+d.unavailable.length+'</span>';
+    document.getElementById('ps-summary').innerHTML='<span style="color:#334155">'+d.total_ports+'</span> / <span style="color:#3b82f6">'+d.allocated+'</span> / <span style="color:#22c55e">'+avail+'</span> / <span style="color:#ef4444">'+d.unavailable.length+'</span>';
     const unavailDiv=document.getElementById('ps-unavailable');
     const unavailPorts=document.getElementById('ps-unavailable-ports');
-    if(d.unavailable&&d.unavailable.length>0){
-      unavailDiv.style.display='';
-      const show=d.unavailable.slice(0,50);
-      unavailPorts.textContent=show.join(', ')+(d.unavailable.length>50?' ...等共 '+d.unavailable.length+' 个':'');
-    }else{
-      unavailDiv.style.display='none';
-    }
+    if(d.unavailable&&d.unavailable.length>0){unavailDiv.style.display='';const show=d.unavailable.slice(0,50);unavailPorts.textContent=show.join(', ')+(d.unavailable.length>50?' ...等共 '+d.unavailable.length+' 个':'')}else{unavailDiv.style.display='none'}
   }catch(e){}
 }
 
@@ -425,128 +552,66 @@ async function loadPortStatus(){
 let gwlIPs=[];
 
 async function loadGlobalWhitelist(){
-  try{
-    const r=await fetch('/api/security/global-whitelist');
-    const d=await r.json();
-    gwlIPs=d.global_whitelist||[];
-    renderGWLTags()
-  }catch(e){gwlIPs=[];renderGWLTags()}
+  try{const r=await fetch('/api/security/global-whitelist');const d=await r.json();gwlIPs=d.global_whitelist||[];renderGWLTags()}catch(e){gwlIPs=[];renderGWLTags()}
 }
 
 function renderGWLTags(){
   const container=document.getElementById('gwl-tags');
-  if(!gwlIPs.length){
-    container.innerHTML='<span style="color:#94a3b8;font-size:12px">暂无全局白名单 IP</span>';
-    return
-  }
+  if(!gwlIPs.length){container.innerHTML='<span style="color:#94a3b8;font-size:12px">暂无全局白名单 IP</span>';return}
   container.innerHTML=gwlIPs.map((ip,i)=>`<span class="wl-tag">${ip}<span class="wl-remove" onclick="removeGWLIP(${i})">&times;</span></span>`).join('')
 }
 
 async function saveGlobalWhitelist(){
-  try{
-    const r=await fetch('/api/security/global-whitelist',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ips:gwlIPs})});
-    if(!r.ok)toast('保存全局白名单失败','error')
-  }catch(e){toast('网络错误','error')}
+  try{const r=await fetch('/api/security/global-whitelist',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ips:gwlIPs})});if(!r.ok)toast('保存全局白名单失败','error')}catch(e){toast('网络错误','error')}
 }
 
 async function addGlobalWLIP(){
-  const input=document.getElementById('gwl-new-ip');
-  const ip=input.value.trim();
-  if(!ip)return;
+  const input=document.getElementById('gwl-new-ip');const ip=input.value.trim();if(!ip)return;
   if(gwlIPs.includes(ip)){toast('IP 已存在','error');return}
-  gwlIPs.push(ip);
-  input.value='';
-  renderGWLTags();
-  await saveGlobalWhitelist()
+  gwlIPs.push(ip);input.value='';renderGWLTags();await saveGlobalWhitelist()
 }
 
-async function removeGWLIP(index){
-  gwlIPs.splice(index,1);
-  renderGWLTags();
-  await saveGlobalWhitelist()
-}
+async function removeGWLIP(index){gwlIPs.splice(index,1);renderGWLTags();await saveGlobalWhitelist()}
 
 // --- Security: Blacklist ---
 function switchSecTab(tab){
   document.querySelectorAll('.sec-tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.sec-panel').forEach(p=>p.classList.remove('active'));
-  if(tab==='gwl'){
-    document.querySelector('.sec-tab:nth-child(1)').classList.add('active');
-    document.getElementById('sec-gwl').classList.add('active');
-  }else{
-    document.querySelector('.sec-tab:nth-child(2)').classList.add('active');
-    document.getElementById('sec-bl').classList.add('active');
-    loadBlacklist()
-  }
+  if(tab==='gwl'){document.querySelector('.sec-tab:nth-child(1)').classList.add('active');document.getElementById('sec-gwl').classList.add('active')}
+  else{document.querySelector('.sec-tab:nth-child(2)').classList.add('active');document.getElementById('sec-bl').classList.add('active');loadBlacklist()}
 }
 
 async function loadBlacklist(){
-  try{
-    const r=await fetch('/api/security/blacklist');
-    const d=await r.json();
-    document.getElementById('bl-threshold').value=d.threshold||0;
-    renderBlacklist(d.blacklist||[],d.violations||{},d.threshold||0)
-  }catch(e){document.getElementById('bl-list').innerHTML='<div class="empty">加载失败</div>'}
+  try{const r=await fetch('/api/security/blacklist');const d=await r.json();document.getElementById('bl-threshold').value=d.threshold||0;renderBlacklist(d.blacklist||[],d.violations||{},d.threshold||0)}catch(e){document.getElementById('bl-list').innerHTML='<div class="empty">加载失败</div>'}
 }
 
 function renderBlacklist(entries,violations,threshold){
   const container=document.getElementById('bl-list');
-  if(!entries||!entries.length){
-    container.innerHTML='<div class="empty">暂无黑名单 IP</div>';
-    return
-  }
+  if(!entries||!entries.length){container.innerHTML='<div class="empty">暂无黑名单 IP</div>';return}
   let h='<table><thead><tr><th>IP</th><th>原因</th><th>添加时间</th><th>过期时间</th><th>操作</th></tr></thead><tbody>';
-  entries.forEach(e=>{
-    const exp=e.expires_at&&e.expires_at!=='0001-01-01T00:00:00Z'?new Date(e.expires_at).toLocaleString():'永久';
-    h+=`<tr><td><code>${e.ip}</code></td><td style="font-size:12px">${e.reason}</td><td style="font-size:12px">${new Date(e.added_at).toLocaleString()}</td><td style="font-size:12px">${exp}</td><td><button class="btn btn-ghost" onclick="removeBlacklistIP('${e.ip}')">解除</button></td></tr>`;
-  });
+  entries.forEach(e=>{const exp=e.expires_at&&e.expires_at!=='0001-01-01T00:00:00Z'?new Date(e.expires_at).toLocaleString():'永久';
+    h+=`<tr><td><code>${e.ip}</code></td><td style="font-size:12px">${e.reason}</td><td style="font-size:12px">${new Date(e.added_at).toLocaleString()}</td><td style="font-size:12px">${exp}</td><td><button class="btn btn-ghost" onclick="removeBlacklistIP('${e.ip}')">解除</button></td></tr>`});
   h+='</tbody></table>';
-  // Show violations
   const vKeys=Object.keys(violations||{});
-  if(vKeys.length>0){
-    h+='<div style="margin-top:14px"><div style="font-size:12px;color:#94a3b8;margin-bottom:8px;font-weight:600">限流违规计数（阈值: '+threshold+'）</div>';
-    vKeys.forEach(ip=>{
-      const count=violations[ip];
-      const pct=threshold>0?Math.min(100,Math.round(count/threshold*100)):0;
-      h+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><code style="font-size:12px;min-width:100px">${ip}</code><div class="violation-bar" style="flex:1"><div class="violation-fill" style="width:${pct}%"></div></div><span style="font-size:11px;color:#64748b">${count}/${threshold}</span></div>`;
-    });
-    h+='</div>';
-  }
+  if(vKeys.length>0){h+='<div style="margin-top:14px"><div style="font-size:12px;color:#94a3b8;margin-bottom:8px;font-weight:600">限流违规计数（阈值: '+threshold+'）</div>';vKeys.forEach(ip=>{const count=violations[ip];const pct=threshold>0?Math.min(100,Math.round(count/threshold*100)):0;h+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><code style="font-size:12px;min-width:100px">${ip}</code><div class="violation-bar" style="flex:1"><div class="violation-fill" style="width:${pct}%"></div></div><span style="font-size:11px;color:#64748b">${count}/${threshold}</span></div>`});h+='</div>'}
   container.innerHTML=h
 }
 
 async function addBlacklistIP(){
-  const ip=document.getElementById('bl-new-ip').value.trim();
-  const reason=document.getElementById('bl-new-reason').value.trim();
-  const duration=parseInt(document.getElementById('bl-new-duration').value)||0;
+  const ip=document.getElementById('bl-new-ip').value.trim();const reason=document.getElementById('bl-new-reason').value.trim();const duration=parseInt(document.getElementById('bl-new-duration').value)||0;
   if(!ip){toast('请输入 IP 地址','error');return}
-  try{
-    const r=await fetch('/api/security/blacklist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,reason,duration_minutes:duration})});
-    const d=await r.json();
-    if(r.ok){toast('已拉黑 '+ip);document.getElementById('bl-new-ip').value='';document.getElementById('bl-new-reason').value='';document.getElementById('bl-new-duration').value='';loadBlacklist()}
-    else toast(d.error||'拉黑失败','error')
-  }catch(e){toast('网络错误','error')}
+  try{const r=await fetch('/api/security/blacklist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,reason,duration_minutes:duration})});const d=await r.json();if(r.ok){toast('已拉黑 '+ip);document.getElementById('bl-new-ip').value='';document.getElementById('bl-new-reason').value='';document.getElementById('bl-new-duration').value='';loadBlacklist()}else toast(d.error||'拉黑失败','error')}catch(e){toast('网络错误','error')}
 }
 
-async function removeBlacklistIP(ip){
-  try{
-    const r=await fetch('/api/security/blacklist/'+encodeURIComponent(ip),{method:'DELETE'});
-    if(r.ok){toast('已解除拉黑');loadBlacklist()}
-    else{const d=await r.json();toast(d.error||'解除失败','error')}
-  }catch(e){toast('网络错误','error')}
-}
+async function removeBlacklistIP(ip){try{const r=await fetch('/api/security/blacklist/'+encodeURIComponent(ip),{method:'DELETE'});if(r.ok){toast('已解除拉黑');loadBlacklist()}else{const d=await r.json();toast(d.error||'解除失败','error')}}catch(e){toast('网络错误','error')}}
 
-async function updateBLThreshold(){
-  const threshold=parseInt(document.getElementById('bl-threshold').value)||0;
-  try{
-    const r=await fetch('/api/security/blacklist-threshold',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold})});
-    if(r.ok)toast('阈值已更新为 '+threshold);
-    else toast('更新失败','error')
-  }catch(e){toast('网络错误','error')}
-}
+async function updateBLThreshold(){const threshold=parseInt(document.getElementById('bl-threshold').value)||0;try{const r=await fetch('/api/security/blacklist-threshold',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold})});if(r.ok)toast('阈值已更新为 '+threshold);else toast('更新失败','error')}catch(e){toast('网络错误','error')}}
 
-checkAuth();checkHealth();loadClients();loadTunnels();loadPortStatus();loadGlobalWhitelist();
-setInterval(()=>{checkHealth();loadClients();loadTunnels();loadPortStatus()},10000);
+async function logout(){await fetch('/api/logout',{method:'POST'});window.location.href='/login.html'}
+
+// --- Init ---
+checkAuth();checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadPortStatus();loadGlobalWhitelist();loadSettings();
+setInterval(()=>{checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadPortStatus()},10000);
 </script>
 </body>
 </html>

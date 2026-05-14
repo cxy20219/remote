@@ -8,17 +8,37 @@ type Message struct {
 }
 
 type RegisterPayload struct {
-	Key      string `json:"key"`
-	Hostname string `json:"hostname"`
-	OS       string `json:"os"`
+	ReAuth        bool   `json:"reauth"`
+	ClientID      string `json:"client_id,omitempty"`
+	DevicePubkey  string `json:"device_pubkey"`
+	DeviceDHPubkey string `json:"device_dh_pubkey,omitempty"`
+	Hostname      string `json:"hostname"`
+	OS            string `json:"os"`
+	Timestamp     int64  `json:"timestamp,omitempty"`
+	Signature     string `json:"signature,omitempty"`
+}
+
+type RegisterPendingPayload struct {
+	ClientID string `json:"client_id"`
+	Message  string `json:"message"`
 }
 
 type RegisterOKPayload struct {
-	ClientID string `json:"client_id"`
+	ClientID        string `json:"client_id"`
+	EncKeyEncrypted string `json:"enc_key_encrypted,omitempty"`
+	ServerDHPubkey  string `json:"server_dh_pubkey,omitempty"`
+	EncEnabled      bool   `json:"enc_enabled"`
 }
 
 type RegisterFailPayload struct {
 	Reason string `json:"reason"`
+}
+
+type RegisterUpdatePayload struct {
+	Type            string `json:"update_type"`
+	EncKeyEncrypted string `json:"enc_key_encrypted,omitempty"`
+	ServerDHPubkey  string `json:"server_dh_pubkey,omitempty"`
+	EncEnabled      bool   `json:"enc_enabled"`
 }
 
 type TunnelOpenPayload struct {
@@ -62,6 +82,10 @@ type TunnelUpdatePayload struct {
 
 type TunnelUpdateAckPayload struct {
 	TunnelID string `json:"tunnel_id"`
-	Success   bool   `json:"success"`
-	Error     string `json:"error,omitempty"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error,omitempty"`
+}
+
+type DeviceDeletedPayload struct {
+	Reason string `json:"reason"`
 }

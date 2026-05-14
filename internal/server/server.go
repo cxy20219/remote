@@ -3,14 +3,13 @@ package server
 import (
 	"context"
 	"embed"
-	"fmt"
+	"encoding/json"
 	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,86 +22,86 @@ import (
 	"goremote/internal/common"
 )
 
-// Server is the WebSocket server
 type Server struct {
 	Addr       string
 	tlsEnabled bool
 	tlsCert    string
 	tlsKey     string
 
-	config   *Config
-	staticFS embed.FS
+	config    *Config
+	staticFS  embed.FS
 
-	clients         *ClientManager
-	handler          *Handler
-	tunnelManager   *TunnelManager
-	adminAuth       *AdminAuth
-	crypto          *common.CryptoContext
-	loginLimiter    *RateLimiter
-	connLimiter     *RateLimiter
-	portLimiter     *RateLimiter
-	blacklist       *BlacklistManager
-	globalWhitelist []string
-	globalWLMu      sync.RWMutex
+	clients        *ClientManager
+	handler         *Handler
+	tunnelManager  *TunnelManager
+	adminAuth      *AdminAuth
+	cryptoMgr      *common.CryptoManager
+	stateStore     *StateStore
+	deviceMgr      *DeviceManager
+	loginLimiter   *RateLimiter
+	connLimiter    *RateLimiter
+	portLimiter    *RateLimiter
+	blacklist      *BlacklistManager
 
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
 	httpSrv  *http.Server
 }
 
-// NewServer creates a new Server
 func NewServer(config *Config, staticFS embed.FS) *Server {
-	// Validate TLS certificate files if TLS is enabled
-	if config.Server.TLS.Enabled {
-		if config.Server.TLS.Cert == "" || config.Server.TLS.Key == "" {
-			slog.Warn("TLS enabled but cert or key path is empty")
-		}
+	statePath := filepath.Join(config.DataDir(), "server-state.json")
+	stateStore := NewStateStore(statePath)
+	if err := stateStore.Load(); err != nil {
+		slog.Error("failed to load server state", "error", err)
+		panic(err)
 	}
 
+	state := stateStore.GetState()
+	if state.AdminPassword != "" {
+		slog.Info("========================================")
+		slog.Info("Admin password (first run only)", "password", state.AdminPassword)
+		slog.Info("========================================")
+		stateStore.ClearAdminPassword()
+	}
+
+	adminAuth := NewAdminAuth(stateStore)
+	cryptoMgr := common.NewCryptoManager()
+	deviceMgr := NewDeviceManager(stateStore, cryptoMgr)
+
+	settings := stateStore.GetSettings()
+
+	blacklist := NewBlacklistManager(settings.BlacklistThreshold)
+
+	globalWhitelist := make([]string, len(settings.GlobalWhitelist))
+	copy(globalWhitelist, settings.GlobalWhitelist)
+
 	s := &Server{
-		Addr:       net.JoinHostPort(config.Server.Host, fmt.Sprintf("%d", config.Server.Port)),
-		tlsEnabled: config.Server.TLS.Enabled,
-		tlsCert:    config.Server.TLS.Cert,
-		tlsKey:     config.Server.TLS.Key,
-		config:     config,
-		staticFS:   staticFS,
-		clients:    NewClientManager(),
-		handler:    nil,
+		Addr:           config.Addr(),
+		tlsEnabled:     config.Server.TLS.Enabled,
+		tlsCert:        config.Server.TLS.Cert,
+		tlsKey:         config.Server.TLS.Key,
+		config:         config,
+		staticFS:       staticFS,
+		clients:        NewClientManager(),
+		handler:        nil,
+		stateStore:     stateStore,
+		adminAuth:      adminAuth,
+		cryptoMgr:      cryptoMgr,
+		deviceMgr:       deviceMgr,
+		blacklist:       blacklist,
+		loginLimiter:    NewRateLimiter(settings.LoginRateLimit, time.Minute),
+		connLimiter:     NewRateLimiter(settings.MaxConnPerMin, time.Minute),
+		portLimiter:     NewRateLimiter(settings.MaxConnPerMin, time.Minute),
 	}
 
 	s.handler = NewHandler(s)
-	s.adminAuth = NewAdminAuth(config.Admin.Password)
-	s.blacklist = NewBlacklistManager(config.Security.BlacklistThreshold)
-	s.globalWhitelist = make([]string, len(config.Security.GlobalWhitelist))
-	copy(s.globalWhitelist, config.Security.GlobalWhitelist)
 
-	if config.Auth.Key != "" {
-		crypto, err := common.NewCryptoContext(config.Auth.Key)
-		if err != nil {
-			slog.Error("failed to initialize encryption", "error", err)
-		} else {
-			s.crypto = crypto
-			slog.Info("tunnel data encryption enabled (AES-256-GCM)")
-		}
-	} else {
-		slog.Warn("auth.key is empty, tunnel data encryption disabled")
-	}
-
-	s.loginLimiter = NewRateLimiter(config.Security.LoginRateLimit, time.Minute)
-
-	if config.Security.MaxConnPerMin > 0 {
-		s.connLimiter = NewRateLimiter(config.Security.MaxConnPerMin, time.Minute)
-		s.portLimiter = NewRateLimiter(config.Security.MaxConnPerMin, time.Minute)
-		slog.Info("connection rate limiting enabled", "max_conn_per_min", config.Security.MaxConnPerMin)
-	}
-
-	// Initialize tunnel manager
 	if config.Tunnel.Enabled {
-		s.tunnelManager = NewTunnelManager(s, config.Tunnel.PortRangeStart, config.Tunnel.PortRangeEnd)
+		s.tunnelManager = NewTunnelManager(s, settings.PortRangeStart, settings.PortRangeEnd)
 	}
 
 	s.upgrader = websocket.Upgrader{
-		CheckOrigin: s.buildOriginChecker(config.Security.AllowedOrigins),
+		CheckOrigin:     s.buildOriginChecker(config.Security.AllowedOrigins),
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 	}
@@ -110,23 +109,23 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	return s
 }
 
-// Start starts the server
 func (s *Server) Start() error {
 	slog.Info("server starting", "addr", s.Addr)
 
-	// Setup Gin engine
+	stateStore := s.stateStore
+	stateStore.StartSyncLoop()
+
 	gin.SetMode(gin.ReleaseMode)
 	s.engine = gin.New()
 	s.engine.Use(gin.Recovery())
 	s.engine.Use(SecurityHeadersMiddleware())
 
-	// Apply body size limit if configured
-	if s.config.Security.MaxBodySizeMB > 0 {
-		maxBytes := int64(s.config.Security.MaxBodySizeMB) * 1024 * 1024
+	settings := stateStore.GetSettings()
+	if settings.MaxBodySizeMB > 0 {
+		maxBytes := int64(settings.MaxBodySizeMB) * 1024 * 1024
 		s.engine.Use(BodySizeLimitMiddleware(maxBytes))
 	}
 
-	// Public routes (no auth required)
 	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s), s.handleConn)
 	s.engine.GET("/health", s.handleHealth)
 	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLogin)
@@ -139,7 +138,6 @@ func (s *Server) Start() error {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
 	})
 
-	// Protected routes
 	protected := s.engine.Group("/")
 	protected.Use(s.authMiddleware())
 	{
@@ -161,6 +159,17 @@ func (s *Server) Start() error {
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
 		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
 		protected.GET("/api/port-status", s.handleAPIPortStatus)
+
+		protected.GET("/api/devices", s.handleAPIListDevices)
+		protected.GET("/api/devices/pending", s.handleAPIListPendingDevices)
+		protected.POST("/api/devices/pending/:id/approve", s.handleAPIApproveDevice)
+		protected.POST("/api/devices/pending/:id/deny", s.handleAPIDenyDevice)
+		protected.DELETE("/api/devices/:id", s.handleAPIDeleteDevice)
+		protected.PUT("/api/devices/:id/config", s.handleAPIUpdateDeviceConfig)
+		protected.PUT("/api/devices/:id/regen-key", s.handleAPIRegenKey)
+		protected.GET("/api/settings", s.handleAPIGetSettings)
+		protected.PUT("/api/settings", s.handleAPIUpdateSettings)
+
 		protected.StaticFS("/static", http.FS(staticSub))
 		protected.GET("/", func(c *gin.Context) {
 			data, _ := fs.ReadFile(staticSub, "index.html")
@@ -171,7 +180,6 @@ func (s *Server) Start() error {
 		}
 	}
 
-	// Start heartbeat checker
 	go s.startHeartbeatChecker()
 
 	s.httpSrv = &http.Server{
@@ -187,9 +195,9 @@ func (s *Server) Start() error {
 	return s.httpSrv.ListenAndServe()
 }
 
-// Stop stops the server gracefully
 func (s *Server) Stop() error {
 	slog.Info("server stopping")
+	s.stateStore.Stop()
 	if s.httpSrv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -198,9 +206,7 @@ func (s *Server) Stop() error {
 	return nil
 }
 
-// handleConn handles WebSocket connections
 func (s *Server) handleConn(c *gin.Context) {
-	// Upgrade to WebSocket
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		slog.Error("failed to upgrade connection", "error", err)
@@ -210,12 +216,11 @@ func (s *Server) handleConn(c *gin.Context) {
 	remoteAddr := c.Request.RemoteAddr
 	slog.Info("connection opened", "remote", remoteAddr)
 
-	// Create client with temporary ID until registered
 	client := &Client{
-		Conn: conn,
+		Conn:       conn,
+		RemoteAddr: remoteAddr,
 	}
 
-	// Read messages
 	for {
 		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		var msg common.Message
@@ -223,24 +228,36 @@ func (s *Server) handleConn(c *gin.Context) {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				slog.Warn("connection error", "error", err)
 			}
+			s.deviceMgr.RemovePendingConn(client.ClientID)
 			break
 		}
 
-		// Handle the message
 		if err := s.handler.Handle(client, &msg); err != nil {
 			slog.Error("failed to handle message",
 				"type", msg.Type,
 				"error", err)
 		}
 
-		// For register messages, client ID is set after registration
 		if msg.Type == "register" && client.ClientID != "" {
-			// Client registered successfully, start reading loop for this client
-			go s.readLoop(client)
-			return
+			var payload common.RegisterPayload
+			if err := jsonUnmarshal(msg.Payload, &payload); err == nil {
+				if payload.ReAuth {
+					device := s.stateStore.GetDeviceByID(client.ClientID)
+					if device != nil && device.Status == "authorized" {
+						go s.readLoop(client)
+						return
+					}
+				}
+			}
+
+			pendingConn, ok := s.deviceMgr.GetPendingConn(client.ClientID)
+			if ok && pendingConn.Conn != nil {
+				go s.pendingLoop(client)
+				return
+			}
 		}
-		if msg.Type == "register" && client.ClientID == "" {
-			// Registration failed, close connection
+
+		if client.ClientID == "" {
 			slog.Warn("registration failed, closing connection", "remote", remoteAddr)
 			break
 		}
@@ -250,11 +267,38 @@ func (s *Server) handleConn(c *gin.Context) {
 	slog.Info("connection closed", "remote", remoteAddr)
 }
 
-// readLoop reads messages from a registered client
+func jsonUnmarshal(data []byte, v interface{}) error {
+	return json.Unmarshal(data, v)
+}
+
+func (s *Server) pendingLoop(client *Client) {
+	defer func() {
+		s.deviceMgr.RemovePendingConn(client.ClientID)
+		client.Conn.Close()
+	}()
+
+	for {
+		client.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		var msg common.Message
+		if err := client.Conn.ReadJSON(&msg); err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				slog.Warn("pending connection error", "client_id", client.ClientID, "error", err)
+			}
+			return
+		}
+
+		if msg.Type == "ping" {
+			client.Conn.WriteJSON(common.Message{Type: "pong"})
+			continue
+		}
+
+		slog.Debug("pending client message", "client_id", client.ClientID, "type", msg.Type)
+	}
+}
+
 func (s *Server) readLoop(client *Client) {
 	defer func() {
 		if client.ClientID != "" {
-			// 清理该客户端的所有隧道
 			if s.tunnelManager != nil {
 				for _, t := range s.tunnelManager.ListTunnelsByClient(client.ClientID) {
 					if err := s.tunnelManager.CloseTunnel(t.TunnelID); err != nil {
@@ -263,14 +307,20 @@ func (s *Server) readLoop(client *Client) {
 				}
 			}
 			s.clients.Remove(client.ClientID)
+			s.deviceMgr.RemoveAuthorizedConn(client.ClientID)
 			slog.Info("client disconnected", "client_id", client.ClientID)
 		}
 		client.Conn.Close()
 	}()
 
+	settings := s.stateStore.GetSettings()
+	timeout := time.Duration(settings.HeartbeatTimeout) * time.Second
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+
 	for {
-		// 设置读超时，防止客户端非正常断开后长时间阻塞
-		client.Conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		client.Conn.SetReadDeadline(time.Now().Add(timeout))
 		var msg common.Message
 		if err := client.Conn.ReadJSON(&msg); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -288,21 +338,14 @@ func (s *Server) readLoop(client *Client) {
 	}
 }
 
-// handleHealth 健康检查
-// @Summary 健康检查
-// @Description 服务健康状态检查
-// @Tags health
-// @Produce json
-// @Success 200 {object} map[string]string
-// @Router /health [get]
 func (s *Server) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// startHeartbeatChecker starts the heartbeat timeout checker
 func (s *Server) startHeartbeatChecker() {
-	interval := time.Duration(s.config.Heartbeat.Interval) * time.Second
-	timeout := time.Duration(s.config.Heartbeat.Timeout) * time.Second
+	settings := s.stateStore.GetSettings()
+	interval := time.Duration(settings.HeartbeatInterval) * time.Second
+	timeout := time.Duration(settings.HeartbeatTimeout) * time.Second
 
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -319,7 +362,6 @@ func (s *Server) startHeartbeatChecker() {
 	}
 }
 
-// checkClientsTimeout checks for timed out clients
 func (s *Server) checkClientsTimeout(timeout time.Duration) {
 	now := time.Now()
 	s.clients.mu.Lock()
@@ -337,14 +379,31 @@ func (s *Server) checkClientsTimeout(timeout time.Duration) {
 	}
 }
 
-// GetClients returns all connected clients
 func (s *Server) GetClients() []*Client {
 	return s.clients.List()
 }
 
-// buildOriginChecker returns a CheckOrigin function that validates against configured allowed origins.
-// If Origin header is empty (non-browser client), the request is allowed.
-// If allowedOrigins is empty, all origins are allowed with a warning log.
+func (s *Server) GetGlobalWhitelist() []string {
+	settings := s.stateStore.GetSettings()
+	return settings.GlobalWhitelist
+}
+
+func (s *Server) SetGlobalWhitelist(ips []string) {
+	deduped := deduplicateIPs(ips)
+	s.stateStore.UpdateSettings(func(st *ServerSettings) {
+		st.GlobalWhitelist = deduped
+	})
+}
+
+func (s *Server) UpdateSettings(fn func(*ServerSettings)) {
+	s.stateStore.UpdateSettings(fn)
+}
+
+func (s *Server) IsGloballyWhitelisted(ip string) bool {
+	whitelist := s.GetGlobalWhitelist()
+	return isIPWhitelisted(ip, whitelist)
+}
+
 func (s *Server) buildOriginChecker(allowedOrigins []string) func(r *http.Request) bool {
 	if len(allowedOrigins) == 0 {
 		slog.Warn("no allowed_origins configured, WebSocket origin check is disabled")
@@ -382,26 +441,16 @@ func generateUUID() string {
 	return uuid.New().String()
 }
 
-// GetGlobalWhitelist returns a copy of the global whitelist.
-func (s *Server) GetGlobalWhitelist() []string {
-	s.globalWLMu.RLock()
-	defer s.globalWLMu.RUnlock()
-	result := make([]string, len(s.globalWhitelist))
-	copy(result, s.globalWhitelist)
+func deduplicateIPs(ips []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if ip == "" || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		result = append(result, ip)
+	}
 	return result
-}
-
-// SetGlobalWhitelist replaces the global whitelist.
-func (s *Server) SetGlobalWhitelist(ips []string) {
-	deduped := deduplicateIPs(ips)
-	s.globalWLMu.Lock()
-	defer s.globalWLMu.Unlock()
-	s.globalWhitelist = deduped
-}
-
-// IsGloballyWhitelisted checks if an IP is in the global whitelist.
-func (s *Server) IsGloballyWhitelisted(ip string) bool {
-	s.globalWLMu.RLock()
-	defer s.globalWLMu.RUnlock()
-	return isIPWhitelisted(ip, s.globalWhitelist)
 }

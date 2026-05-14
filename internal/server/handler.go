@@ -41,25 +41,94 @@ func (h *Handler) handleRegister(client *Client, msg *common.Message) error {
 		return h.sendRegisterFail(client, "invalid payload")
 	}
 
-	if payload.Key != h.server.config.Auth.Key {
-		return h.sendRegisterFail(client, "invalid key")
+	if payload.ReAuth {
+		return h.handleReconnect(client, &payload)
 	}
 
+	return h.handleNewRegistration(client, &payload)
+}
+
+func (h *Handler) handleNewRegistration(client *Client, payload *common.RegisterPayload) error {
+	deviceID, err := h.server.deviceMgr.RegisterNewClient(
+		payload.DevicePubkey,
+		payload.DeviceDHPubkey,
+		payload.Hostname,
+		payload.OS,
+		client.RemoteAddr,
+	)
+	if err != nil {
+		return h.sendRegisterFail(client, err.Error())
+	}
+
+	client.ClientID = deviceID
 	client.Hostname = payload.Hostname
 	client.OS = payload.OS
 
-	client.ClientID = fmt.Sprintf("client-%s", generateUUID())
+	h.server.deviceMgr.AddPendingConn(deviceID, client.Conn, client.RemoteAddr)
 
-	h.server.clients.RestoreWhitelist(client)
+	slog.Info("new device registration pending",
+		"device_id", deviceID,
+		"hostname", payload.Hostname,
+		"ip", client.RemoteAddr)
+
+	pendingPayload := common.RegisterPendingPayload{
+		ClientID: deviceID,
+		Message:  "waiting for admin approval",
+	}
+	payloadJSON, _ := json.Marshal(pendingPayload)
+	return client.WriteJSON(common.Message{
+		Type:    "register_pending",
+		Payload: payloadJSON,
+	})
+}
+
+func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayload) error {
+	ok, device, err := h.server.deviceMgr.ReauthClient(
+		payload.ClientID,
+		payload.DevicePubkey,
+		payload.Timestamp,
+		payload.Signature,
+	)
+	if err != nil {
+		slog.Warn("reauth failed, treating as new registration",
+			"client_id", payload.ClientID,
+			"error", err)
+		return h.handleNewRegistration(client, payload)
+	}
+
+	if !ok {
+		slog.Warn("reauth device not authorized, treating as new registration",
+			"client_id", payload.ClientID)
+		return h.handleNewRegistration(client, payload)
+	}
+
+	client.ClientID = device.ID
+	client.Hostname = device.Hostname
+	client.OS = device.OS
 
 	h.server.clients.Add(client)
+	h.server.deviceMgr.RemovePendingConn(client.ClientID)
 
-	slog.Info("client registered",
-		"client_id", client.ClientID,
-		"hostname", client.Hostname,
-		"os", client.OS)
+	slog.Info("client reconnected",
+		"client_id", device.ID,
+		"hostname", device.Hostname)
 
-	return h.sendRegisterOK(client)
+	var encKeyEncrypted, serverDHPubkey string
+	if device.EncEnabled && device.DeviceDHPubkey != "" {
+		_, encKeyEncrypted, serverDHPubkey, _ = h.server.deviceMgr.RegenerateEncKey(device.ID)
+	}
+
+	okPayload := common.RegisterOKPayload{
+		ClientID:        device.ID,
+		EncKeyEncrypted: encKeyEncrypted,
+		ServerDHPubkey:  serverDHPubkey,
+		EncEnabled:      device.EncEnabled,
+	}
+	payloadJSON, _ := json.Marshal(okPayload)
+	return client.WriteJSON(common.Message{
+		Type:    "register_ok",
+		Payload: payloadJSON,
+	})
 }
 
 func (h *Handler) handlePing(client *Client, msg *common.Message) error {
@@ -73,11 +142,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Success: false,
 			Error:   "tunnel is not enabled",
 		}
-		payloadJSON, err := json.Marshal(ackPayload)
-		if err != nil {
-			slog.Error("failed to marshal tunnel_open_ack", "error", err)
-			return err
-		}
+		payloadJSON, _ := json.Marshal(ackPayload)
 		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
@@ -96,11 +161,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Success:  false,
 			Error:    err.Error(),
 		}
-		payloadJSON, err := json.Marshal(ackPayload)
-		if err != nil {
-			slog.Error("failed to marshal tunnel_open_ack", "error", err)
-			return err
-		}
+		payloadJSON, _ := json.Marshal(ackPayload)
 		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
@@ -122,11 +183,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Success:  false,
 			Error:    err.Error(),
 		}
-		payloadJSON, err := json.Marshal(ackPayload)
-		if err != nil {
-			slog.Error("failed to marshal tunnel_open_ack", "error", err)
-			return err
-		}
+		payloadJSON, _ := json.Marshal(ackPayload)
 		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
@@ -140,11 +197,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 			Success:  false,
 			Error:    err.Error(),
 		}
-		payloadJSON, err := json.Marshal(ackPayload)
-		if err != nil {
-			slog.Error("failed to marshal tunnel_open_ack", "error", err)
-			return err
-		}
+		payloadJSON, _ := json.Marshal(ackPayload)
 		return client.WriteJSON(common.Message{
 			Type:    "tunnel_open_ack",
 			Payload: payloadJSON,
@@ -156,11 +209,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 		PublicPort: publicPort,
 		Success:    true,
 	}
-	payloadJSON, err := json.Marshal(ackPayload)
-	if err != nil {
-		slog.Error("failed to marshal tunnel_open_ack", "error", err)
-		return err
-	}
+	payloadJSON, _ := json.Marshal(ackPayload)
 	return client.WriteJSON(common.Message{
 		Type:    "tunnel_open_ack",
 		Payload: payloadJSON,
@@ -204,11 +253,7 @@ func (h *Handler) handleTunnelData(client *Client, msg *common.Message) error {
 		return fmt.Errorf("tunnel not found or not owned by client")
 	}
 
-	if h.server.crypto == nil {
-		return fmt.Errorf("encryption not available")
-	}
-
-	data, err := h.server.crypto.Decrypt(payload.Data)
+	data, err := h.server.cryptoMgr.Decrypt(client.ClientID, payload.Data)
 	if err != nil {
 		return fmt.Errorf("decrypt failed: %w", err)
 	}
@@ -235,19 +280,6 @@ func (h *Handler) handleTunnelError(client *Client, msg *common.Message) error {
 	return nil
 }
 
-func (h *Handler) sendRegisterOK(client *Client) error {
-	payload := common.RegisterOKPayload{ClientID: client.ClientID}
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		slog.Error("failed to marshal register_ok", "error", err)
-		return err
-	}
-	return client.WriteJSON(common.Message{
-		Type:    "register_ok",
-		Payload: payloadJSON,
-	})
-}
-
 func (h *Handler) sendRegisterFail(client *Client, reason string) error {
 	payload := common.RegisterFailPayload{Reason: reason}
 	payloadJSON, err := json.Marshal(payload)
@@ -257,6 +289,35 @@ func (h *Handler) sendRegisterFail(client *Client, reason string) error {
 	}
 	return client.WriteJSON(common.Message{
 		Type:    "register_fail",
+		Payload: payloadJSON,
+	})
+}
+
+func (h *Handler) sendRegisterOK(client *Client, deviceID, encKeyEncrypted, serverDHPubkey string, encEnabled bool) error {
+	payload := common.RegisterOKPayload{
+		ClientID:        deviceID,
+		EncKeyEncrypted: encKeyEncrypted,
+		ServerDHPubkey:  serverDHPubkey,
+		EncEnabled:      encEnabled,
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return client.WriteJSON(common.Message{
+		Type:    "register_ok",
+		Payload: payloadJSON,
+	})
+}
+
+func (h *Handler) sendDeviceDeleted(client *Client, reason string) error {
+	payload := common.DeviceDeletedPayload{Reason: reason}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return client.WriteJSON(common.Message{
+		Type:    "device_deleted",
 		Payload: payloadJSON,
 	})
 }

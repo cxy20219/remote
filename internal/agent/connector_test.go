@@ -14,7 +14,7 @@ import (
 )
 
 func TestBuildTLSConfig_NoCA(t *testing.T) {
-	c := NewConnector("localhost:8080", true, "", "secret", false)
+	c := NewConnector("localhost:8080", true, "", false, nil)
 
 	cfg, err := c.buildTLSConfig()
 	if err != nil {
@@ -28,8 +28,23 @@ func TestBuildTLSConfig_NoCA(t *testing.T) {
 	}
 }
 
+func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
+	c := NewConnector("localhost:8080", true, "", true, nil)
+
+	cfg, err := c.buildTLSConfig()
+	if err != nil {
+		t.Fatalf("buildTLSConfig returned error: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil tls config")
+	}
+	if !cfg.InsecureSkipVerify {
+		t.Fatal("expected InsecureSkipVerify to be true")
+	}
+}
+
 func TestBuildTLSConfig_MissingCAFile(t *testing.T) {
-	c := NewConnector("localhost:8080", true, filepath.Join(t.TempDir(), "missing-ca.pem"), "secret", false)
+	c := NewConnector("localhost:8080", true, filepath.Join(t.TempDir(), "missing-ca.pem"), false, nil)
 
 	_, err := c.buildTLSConfig()
 	if err == nil {
@@ -44,7 +59,7 @@ func TestBuildTLSConfig_InvalidCAFile(t *testing.T) {
 		t.Fatalf("failed to write invalid CA file: %v", err)
 	}
 
-	c := NewConnector("localhost:8080", true, caPath, "secret", false)
+	c := NewConnector("localhost:8080", true, caPath, false, nil)
 
 	_, err := c.buildTLSConfig()
 	if err == nil {
@@ -59,7 +74,7 @@ func TestBuildTLSConfig_ValidCAFile(t *testing.T) {
 		t.Fatalf("failed to write CA file: %v", err)
 	}
 
-	c := NewConnector("localhost:8080", true, caPath, "secret", false)
+	c := NewConnector("localhost:8080", true, caPath, false, nil)
 
 	cfg, err := c.buildTLSConfig()
 	if err != nil {

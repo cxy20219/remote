@@ -209,11 +209,8 @@ func (tm *TunnelManager) HandleLocalResponse(connID, tunnelID string, data []byt
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
 
-	if tm.agent.crypto == nil {
-		return fmt.Errorf("encryption not available")
-	}
-
-	encoded, err := tm.agent.crypto.Encrypt(data)
+	clientID := tm.agent.GetClientID()
+	encoded, err := tm.agent.cryptoMgr.Encrypt(clientID, data)
 	if err != nil {
 		return fmt.Errorf("encrypt failed: %w", err)
 	}

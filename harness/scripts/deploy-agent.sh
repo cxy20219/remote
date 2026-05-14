@@ -1,61 +1,45 @@
 #!/bin/bash
-# GoRemote Agent Deploy Script
-# Usage: ./deploy-agent.sh <agent_ip> <ssh_user> <ssh_password> <server_address> [config_path]
+# GoRemote Agent Zero-Config Deploy Script
+# Usage: ./deploy-agent.sh <agent_ip> <ssh_user> <ssh_password> <server_address>
+# 关联流程: ../workflow/zero-config-deploy-verify.md
+# 依赖: plink (PuTTY), pscp
 #
-# 注意：此脚本在 Windows 上使用 plink/pscp，需要确保已安装 PuTTY
+# 零配置架构：Agent 只需服务器地址，无需任何配置文件。
 
 set -e
 
-AGENT_IP="${1:?Usage: $0 <agent_ip> <ssh_user> <ssh_password> <server_address> [config_path]}"
+AGENT_IP="${1:?Usage: $0 <agent_ip> <ssh_user> <ssh_password> <server_address>}"
 SSH_USER="${2:?}"
 SSH_PASS="${3:?}"
 SERVER_ADDR="${4:?}"
-CONFIG_PATH="${5:-../assets/agent.yaml.template}"
-BINARY_PATH="release/agent-linux-amd64"
+BINARY_PATH="harness/assets/bin/agent-linux-amd64"
 REMOTE_DIR="/opt/goremote"
 
-echo "=== GoRemote Agent Deploy ==="
-echo "Agent: ${SSH_USER}@${AGENT_IP}"
+echo "=== GoRemote Agent Zero-Config Deploy ==="
+echo "Target: ${SSH_USER}@${AGENT_IP}"
 echo "Server: ${SERVER_ADDR}"
 
-# 1. Check binary
 if [ ! -f "$BINARY_PATH" ]; then
     echo "ERROR: Binary not found at $BINARY_PATH"
-    echo "Build with: GOOS=linux GOARCH=amd64 go build -o release/agent-linux-amd64 ./cmd/agent"
+    echo "Build: GOOS=linux GOARCH=amd64 go build -o $BINARY_PATH ./cmd/agent"
     exit 1
 fi
 
-# 2. Deploy
-echo "Deploying..."
-
-# Create remote directory (if writable)
-plink -batch -pw "$SSH_PASS" -P 22 "${SSH_USER}@${AGENT_IP}" "mkdir -p ${REMOTE_DIR}" || true
-
-# Upload binary
+echo "[1/3] Uploading binary..."
+plink -batch -pw "$SSH_PASS" -P 22 "${SSH_USER}@${AGENT_IP}" "mkdir -p ${REMOTE_DIR}" 2>/dev/null || true
 pscp -P 22 -pw "$SSH_PASS" "$BINARY_PATH" "${SSH_USER}@${AGENT_IP}:${REMOTE_DIR}/agent"
 
-# 3. Prepare and upload config
-if [ -f "$CONFIG_PATH" ]; then
-    sed -e "s/{{SERVER_ADDRESS}}/${SERVER_ADDR}/g" \
-        -e "s/{{AUTH_KEY}}/test-secret-key/g" \
-        -e "s/{{AGENT_HOSTNAME}}/internal-server/g" \
-        -e "s/{{AGENT_OS}}/linux/g" \
-        "$CONFIG_PATH" > /tmp/agent-deploy.yaml
-
-    pscp -P 22 -pw "$SSH_PASS" /tmp/agent-deploy.yaml "${SSH_USER}@${AGENT_IP}:${REMOTE_DIR}/config.yaml"
-fi
-
-# 4. Start agent
-echo "Starting agent..."
+echo "[2/3] Starting agent..."
 plink -batch -pw "$SSH_PASS" -P 22 "${SSH_USER}@${AGENT_IP}" "
     cd ${REMOTE_DIR}
     chmod +x agent
     killall agent 2>/dev/null || true
     sleep 1
-    nohup ./agent --config config.yaml > agent.log 2>&1 &
+    nohup ./agent --server ${SERVER_ADDR} > agent.log 2>&1 &
     sleep 2
 "
 
-echo ""
-echo "=== Agent Deploy Complete ==="
-echo "Check registration: curl -k https://${SERVER_ADDR}/api/clients"
+echo "[3/3] Done."
+echo "Agent will appear as pending in the server's Web UI."
+echo "Approve at: http://${SERVER_ADDR}/"
+echo "Agent log: ${REMOTE_DIR}/agent.log"

@@ -447,7 +447,7 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 	for {
 		n, err := extConn.Read(buf)
 		if n > 0 {
-			encoded, encErr := tm.server.crypto.Encrypt(buf[:n])
+			encoded, encErr := tm.server.cryptoMgr.Encrypt(tunnel.ClientID, buf[:n])
 			if encErr != nil {
 				slog.Error("failed to encrypt tunnel data",
 					"conn_id", connID,
@@ -537,11 +537,11 @@ func (tm *TunnelManager) SendToClient(tunnelID, connID string, data []byte, isEO
 		return fmt.Errorf("tunnel or client not found: %s", tunnelID)
 	}
 
-	if tm.server.crypto == nil {
+	if tm.server.cryptoMgr == nil {
 		return fmt.Errorf("encryption not available")
 	}
 
-	encoded, err := tm.server.crypto.Encrypt(data)
+	encoded, err := tm.server.cryptoMgr.Encrypt(tunnel.ClientID, data)
 	if err != nil {
 		return fmt.Errorf("encrypt failed: %w", err)
 	}

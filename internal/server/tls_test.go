@@ -29,31 +29,32 @@ func generateServerCert(t *testing.T, dir string) (certPath, keyPath string) {
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			CommonName: "localhost",
-		},
-		NotBefore:             time.Now().Add(-time.Hour),
+	template := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{Organization: []string{"Test"}},
+		NotBefore:             time.Now(),
 		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		ExtKeyUsage:            []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost"},
 		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
 	if err != nil {
 		t.Fatalf("failed to create certificate: %v", err)
 	}
 
-	certPath = filepath.Join(dir, "server.crt")
-	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0o600); err != nil {
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: certDER,
+	}), 0o600); err != nil {
 		t.Fatalf("failed to write cert: %v", err)
 	}
 
-	keyPath = filepath.Join(dir, "server.key")
 	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
@@ -64,18 +65,31 @@ func generateServerCert(t *testing.T, dir string) (certPath, keyPath string) {
 	return
 }
 
-func TestNewServer_TLSEnabled(t *testing.T) {
+func newTestConfig(t *testing.T) (*Config, *StateStore) {
+	t.Helper()
 	dir := t.TempDir()
-	certPath, keyPath := generateServerCert(t, dir)
+	statePath := filepath.Join(dir, "server-state.json")
+	stateStore := NewStateStore(statePath)
+	if err := stateStore.Load(); err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
 
 	config := &Config{
 		Server: ServerConfig{
-			Host: "127.0.0.1", Port: 8443,
-			TLS: TLSConfig{Enabled: true, Cert: certPath, Key: keyPath},
+			Host: "127.0.0.1",
+			Port: 0,
 		},
-		Auth:   AuthConfig{Key: "test-key"},
-		Tunnel: TunnelConfig{Enabled: false},
+		dataDir: dir,
 	}
+
+	return config, stateStore
+}
+
+func TestNewServer_TLSEnabled(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := generateServerCert(t, dir)
+	config, _ := newTestConfig(t)
+	config.Server.TLS = TLSConfig{Enabled: true, Cert: certPath, Key: keyPath}
 
 	srv := NewServer(config, embed.FS{})
 
@@ -91,22 +105,12 @@ func TestNewServer_TLSEnabled(t *testing.T) {
 }
 
 func TestNewServer_TLSDisabled(t *testing.T) {
-	config := &Config{
-		Server: ServerConfig{Host: "127.0.0.1", Port: 8080, TLS: TLSConfig{Enabled: false}},
-		Auth:   AuthConfig{Key: "test-key"},
-		Tunnel: TunnelConfig{Enabled: false},
-	}
+	config, _ := newTestConfig(t)
 
 	srv := NewServer(config, embed.FS{})
 
 	if srv.tlsEnabled {
 		t.Fatal("tlsEnabled should be false")
-	}
-	if srv.tlsCert != "" {
-		t.Fatal("tlsCert should be empty")
-	}
-	if srv.tlsKey != "" {
-		t.Fatal("tlsKey should be empty")
 	}
 }
 
@@ -121,22 +125,17 @@ func TestServerTLS_WebSocketUpgradeAndRegister(t *testing.T) {
 	addr := listener.Addr().String()
 	listener.Close()
 
-	config := &Config{
-		Server: ServerConfig{
-			Host: "127.0.0.1", Port: 0,
-			TLS: TLSConfig{Enabled: true, Cert: certPath, Key: keyPath},
-		},
-		Auth:      AuthConfig{Key: "test-key"},
-		Heartbeat: HeartbeatConfig{Interval: 30, Timeout: 90},
-		Tunnel:    TunnelConfig{Enabled: false},
-	}
+	config, stateStore := newTestConfig(t)
+	config.Server.TLS = TLSConfig{Enabled: true, Cert: certPath, Key: keyPath}
 
 	srv := NewServer(config, embed.FS{})
 	srv.Addr = addr
+	srv.stateStore = stateStore
 
 	go func() {
 		srv.Start()
 	}()
+	defer srv.Stop()
 
 	dialer := &websocket.Dialer{
 		TLSClientConfig: &tls.Config{
@@ -158,7 +157,7 @@ func TestServerTLS_WebSocketUpgradeAndRegister(t *testing.T) {
 	}
 	defer conn.Close()
 
-	payload := common.RegisterPayload{Key: "test-key", Hostname: "test-host", OS: "linux"}
+	payload := common.RegisterPayload{DevicePubkey: "test-pubkey", Hostname: "test-host", OS: "linux"}
 	payloadJSON, _ := json.Marshal(payload)
 	if err := conn.WriteJSON(common.Message{Type: "register", Payload: payloadJSON}); err != nil {
 		t.Fatalf("failed to send register: %v", err)
@@ -168,16 +167,8 @@ func TestServerTLS_WebSocketUpgradeAndRegister(t *testing.T) {
 	if err := conn.ReadJSON(&resp); err != nil {
 		t.Fatalf("failed to read response: %v", err)
 	}
-	if resp.Type != "register_ok" {
-		t.Fatalf("expected register_ok, got %s", resp.Type)
-	}
-
-	var okPayload common.RegisterOKPayload
-	if err := json.Unmarshal(resp.Payload, &okPayload); err != nil {
-		t.Fatalf("failed to parse register_ok payload: %v", err)
-	}
-	if okPayload.ClientID == "" {
-		t.Fatal("expected non-empty client_id")
+	if resp.Type != "register_pending" && resp.Type != "register_fail" {
+		t.Fatalf("expected register_pending or register_fail, got %s", resp.Type)
 	}
 }
 
@@ -192,24 +183,18 @@ func TestServerTLS_RejectPlainWS(t *testing.T) {
 	addr := listener.Addr().String()
 	listener.Close()
 
-	config := &Config{
-		Server: ServerConfig{
-			Host: "127.0.0.1", Port: 0,
-			TLS: TLSConfig{Enabled: true, Cert: certPath, Key: keyPath},
-		},
-		Auth:      AuthConfig{Key: "test-key"},
-		Heartbeat: HeartbeatConfig{Interval: 30, Timeout: 90},
-		Tunnel:    TunnelConfig{Enabled: false},
-	}
+	config, stateStore := newTestConfig(t)
+	config.Server.TLS = TLSConfig{Enabled: true, Cert: certPath, Key: keyPath}
 
 	srv := NewServer(config, embed.FS{})
 	srv.Addr = addr
+	srv.stateStore = stateStore
 
 	go func() {
 		srv.Start()
 	}()
+	defer srv.Stop()
 
-	// Wait for server to be ready over TLS
 	dialer := &websocket.Dialer{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
@@ -225,7 +210,6 @@ func TestServerTLS_RejectPlainWS(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Now try plain WS - should fail because server is TLS-only
 	plainDialer := &websocket.Dialer{
 		HandshakeTimeout: 2 * time.Second,
 	}

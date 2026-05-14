@@ -17,26 +17,18 @@ import (
 )
 
 const (
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
-
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
-
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
-
-	// Maximum message size allowed from peer.
-	maxMessageSize = 512 * 1024 // 512KB
+	writeWait     = 10 * time.Second
+	pongWait      = 60 * time.Second
+	pingPeriod    = (pongWait * 9) / 10
+	maxMessageSize = 512 * 1024
 )
 
-// Connector manages WebSocket connection
 type Connector struct {
 	serverAddr         string
 	tlsEnabled         bool
 	tlsCA              string
 	insecureSkipVerify bool
-	authKey            string
+	identity          *AgentIdentity
 
 	conn   *websocket.Conn
 	mu     sync.Mutex
@@ -44,24 +36,21 @@ type Connector struct {
 	closed bool
 }
 
-// NewConnector creates a new Connector
-func NewConnector(serverAddr string, tlsEnabled bool, tlsCA string, authKey string, insecureSkipVerify bool) *Connector {
+func NewConnector(serverAddr string, tlsEnabled bool, tlsCA string, insecureSkipVerify bool, identity *AgentIdentity) *Connector {
 	return &Connector{
 		serverAddr:         serverAddr,
 		tlsEnabled:         tlsEnabled,
 		tlsCA:              tlsCA,
 		insecureSkipVerify: insecureSkipVerify,
-		authKey:            authKey,
-		done:               make(chan struct{}),
+		identity:          identity,
+		done:              make(chan struct{}),
 	}
 }
 
-// Connect establishes WebSocket connection
 func (c *Connector) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Build URL
 	scheme := "ws"
 	if c.tlsEnabled {
 		scheme = "wss"
@@ -70,7 +59,6 @@ func (c *Connector) Connect() error {
 
 	slog.Info("connecting to server", "addr", c.serverAddr)
 
-	// Set connection options
 	dialer := websocket.Dialer{
 		ReadBufferSize:   1024,
 		WriteBufferSize:  1024,
@@ -129,7 +117,6 @@ func (c *Connector) buildTLSConfig() (*tls.Config, error) {
 	}, nil
 }
 
-// Close closes the connection
 func (c *Connector) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -149,7 +136,6 @@ func (c *Connector) Close() error {
 	return nil
 }
 
-// Send sends a message
 func (c *Connector) Send(msg *common.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -162,7 +148,6 @@ func (c *Connector) Send(msg *common.Message) error {
 	return c.conn.WriteJSON(msg)
 }
 
-// Receive receives a message
 func (c *Connector) Receive() (*common.Message, error) {
 	if c.conn == nil {
 		return nil, fmt.Errorf("not connected")
@@ -182,24 +167,22 @@ func (c *Connector) Receive() (*common.Message, error) {
 	return msg, nil
 }
 
-// Done returns the done channel
 func (c *Connector) Done() <-chan struct{} {
 	return c.done
 }
 
-// IsConnected returns true if connected
 func (c *Connector) IsConnected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.conn != nil && !c.closed
 }
 
-// Register sends a register message
-func (c *Connector) Register(hostname, os string) error {
+func (c *Connector) RegisterNew(hostname, osName string) error {
 	payload := common.RegisterPayload{
-		Key:      c.authKey,
-		Hostname: hostname,
-		OS:       os,
+		DevicePubkey:   c.identity.DeviceSignPubkey,
+		DeviceDHPubkey: c.identity.DeviceDHPubkey,
+		Hostname:       hostname,
+		OS:             osName,
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
@@ -209,7 +192,34 @@ func (c *Connector) Register(hostname, os string) error {
 	})
 }
 
-// SendPing sends a ping message
+func (c *Connector) RegisterReauth(clientID string, timestamp int64) error {
+	privKey, err := c.identity.GetSignPrivKey()
+	if err != nil {
+		return fmt.Errorf("get sign privkey: %w", err)
+	}
+
+	signature, err := common.SignTimestamp(privKey, clientID, timestamp)
+	if err != nil {
+		return fmt.Errorf("sign timestamp: %w", err)
+	}
+
+	payload := common.RegisterPayload{
+		ReAuth:        true,
+		ClientID:      clientID,
+		DevicePubkey:  c.identity.DeviceSignPubkey,
+		Timestamp:     timestamp,
+		Signature:     common.EncodeBytes(signature),
+		Hostname:      "",
+		OS:            "",
+	}
+	payloadJSON, _ := json.Marshal(payload)
+
+	return c.Send(&common.Message{
+		Type:    "register",
+		Payload: payloadJSON,
+	})
+}
+
 func (c *Connector) SendPing() error {
 	return c.Send(&common.Message{Type: "ping"})
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -20,16 +19,9 @@ func init() {
 }
 
 func main() {
-	configPath := flag.String("config", "config/server.yaml", "path to config file")
-	flag.Parse()
+	config := server.ParseConfig()
 
-	config, err := server.LoadConfig(*configPath)
-	if err != nil {
-		slog.Error("failed to load config", "error", err)
-		os.Exit(1)
-	}
-
-	server.InitLogger(config.Log.Level, config.Log.File)
+	server.InitLogger("info", "")
 
 	srv := server.NewServer(config, web.StaticFS)
 
@@ -43,7 +35,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	slog.Info("server starting")
+	slog.Info("server starting", "addr", config.Addr())
 	if err := srv.Start(); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)

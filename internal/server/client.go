@@ -2,61 +2,49 @@ package server
 
 import (
 	"fmt"
-	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// Client represents a connected agent
 type Client struct {
-	ClientID    string          `json:"client_id"`
-	Hostname    string          `json:"hostname"`
-	OS          string          `json:"os"`
-	Conn        *websocket.Conn `json:"-"`
-	RegTime     time.Time       `json:"reg_time"`
-	LastPing    time.Time       `json:"last_ping"`
-	Status      string          `json:"status"` // online/offline
-	IPWhitelist []string        `json:"ip_whitelist"` // IPs that bypass rate limiting for this client's tunnels
+	ClientID   string
+	Hostname   string
+	OS         string
+	Conn       *websocket.Conn
+	RemoteAddr string
+	RegTime    time.Time
+	LastPing   time.Time
 
 	writeMu sync.Mutex
 }
 
-// ClientManager manages connected clients
 type ClientManager struct {
-	mu              sync.RWMutex
-	clients         map[string]*Client // clientID -> Client
-	whitelistStore  map[string][]string // hostname -> IP whitelist (persists across reconnections)
+	mu      sync.RWMutex
+	clients map[string]*Client
 }
 
-// NewClientManager creates a new ClientManager
 func NewClientManager() *ClientManager {
 	return &ClientManager{
-		clients:        make(map[string]*Client),
-		whitelistStore: make(map[string][]string),
+		clients: make(map[string]*Client),
 	}
 }
 
-// Add adds a client to the manager
 func (m *ClientManager) Add(client *Client) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	client.Status = "online"
 	client.RegTime = time.Now()
 	client.LastPing = time.Now()
 	m.clients[client.ClientID] = client
 }
 
-// Remove removes a client by ID
 func (m *ClientManager) Remove(clientID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.clients, clientID)
 }
 
-// Get retrieves a client by ID
 func (m *ClientManager) Get(clientID string) (*Client, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -64,7 +52,6 @@ func (m *ClientManager) Get(clientID string) (*Client, bool) {
 	return client, ok
 }
 
-// List returns all clients
 func (m *ClientManager) List() []*Client {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -75,7 +62,6 @@ func (m *ClientManager) List() []*Client {
 	return clients
 }
 
-// UpdatePing updates the last ping time for a client
 func (m *ClientManager) UpdatePing(clientID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -84,30 +70,33 @@ func (m *ClientManager) UpdatePing(clientID string) {
 	}
 }
 
-// Broadcast sends a message to all connected clients
-func (m *ClientManager) Broadcast(data []byte) error {
+func (m *ClientManager) IsIPWhitelisted(ip string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, client := range m.clients {
-		if err := client.WriteMessage(websocket.TextMessage, data); err != nil {
-			slog.Warn("failed to broadcast to client", "client_id", client.ClientID, "error", err)
+		device := getDeviceStateForClient(client)
+		if device != nil && isIPWhitelisted(ip, device.IPWhitelist) {
+			return true
 		}
 	}
+	return false
+}
+
+func getDeviceStateForClient(client *Client) *DeviceState {
 	return nil
 }
 
-// SendTo sends a message to a specific client
-func (m *ClientManager) SendTo(clientID string, data []byte) error {
+func (m *ClientManager) GetIPWhitelist(clientID string) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	client, ok := m.clients[clientID]
 	if !ok {
-		return fmt.Errorf("client not found: %s", clientID)
+		return nil
 	}
-	return client.WriteMessage(websocket.TextMessage, data)
+	_ = client
+	return nil
 }
 
-// WriteJSON serializes websocket writes to avoid concurrent write panics.
 func (c *Client) WriteJSON(v interface{}) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -125,7 +114,6 @@ func (c *Client) WriteJSON(v interface{}) (err error) {
 	return c.Conn.WriteJSON(v)
 }
 
-// WriteMessage serializes raw websocket writes to avoid concurrent write panics.
 func (c *Client) WriteMessage(messageType int, data []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -135,73 +123,4 @@ func (c *Client) WriteMessage(messageType int, data []byte) error {
 	}
 
 	return c.Conn.WriteMessage(messageType, data)
-}
-
-// GetIPWhitelist returns the IP whitelist for a client by ID.
-func (m *ClientManager) GetIPWhitelist(clientID string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	client, ok := m.clients[clientID]
-	if !ok {
-		return nil
-	}
-	result := make([]string, len(client.IPWhitelist))
-	copy(result, client.IPWhitelist)
-	return result
-}
-
-// SetIPWhitelist sets the IP whitelist for a client and persists it by hostname.
-func (m *ClientManager) SetIPWhitelist(clientID string, ips []string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	client, ok := m.clients[clientID]
-	if !ok {
-		return
-	}
-	deduped := deduplicateIPs(ips)
-	client.IPWhitelist = deduped
-	if client.Hostname != "" {
-		m.whitelistStore[client.Hostname] = deduped
-	}
-}
-
-// RestoreWhitelist restores a client's IP whitelist from the persistent store by hostname.
-func (m *ClientManager) RestoreWhitelist(client *Client) {
-	if client.Hostname == "" {
-		return
-	}
-	m.mu.RLock()
-	ips, ok := m.whitelistStore[client.Hostname]
-	m.mu.RUnlock()
-	if ok && len(ips) > 0 {
-		client.IPWhitelist = make([]string, len(ips))
-		copy(client.IPWhitelist, ips)
-	}
-}
-
-// IsIPWhitelisted checks if the given IP is in any connected client's whitelist.
-func (m *ClientManager) IsIPWhitelisted(ip string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, client := range m.clients {
-		if isIPWhitelisted(ip, client.IPWhitelist) {
-			return true
-		}
-	}
-	return false
-}
-
-// deduplicateIPs removes duplicate entries from an IP list.
-func deduplicateIPs(ips []string) []string {
-	seen := make(map[string]bool)
-	result := make([]string, 0, len(ips))
-	for _, ip := range ips {
-		ip = strings.TrimSpace(ip)
-		if ip == "" || seen[ip] {
-			continue
-		}
-		seen[ip] = true
-		result = append(result, ip)
-	}
-	return result
 }

@@ -8,23 +8,17 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"sync"
 )
 
-// CryptoContext provides AES-256-GCM encryption/decryption for tunnel data.
-// The encryption key is derived from the shared auth key using SHA-256.
 type CryptoContext struct {
 	gcm cipher.AEAD
 }
 
-// NewCryptoContext derives an AES-256-GCM key from the shared auth key using SHA-256.
-// Returns nil if sharedKey is empty (encryption disabled).
-func NewCryptoContext(sharedKey string) (*CryptoContext, error) {
-	if sharedKey == "" {
-		return nil, fmt.Errorf("shared key is empty, cannot initialize encryption")
+func NewCryptoContextFromKey(key []byte) (*CryptoContext, error) {
+	if len(key) != 32 {
+		return nil, fmt.Errorf("key must be 32 bytes, got %d", len(key))
 	}
-
-	hash := sha256.Sum256([]byte(sharedKey + "goremote-tunnel-v1"))
-	key := hash[:]
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -39,8 +33,17 @@ func NewCryptoContext(sharedKey string) (*CryptoContext, error) {
 	return &CryptoContext{gcm: gcm}, nil
 }
 
-// Encrypt encrypts plaintext with AES-256-GCM and returns a base64-encoded string.
-// The encoded format is: base64(nonce || ciphertext || tag)
+func NewCryptoContext(sharedKey string) (*CryptoContext, error) {
+	if sharedKey == "" {
+		return nil, fmt.Errorf("shared key is empty, cannot initialize encryption")
+	}
+
+	hash := sha256.Sum256([]byte(sharedKey + "goremote-tunnel-v1"))
+	key := hash[:]
+
+	return NewCryptoContextFromKey(key)
+}
+
 func (cc *CryptoContext) Encrypt(plaintext []byte) (string, error) {
 	if cc == nil {
 		return "", fmt.Errorf("crypto context is nil")
@@ -55,7 +58,6 @@ func (cc *CryptoContext) Encrypt(plaintext []byte) (string, error) {
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// Decrypt decrypts a base64-encoded string produced by Encrypt.
 func (cc *CryptoContext) Decrypt(encoded string) ([]byte, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("crypto context is nil")
@@ -78,4 +80,64 @@ func (cc *CryptoContext) Decrypt(encoded string) ([]byte, error) {
 	}
 
 	return plaintext, nil
+}
+
+type CryptoManager struct {
+	mu   sync.RWMutex
+	keys map[string]*CryptoContext
+}
+
+func NewCryptoManager() *CryptoManager {
+	return &CryptoManager{
+		keys: make(map[string]*CryptoContext),
+	}
+}
+
+func (cm *CryptoManager) SetKey(clientID string, key []byte) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	ctx, err := NewCryptoContextFromKey(key)
+	if err != nil {
+		return err
+	}
+	cm.keys[clientID] = ctx
+	return nil
+}
+
+func (cm *CryptoManager) RemoveKey(clientID string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	delete(cm.keys, clientID)
+}
+
+func (cm *CryptoManager) Encrypt(clientID string, plaintext []byte) (string, error) {
+	cm.mu.RLock()
+	ctx, ok := cm.keys[clientID]
+	cm.mu.RUnlock()
+
+	if !ok || ctx == nil {
+		return "", fmt.Errorf("encryption key not found for client: %s", clientID)
+	}
+
+	return ctx.Encrypt(plaintext)
+}
+
+func (cm *CryptoManager) Decrypt(clientID string, encoded string) ([]byte, error) {
+	cm.mu.RLock()
+	ctx, ok := cm.keys[clientID]
+	cm.mu.RUnlock()
+
+	if !ok || ctx == nil {
+		return nil, fmt.Errorf("encryption key not found for client: %s", clientID)
+	}
+
+	return ctx.Decrypt(encoded)
+}
+
+func (cm *CryptoManager) HasKey(clientID string) bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	_, ok := cm.keys[clientID]
+	return ok
 }

@@ -1,146 +1,93 @@
 package server
 
 import (
+	"flag"
 	"fmt"
-	"os"
-
-	"gopkg.in/yaml.v3"
 )
 
-// Config holds server configuration
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Auth      AuthConfig      `yaml:"auth"`
-	Admin     AdminConfig     `yaml:"admin"`
-	Security  SecurityConfig  `yaml:"security"`
-	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
-	Log       LogConfig       `yaml:"log"`
-	Tunnel    TunnelConfig    `yaml:"tunnel"`
-	Swagger   SwaggerConfig   `yaml:"swagger"`
+	Server    ServerConfig
+	Admin     AdminConfig
+	Security  SecurityConfig
+	Tunnel    TunnelConfig
+	Swagger   SwaggerConfig
+	dataDir   string
 }
 
-// TunnelConfig holds tunnel configuration
-type TunnelConfig struct {
-	Enabled             bool   `yaml:"enabled"`
-	PortRangeStart      int    `yaml:"port_range_start"`       // allocated public port range start
-	PortRangeEnd        int    `yaml:"port_range_end"`         // allocated public port range end
-	MaxTunnelsPerClient int    `yaml:"max_tunnels_per_client"` // max tunnels allowed per client
-	PublicHost          string `yaml:"public_host"`            // optional externally reachable host returned by API
-	DefaultLocalAddr    string `yaml:"default_local_addr"`     // default target address on the agent
-}
-
-// SwaggerConfig holds Swagger UI configuration
-type SwaggerConfig struct {
-	Enabled bool `yaml:"enabled"` // 是否启用 Swagger UI 接口文档
-}
-
-// ServerConfig holds WebSocket server configuration
 type ServerConfig struct {
-	Host string    `yaml:"host"`
-	Port int       `yaml:"port"`
-	TLS  TLSConfig `yaml:"tls"`
+	Host string
+	Port int
+	TLS  TLSConfig
 }
 
-// TLSConfig holds TLS configuration
 type TLSConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Cert    string `yaml:"cert"`
-	Key     string `yaml:"key"`
+	Enabled            bool
+	Cert               string
+	Key                string
+	InsecureSkipVerify bool
 }
 
-// AuthConfig holds agent authentication configuration
-type AuthConfig struct {
-	Key string `yaml:"key"`
-}
-
-// AdminConfig holds web admin authentication configuration
 type AdminConfig struct {
-	Password string `yaml:"password"`
+	Password string
 }
 
-// SecurityConfig holds security-related configuration
 type SecurityConfig struct {
-	AllowedOrigins     []string `yaml:"allowed_origins"`      // WebSocket origin whitelist (empty = allow all)
-	LoginRateLimit     int      `yaml:"login_rate_limit"`     // max login attempts per minute per IP (0 to disable, default 5)
-	MaxBodySizeMB      int      `yaml:"max_body_size_mb"`     // max HTTP request body size in MB (0 for no limit)
-	MaxConnPerMin      int      `yaml:"max_conn_per_min"`     // max connections per minute per IP (0 to disable, default 10), anti-scanning
-	GlobalWhitelist    []string `yaml:"global_whitelist"`     // global IP whitelist, bypass all rate limits
-	BlacklistThreshold int      `yaml:"blacklist_threshold"`  // cumulative rate-limit violations before auto-blacklist (0 to disable, default 100)
+	AllowedOrigins     []string
+	LoginRateLimit     int
+	MaxBodySizeMB      int
+	MaxConnPerMin      int
+	GlobalWhitelist    []string
+	BlacklistThreshold int
 }
 
-// HeartbeatConfig holds heartbeat configuration
-type HeartbeatConfig struct {
-	Interval int `yaml:"interval"` // heartbeat check interval in seconds
-	Timeout  int `yaml:"timeout"`  // heartbeat timeout in seconds
+type TunnelConfig struct {
+	Enabled             bool
+	PortRangeStart      int
+	PortRangeEnd        int
+	MaxTunnelsPerClient int
+	PublicHost          string
+	DefaultLocalAddr    string
 }
 
-// LogConfig holds logging configuration
-type LogConfig struct {
-	Level string `yaml:"level"` // debug/info/warn/error
-	File  string `yaml:"file"`  // empty for stdout
+type SwaggerConfig struct {
+	Enabled bool
 }
 
-// LoadConfig loads configuration from a YAML file
-func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
-	}
+func ParseConfig() *Config {
+	cfg := &Config{}
 
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
-	}
+	flag.StringVar(&cfg.Server.Host, "host", "0.0.0.0", "listen host")
+	flag.IntVar(&cfg.Server.Port, "port", 8080, "listen port")
+	flag.StringVar(&cfg.Server.TLS.Cert, "tls-cert", "", "TLS certificate path")
+	flag.StringVar(&cfg.Server.TLS.Key, "tls-key", "", "TLS key path")
+	flag.StringVar(&cfg.dataDir, "data", "./data", "data directory for server-state.json")
 
-	// Set defaults
-	if config.Server.Host == "" {
-		config.Server.Host = "0.0.0.0"
-	}
-	if config.Server.Port == 0 {
-		config.Server.Port = 8080
-	}
-	if config.Heartbeat.Interval == 0 {
-		config.Heartbeat.Interval = 30
-	}
-	if config.Admin.Password == "" {
-		config.Admin.Password = "admin123"
-	}
-	if config.Security.LoginRateLimit == 0 {
-		config.Security.LoginRateLimit = 5
-	}
-	if config.Security.MaxConnPerMin == 0 {
-		config.Security.MaxConnPerMin = 10
-	}
-	if config.Security.BlacklistThreshold == 0 {
-		config.Security.BlacklistThreshold = 100
-	}
-	if config.Security.GlobalWhitelist == nil {
-		config.Security.GlobalWhitelist = []string{}
-	}
-	if config.Heartbeat.Timeout == 0 {
-		config.Heartbeat.Timeout = 90
-	}
-	if config.Log.Level == "" {
-		config.Log.Level = "info"
-	}
-	if !config.Swagger.Enabled {
-		config.Swagger.Enabled = true // 默认启用 Swagger
-	}
+	flag.BoolVar(&cfg.Tunnel.Enabled, "tunnel", true, "enable tunnel feature")
+	flag.IntVar(&cfg.Tunnel.PortRangeStart, "port-start", 10000, "tunnel port range start")
+	flag.IntVar(&cfg.Tunnel.PortRangeEnd, "port-end", 20000, "tunnel port range end")
+	flag.IntVar(&cfg.Tunnel.MaxTunnelsPerClient, "max-tunnels", 10, "max tunnels per client")
+	flag.StringVar(&cfg.Tunnel.DefaultLocalAddr, "local-addr", "127.0.0.1", "default local address for tunnels")
+	flag.StringVar(&cfg.Tunnel.PublicHost, "public-host", "", "public host for tunnel addresses")
 
-	// Tunnel defaults
-	if config.Tunnel.PortRangeStart == 0 {
-		config.Tunnel.PortRangeStart = 10000
-	}
-	if config.Tunnel.PortRangeEnd == 0 {
-		config.Tunnel.PortRangeEnd = 20000
-	}
-	if config.Tunnel.MaxTunnelsPerClient == 0 {
-		config.Tunnel.MaxTunnelsPerClient = 10
-	}
-	if config.Tunnel.DefaultLocalAddr == "" {
-		config.Tunnel.DefaultLocalAddr = "127.0.0.1"
-	}
-	// NOTE: Tunnel.Enabled 默认 false，用户显式开启
+	flag.BoolVar(&cfg.Swagger.Enabled, "swagger", true, "enable swagger UI")
 
-	return &config, nil
+	flag.Parse()
+
+	cfg.Server.TLS.Enabled = cfg.Server.TLS.Cert != "" && cfg.Server.TLS.Key != ""
+	cfg.Security.LoginRateLimit = 5
+	cfg.Security.MaxConnPerMin = 10
+	cfg.Security.BlacklistThreshold = 100
+	cfg.Security.GlobalWhitelist = []string{}
+	cfg.Security.AllowedOrigins = []string{}
+	cfg.Security.MaxBodySizeMB = 0
+
+	return cfg
+}
+
+func (c *Config) DataDir() string {
+	return c.dataDir
+}
+
+func (c *Config) Addr() string {
+	return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port)
 }

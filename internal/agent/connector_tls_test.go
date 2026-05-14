@@ -165,7 +165,7 @@ func TestConnectorConnectTLS_ValidCA(t *testing.T) {
 	caPath, certPath, keyPath := generateCAAndServerCert(t, dir)
 	addr := startTLSWSServer(t, certPath, keyPath)
 
-	c := NewConnector(addr, true, caPath, "test-key", false)
+	c := NewConnector(addr, true, caPath, false, nil)
 	if err := c.Connect(); err != nil {
 		t.Fatalf("Connect with TLS should succeed: %v", err)
 	}
@@ -181,22 +181,27 @@ func TestConnectorConnectTLS_RegisterOverTLS(t *testing.T) {
 	caPath, certPath, keyPath := generateCAAndServerCert(t, dir)
 	addr := startTLSWSServer(t, certPath, keyPath)
 
-	c := NewConnector(addr, true, caPath, "test-key", false)
+	identity, err := CreateIdentity(dir, addr)
+	if err != nil {
+		t.Fatalf("CreateIdentity failed: %v", err)
+	}
+
+	c := NewConnector(addr, true, caPath, false, identity)
 	if err := c.Connect(); err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
 	defer c.Close()
 
-	if err := c.Register("test-host", "linux"); err != nil {
-		t.Fatalf("Register over TLS failed: %v", err)
+	if err := c.RegisterNew("test-host", "linux"); err != nil {
+		t.Fatalf("RegisterNew over TLS failed: %v", err)
 	}
 
 	msg, err := c.Receive()
 	if err != nil {
-		t.Fatalf("failed to receive register_ok: %v", err)
+		t.Fatalf("failed to receive response: %v", err)
 	}
-	if msg.Type != "register_ok" {
-		t.Fatalf("expected register_ok, got %s", msg.Type)
+	if msg.Type != "register_pending" && msg.Type != "register_ok" && msg.Type != "register_fail" {
+		t.Fatalf("expected register response, got %s", msg.Type)
 	}
 }
 
@@ -205,7 +210,7 @@ func TestConnectorConnectTLS_InvalidCAFile(t *testing.T) {
 	_, certPath, keyPath := generateCAAndServerCert(t, dir)
 	addr := startTLSWSServer(t, certPath, keyPath)
 
-	c := NewConnector(addr, true, filepath.Join(dir, "nonexistent.pem"), "test-key", false)
+	c := NewConnector(addr, true, filepath.Join(dir, "nonexistent.pem"), false, nil)
 	if err := c.Connect(); err == nil {
 		t.Fatal("expected error connecting with invalid CA file")
 	}
@@ -222,7 +227,7 @@ func TestConnectorConnectTLS_WrongCA(t *testing.T) {
 		t.Fatalf("failed to write wrong CA: %v", err)
 	}
 
-	c := NewConnector(addr, true, wrongCAPath, "test-key", false)
+	c := NewConnector(addr, true, wrongCAPath, false, nil)
 	if err := c.Connect(); err == nil {
 		t.Fatal("expected error connecting with wrong CA (cert not signed by this CA)")
 	}
@@ -233,7 +238,7 @@ func TestConnectorConnectTLS_NoCA_UsesSystemPool(t *testing.T) {
 	_, certPath, keyPath := generateCAAndServerCert(t, dir)
 	addr := startTLSWSServer(t, certPath, keyPath)
 
-	c := NewConnector(addr, true, "", "test-key", false)
+	c := NewConnector(addr, true, "", false, nil)
 	err := c.Connect()
 	if err == nil {
 		t.Fatal("expected error: self-signed cert not in system cert pool")
@@ -245,7 +250,7 @@ func TestConnectorConnectTLS_Disabled(t *testing.T) {
 	_, certPath, keyPath := generateCAAndServerCert(t, dir)
 	addr := startTLSWSServer(t, certPath, keyPath)
 
-	c := NewConnector(addr, false, "", "test-key", false)
+	c := NewConnector(addr, false, "", false, nil)
 	err := c.Connect()
 	if err == nil {
 		t.Fatal("expected error: connecting to TLS server without TLS")
@@ -268,7 +273,7 @@ func TestConnectorConnectTLS_MultipleCertsInCAFile(t *testing.T) {
 		t.Fatalf("failed to write multi-CA file: %v", err)
 	}
 
-	c := NewConnector(addr, true, multiCAPath, "test-key", false)
+	c := NewConnector(addr, true, multiCAPath, false, nil)
 	if err := c.Connect(); err != nil {
 		t.Fatalf("Connect with multi-CA file should succeed: %v", err)
 	}

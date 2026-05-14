@@ -22,6 +22,10 @@ func (h *Handler) Handle(msg *common.Message) error {
 		return h.handleRegisterOK(msg)
 	case "register_fail":
 		return h.handleRegisterFail(msg)
+	case "register_update":
+		return h.handleRegisterUpdate(msg)
+	case "device_deleted":
+		return h.handleDeviceDeleted(msg)
 	case "pong":
 		return nil
 	case "tunnel_open":
@@ -58,6 +62,54 @@ func (h *Handler) handleRegisterFail(msg *common.Message) error {
 
 	slog.Error("registration failed", "reason", payload.Reason)
 	return fmt.Errorf("registration failed: %s", payload.Reason)
+}
+
+func (h *Handler) handleRegisterUpdate(msg *common.Message) error {
+	var payload common.RegisterUpdatePayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return err
+	}
+
+	identity := h.agent.identity
+	if identity == nil {
+		return nil
+	}
+
+	if payload.EncKeyEncrypted != "" && payload.ServerDHPubkey != "" && identity.DeviceDHPrivkey != "" {
+		encKey, err := identity.DecryptEncKey(payload.EncKeyEncrypted, payload.ServerDHPubkey)
+		if err != nil {
+			slog.Error("failed to decrypt updated enc_key", "error", err)
+			return err
+		}
+
+		identity.EncKey = common.EncodeBytes(encKey)
+		identity.EncEnabled = payload.EncEnabled
+
+		if err := h.agent.cryptoMgr.SetKey(identity.ClientID, encKey); err != nil {
+			slog.Error("failed to update encryption key", "error", err)
+			return err
+		}
+
+		slog.Info("encryption key updated")
+	}
+
+	identity.EncEnabled = payload.EncEnabled
+	if err := identity.Save(""); err != nil {
+		slog.Error("failed to save identity after update", "error", err)
+	}
+
+	return nil
+}
+
+func (h *Handler) handleDeviceDeleted(msg *common.Message) error {
+	identity := h.agent.identity
+	if identity != nil {
+		identity.ClientID = ""
+		identity.EncKey = ""
+		identity.Save("")
+	}
+	slog.Warn("device deleted by admin, will need to re-register")
+	return fmt.Errorf("device deleted by admin")
 }
 
 func (h *Handler) handleTunnelOpen(msg *common.Message) error {
@@ -125,11 +177,8 @@ func (h *Handler) handleTunnelData(msg *common.Message) error {
 		return err
 	}
 
-	if h.agent.crypto == nil {
-		return fmt.Errorf("encryption not available")
-	}
-
-	data, err := h.agent.crypto.Decrypt(payload.Data)
+	clientID := h.agent.GetClientID()
+	data, err := h.agent.cryptoMgr.Decrypt(clientID, payload.Data)
 	if err != nil {
 		return fmt.Errorf("decrypt failed: %w", err)
 	}
