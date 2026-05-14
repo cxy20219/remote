@@ -182,27 +182,6 @@ func (tm *TunnelManager) CloseLocalConn(connID string) {
 	}
 }
 
-// HandleData forwards data from the server to the local service.
-func (tm *TunnelManager) HandleData(connID, tunnelID string, data []byte, isEOF bool) error {
-	conn, err := tm.GetOrCreateLocalConn(connID, tunnelID)
-	if err != nil {
-		tm.SendError(tunnelID, connID, err.Error())
-		return err
-	}
-
-	if _, err := conn.Write(data); err != nil {
-		tm.CloseLocalConn(connID)
-		tm.SendError(tunnelID, connID, err.Error())
-		return err
-	}
-
-	if isEOF {
-		tm.CloseLocalConn(connID)
-	}
-
-	return nil
-}
-
 // HandleLocalResponse forwards local service data back to the server.
 func (tm *TunnelManager) HandleLocalResponse(connID, tunnelID string, data []byte, isEOF bool) error {
 	if _, ok := tm.GetTunnel(tunnelID); !ok {
@@ -256,33 +235,6 @@ func (tm *TunnelManager) SendError(tunnelID, connID, errMsg string) {
 	}
 }
 
-// ReadFromLocal starts a goroutine that reads from one local connection.
-func (tm *TunnelManager) ReadFromLocal(connID, tunnelID string, localConn net.Conn) {
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := localConn.Read(buf)
-			if n > 0 {
-				if err := tm.HandleLocalResponse(connID, tunnelID, buf[:n], false); err != nil {
-					slog.Warn("failed to send response to server",
-						"conn_id", connID,
-						"error", err)
-					break
-				}
-			}
-			if err != nil {
-				if err != io.EOF {
-					slog.Warn("local conn read error",
-						"conn_id", connID,
-						"error", err)
-				}
-				tm.HandleLocalResponse(connID, tunnelID, nil, true)
-				break
-			}
-		}
-	}()
-}
-
 // OpenTunnel asks the server to create a new tunnel.
 func (tm *TunnelManager) OpenTunnel(localAddr string, localPort int, protocol string) (string, int, error) {
 	tunnelID := fmt.Sprintf("tunnel-%d", time.Now().UnixNano())
@@ -334,13 +286,13 @@ func (tm *TunnelManager) StartReadLoop(connID, tunnelID string) {
 		tm.mu.Unlock()
 		return
 	}
-	tm.readLoops[connID] = true
-
 	lc, ok := tm.localConns[connID]
-	tm.mu.Unlock()
 	if !ok {
+		tm.mu.Unlock()
 		return
 	}
+	tm.readLoops[connID] = true
+	tm.mu.Unlock()
 
 	go tm.readFromLocal(connID, tunnelID, lc.Conn)
 }

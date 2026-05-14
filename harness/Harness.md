@@ -84,8 +84,11 @@ go vet ./internal/...
 | `internal/common/identity.go` | ed25519 签名/验证、x25519 ECDH 密钥交换、HKDF 派生 |
 | `internal/server/persist.go` | `StateStore` 异步原子写入 `server-state.json` |
 | `internal/server/device_mgr.go` | `DeviceManager` pending/authorized 审批状态机 |
-| `internal/server/tunnel.go` | 隧道管理，`handleExternalConn` 通过 `CryptoManager` 加密 |
+| `internal/server/tunnel.go` | 隧道管理，`bufPool` sync.Pool 复用 32KB buffer |
+| `internal/server/client.go` | `ClientManager`+`DeviceQuerier` 接口，支持设备级 IP 白名单查询 |
 | `internal/agent/identity.go` | Agent 本地 `~/.goremote/identity` 管理，ECDH 解密 enc_key |
+| `internal/agent/agent.go` | Agent 主循环（pending 等待审批 → reauth 重连，含 pendingApproval 标志） |
+| `internal/agent/connector.go` | WebSocket 连接（32KB buffer），`send`/`receive` 封装 |
 | `web/static.go` | `go:embed static` 嵌入 Web 界面到服务端二进制 |
 
 ## harness 资源路由
@@ -97,6 +100,7 @@ go vet ./internal/...
 | SSH 隧道直通内网 | [workflow/ssh-tunnel-direct-access.md](workflow/ssh-tunnel-direct-access.md) | [references/tunnel-design.md](references/tunnel-design.md) |
 | 零配置架构理解 | [references/zero-config-design.md](references/zero-config-design.md) | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) |
 | 零配置测试踩坑 | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) |
+| **多平台集成测试经验** | [experience/multi-platform-testing.md](experience/multi-platform-testing.md) | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) |
 | 编译/部署报错排查 | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) | [experience/encrypted-tunnel-lessons.md](experience/encrypted-tunnel-lessons.md) |
 | 部署环境运维坑 | [experience/remote-deployment-pitfalls.md](experience/remote-deployment-pitfalls.md) | — |
 | Gin 路由/认证问题 | [experience/gin-auth-route-tips.md](experience/gin-auth-route-tips.md) | — |
@@ -104,6 +108,7 @@ go vet ./internal/...
 | 制作 Release | [workflow/gitee-release-publish.md](workflow/gitee-release-publish.md) | [experience/gitee-release-utf8.md](experience/gitee-release-utf8.md) |
 | TLS 证书问题 | [references/tls-setup.md](references/tls-setup.md) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
 | 端口扫描/限流排查 | [references/tunnel-design.md](references/tunnel-design.md#30-端口防扫描anti-scanning) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
+| Android Agent 部署 | [experience/multi-platform-testing.md](experience/multi-platform-testing.md#7-android-agent-部署要点) | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) |
 | 密码/密钥/公网地址 | **禁止写入 harness 文档**，使用占位符 | `CHANGE-ME` / `your-server-ip` |
 
 ## 安全机制
@@ -189,7 +194,10 @@ go vet ./internal/...
 | Agent 注册被拒绝 | 管理员拒绝或设备被删除，清空 `~/.goremote/identity` 重新注册 |
 | 审批后 Agent 无反应 | 重启 Agent（携带已有 identity 重连自动获取密钥） |
 | 隧道不通 | 确认本地服务监听，`ss -tlnp | grep <port>` 检查 |
+| **隧道偶尔断开**隧道 EOF 导致 Agent 重连 | Agent 日志搜 `ciphertext too short`，需应用 handler.go EOF 修复 |
 | server-state.json 损坏 | 手工修复或删除重启（设备信息丢失） |
+| **plink/pscp 首次连接失败** | 使用 `-hostkey` 参数缓存主机密钥，`echo y \| plink` 无效 |
+| **nc 隧道测试无响应** | 127.0.0.1 被黑名单误伤，加入全局白名单或应用 localhost 跳过修复 |
 | PowerShell 命令转义问题 | 远程 plink 命令用单引号包裹 |
 | Start-Process 无法重定向 | 使用 `-WindowStyle Hidden` 或 PowerShell Job 替代 |
 | 密码遗忘 | 删除 `server-state.json` 重启重新生成 |

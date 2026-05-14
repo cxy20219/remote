@@ -8,6 +8,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+type DeviceQuerier interface {
+	GetDeviceByID(id string) *DeviceState
+}
+
 type Client struct {
 	ClientID   string
 	Hostname   string
@@ -23,12 +27,17 @@ type Client struct {
 type ClientManager struct {
 	mu      sync.RWMutex
 	clients map[string]*Client
+	store   DeviceQuerier
 }
 
 func NewClientManager() *ClientManager {
 	return &ClientManager{
 		clients: make(map[string]*Client),
 	}
+}
+
+func (m *ClientManager) SetStore(store DeviceQuerier) {
+	m.store = store
 }
 
 func (m *ClientManager) Add(client *Client) {
@@ -74,7 +83,7 @@ func (m *ClientManager) IsIPWhitelisted(ip string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, client := range m.clients {
-		device := getDeviceStateForClient(client)
+		device := m.getDeviceStateForClient(client)
 		if device != nil && isIPWhitelisted(ip, device.IPWhitelist) {
 			return true
 		}
@@ -82,19 +91,25 @@ func (m *ClientManager) IsIPWhitelisted(ip string) bool {
 	return false
 }
 
-func getDeviceStateForClient(client *Client) *DeviceState {
-	return nil
+func (m *ClientManager) getDeviceStateForClient(client *Client) *DeviceState {
+	if m.store == nil || client == nil || client.ClientID == "" {
+		return nil
+	}
+	return m.store.GetDeviceByID(client.ClientID)
 }
 
 func (m *ClientManager) GetIPWhitelist(clientID string) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	client, ok := m.clients[clientID]
-	if !ok {
+	if !ok || m.store == nil {
 		return nil
 	}
-	_ = client
-	return nil
+	device := m.store.GetDeviceByID(client.ClientID)
+	if device == nil {
+		return nil
+	}
+	return device.IPWhitelist
 }
 
 func (c *Client) WriteJSON(v interface{}) (err error) {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -115,7 +116,20 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 
 	var encKeyEncrypted, serverDHPubkey string
 	if device.EncEnabled && device.DeviceDHPubkey != "" {
-		_, encKeyEncrypted, serverDHPubkey, _ = h.server.deviceMgr.RegenerateEncKey(device.ID)
+		key, err := hex.DecodeString(device.EncKey)
+		if err == nil {
+			agentDHPubkey, dhErr := hex.DecodeString(device.DeviceDHPubkey)
+			if dhErr == nil {
+				var agentDHPub [32]byte
+				copy(agentDHPub[:], agentDHPubkey)
+				serverDHPriv, serverDHPub, dhErr := common.GenerateDHKeypair()
+				if dhErr == nil {
+					sharedSecret, _ := common.DHSharedSecret(serverDHPriv, &agentDHPub)
+					encKeyEncrypted, _ = common.EncryptKeyWithSharedSecret(key, sharedSecret)
+					serverDHPubkey = common.EncodeBytes(serverDHPub[:])
+				}
+			}
+		}
 	}
 
 	okPayload := common.RegisterOKPayload{
@@ -246,6 +260,10 @@ func (h *Handler) handleTunnelData(client *Client, msg *common.Message) error {
 	var payload common.TunnelDataPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return err
+	}
+
+	if payload.IsEOF && payload.Data == "" {
+		return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, nil, true)
 	}
 
 	tunnel, ok := h.server.tunnelManager.GetTunnel(payload.TunnelID)

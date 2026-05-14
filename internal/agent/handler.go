@@ -50,6 +50,7 @@ func (h *Handler) handleRegisterOK(msg *common.Message) error {
 	}
 
 	h.agent.SetClientID(payload.ClientID)
+	h.agent.processRegisterOK(&payload)
 	slog.Info("registered successfully", "client_id", payload.ClientID)
 	return nil
 }
@@ -175,6 +176,11 @@ func (h *Handler) handleTunnelData(msg *common.Message) error {
 	var payload common.TunnelDataPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return err
+	}
+
+	if payload.IsEOF && payload.Data == "" {
+		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
+		return nil
 	}
 
 	clientID := h.agent.GetClientID()

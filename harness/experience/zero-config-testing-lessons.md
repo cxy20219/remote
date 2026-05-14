@@ -117,7 +117,9 @@ Agent 注册后进入 pending 状态，连接保持存活等待审批。如果�
 
 ### 注意
 
-pending 连接最长保持 10 分钟，超时后自动断开。Agent 会重连并重新注册。
+pending 连接的服务端读超时为 60 秒。Agent 在 pending 状态下**不主动发送心跳**（`handlePending` 只读取消息），因此若审批未在 60 秒内完成，服务端读超时断开连接，Agent 重连后获得新的 `client_id`，需重新审批。
+
+**影响**：审批操作必须在 Agent 首次连接后 60 秒内完成。超时后即使管理员审批，原连接已断开，`register_ok` 发送到已关闭的 WebSocket。Agent 每次重连都生成新的 pending 记录。
 
 ## 7. ECDH 密钥交换的完整链路追踪
 

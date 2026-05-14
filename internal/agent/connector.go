@@ -60,8 +60,8 @@ func (c *Connector) Connect() error {
 	slog.Info("connecting to server", "addr", c.serverAddr)
 
 	dialer := websocket.Dialer{
-		ReadBufferSize:   1024,
-		WriteBufferSize:  1024,
+		ReadBufferSize:   32 * 1024,
+		WriteBufferSize:  32 * 1024,
 		HandshakeTimeout: 10 * time.Second,
 	}
 

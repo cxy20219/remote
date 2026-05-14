@@ -13,6 +13,13 @@ import (
 	"goremote/internal/common"
 )
 
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
+
 // Tunnel 隧道信息
 type Tunnel struct {
 	TunnelID   string
@@ -390,24 +397,31 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 
 		remoteIP := extractIP(conn.RemoteAddr().String())
 
-		// Check global blacklist first
-		if tm.server.blacklist.IsBlacklisted(remoteIP) {
-			slog.Warn("external connection from blacklisted IP, rejecting",
-				"remote_ip", remoteIP, "tunnel_id", tunnelID)
-			conn.Close()
-			continue
-		}
-
-		// Check global whitelist
-		if tm.server.IsGloballyWhitelisted(remoteIP) {
-			slog.Debug("external connection globally whitelisted, bypassing rate limit",
-				"remote_ip", remoteIP, "tunnel_id", tunnelID)
-		} else if tm.server.clients != nil && tunnel.ClientID != "" {
-			// Check if IP is whitelisted for this client's tunnels
-			whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID)
-			if isIPWhitelisted(remoteIP, whitelist) {
-				slog.Debug("external connection whitelisted, bypassing rate limit",
-					"remote_ip", remoteIP, "tunnel_id", tunnelID, "client_id", tunnel.ClientID)
+		if remoteIP == "127.0.0.1" || remoteIP == "::1" {
+			slog.Debug("external connection from localhost, bypassing rate limit",
+				"tunnel_id", tunnelID)
+		} else {
+			if tm.server.blacklist.IsBlacklisted(remoteIP) {
+				slog.Warn("external connection from blacklisted IP, rejecting",
+					"remote_ip", remoteIP, "tunnel_id", tunnelID)
+				conn.Close()
+				continue
+			}
+			if tm.server.IsGloballyWhitelisted(remoteIP) {
+				slog.Debug("external connection globally whitelisted, bypassing rate limit",
+					"remote_ip", remoteIP, "tunnel_id", tunnelID)
+			} else if tm.server.clients != nil && tunnel.ClientID != "" {
+				whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID)
+				if isIPWhitelisted(remoteIP, whitelist) {
+					slog.Debug("external connection whitelisted, bypassing rate limit",
+						"remote_ip", remoteIP, "tunnel_id", tunnelID, "client_id", tunnel.ClientID)
+				} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
+					slog.Warn("external connection rate limited (anti-scanning)",
+						"remote_ip", remoteIP, "tunnel_id", tunnelID)
+					tm.server.blacklist.AddViolation(remoteIP)
+					conn.Close()
+					continue
+				}
 			} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
 				slog.Warn("external connection rate limited (anti-scanning)",
 					"remote_ip", remoteIP, "tunnel_id", tunnelID)
@@ -415,12 +429,6 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 				conn.Close()
 				continue
 			}
-		} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
-			slog.Warn("external connection rate limited (anti-scanning)",
-				"remote_ip", remoteIP, "tunnel_id", tunnelID)
-			tm.server.blacklist.AddViolation(remoteIP)
-			conn.Close()
-			continue
 		}
 
 		// 生成 connID 并处理连接
@@ -431,23 +439,28 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 
 // handleExternalConn 处理外部连接
 func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extConn net.Conn) {
-	tm.AddExternalConn(connID, tunnel.TunnelID, extConn)
+	tunnelID := tunnel.TunnelID
+	clientID := tunnel.ClientID
+	client := tunnel.Client
+
+	tm.AddExternalConn(connID, tunnelID, extConn)
 	defer tm.RemoveExternalConn(connID)
 
 	slog.Info("external connection accepted",
 		"conn_id", connID,
-		"tunnel_id", tunnel.TunnelID,
+		"tunnel_id", tunnelID,
 		"remote", extConn.RemoteAddr())
 
-	// 通知 Agent 有新的外部连接，等待本地连接建立
-	// Agent 收到 tunnel_data 时会建立到本地服务的连接
+	extConn.SetReadDeadline(time.Now().Add(15 * time.Minute))
 
-	// 用于缓冲读写
-	buf := make([]byte, 32*1024)
+	bufPtr := bufPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer bufPool.Put(bufPtr)
+
 	for {
 		n, err := extConn.Read(buf)
 		if n > 0 {
-			encoded, encErr := tm.server.cryptoMgr.Encrypt(tunnel.ClientID, buf[:n])
+			encoded, encErr := tm.server.cryptoMgr.Encrypt(clientID, buf[:n])
 			if encErr != nil {
 				slog.Error("failed to encrypt tunnel data",
 					"conn_id", connID,
@@ -455,13 +468,18 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 				return
 			}
 			payload := common.TunnelDataPayload{
-				TunnelID: tunnel.TunnelID,
+				TunnelID: tunnelID,
 				ConnID:   connID,
 				Data:     encoded,
 				IsEOF:    false,
 			}
 			payloadJSON, _ := json.Marshal(payload)
-			err := tunnel.Client.WriteJSON(common.Message{
+			if client == nil {
+				slog.Warn("tunnel client disconnected, dropping data",
+					"tunnel_id", tunnelID)
+				return
+			}
+			err := client.WriteJSON(common.Message{
 				Type:    "tunnel_data",
 				Payload: payloadJSON,
 			})
@@ -478,18 +496,19 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 					"conn_id", connID,
 					"error", err)
 			}
-			// 发送 EOF 通知
 			payload := common.TunnelDataPayload{
-				TunnelID: tunnel.TunnelID,
+				TunnelID: tunnelID,
 				ConnID:   connID,
 				Data:     "",
 				IsEOF:    true,
 			}
 			payloadJSON, _ := json.Marshal(payload)
-			tunnel.Client.WriteJSON(common.Message{
-				Type:    "tunnel_data",
-				Payload: payloadJSON,
-			})
+			if client != nil {
+				client.WriteJSON(common.Message{
+					Type:    "tunnel_data",
+					Payload: payloadJSON,
+				})
+			}
 			return
 		}
 	}

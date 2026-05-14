@@ -45,17 +45,23 @@ $env:GOOS="windows"; $env:GOARCH="amd64"
 go build -ldflags "-s -w" -o harness/assets/bin/agent-windows-amd64.exe ./cmd/agent/
 ```
 
-### 2. 检查服务器状态
+### 2. 检查服务器状态（首次连接需缓存主机密钥）
 
 ```powershell
+# 首次连接：plink -batch 会因未缓存主机密钥而失败，需用 -hostkey 参数
+# 指纹来自首次连接失败的提示信息
+$hostkey = "ssh-ed25519 255 SHA256:服务器指纹"
+
 # 检查磁盘
-plink -batch -pw "PASSWORD" root@YOUR_SERVER "df -h /root"
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER "df -h /root"
 
 # 停止旧进程（需正确处理 PowerShell 转义）
-plink -batch -pw "PASSWORD" root@YOUR_SERVER 'kill -9 $(pgrep -f server) 2>/dev/null; mkdir -p /root/goremote/data; echo ready'
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'kill -9 $(pgrep -f server) 2>/dev/null; mkdir -p /root/goremote/data; echo ready'
 ```
 
 > **坑点**：PowerShell 双引号中 `$(...)` 会被展开为子表达式。必须用**单引号**包裹远程命令，或把命令存入变量再传给 plink。
+> 
+> **坑点**：`echo y \| plink ...` 管道方式不可用——plink 直接从控制台读取，不从 stdin。必须用 `-hostkey` 参数。
 
 ### 3. 上传并启动服务端
 
@@ -92,6 +98,17 @@ Remove-Item "$env:USERPROFILE\.goremote\identity" -ErrorAction SilentlyContinue
 Start-Process -FilePath ".\agent-windows-amd64.exe" -ArgumentList "--server YOUR_SERVER:8080" -WindowStyle Hidden
 ```
 
+### 5a. 启动 Agent（Android 手机 via adb）
+
+```powershell
+# Android 上 os.UserHomeDir() 返回 /（只读），必须指定可写路径
+# 方案A：设置 HOME 环境变量
+adb shell "HOME=/data/local/tmp nohup /data/local/tmp/agent --server YOUR_SERVER:8080 > /data/local/tmp/agent.log 2>&1 &"
+
+# 方案B：使用 --identity-dir 参数（推荐）
+adb shell "nohup /data/local/tmp/agent --server YOUR_SERVER:8080 --identity-dir /data/local/tmp > /data/local/tmp/agent.log 2>&1 &"
+```
+
 预期日志输出：
 ```
 "msg":"registering with new identity"
@@ -122,7 +139,17 @@ Agent 自动收到 `register_ok` 和加密密钥，日志出现：
 "msg":"registered successfully","client_id":"client-ff155a09"
 ```
 
-### 7. 验证隧道
+### 7. 将 127.0.0.1 加入全局白名单
+
+```powershell
+# 防止服务端扫描器将 localhost 加入黑名单导致本地 nc 测试被拒
+$wl = Invoke-WebRequest -Uri "http://YOUR_SERVER:8080/api/security/global-whitelist" -Method PUT `
+  -Body '{"ips":["127.0.0.1"]}' -ContentType "application/json" -WebSession $session -UseBasicParsing
+$wl.Content
+# → {"global_whitelist":["127.0.0.1"]}
+```
+
+### 8. 验证隧道
 
 ```powershell
 # 1. 在本机起一个测试服务（TCP 回声或 HTTP）
@@ -137,7 +164,8 @@ $tunnel = Invoke-WebRequest -Uri "http://YOUR_SERVER:8080/api/tunnels" -Method P
 $tunnel.Content
 
 # 3. 在服务端验证数据贯通
-plink -batch -pw "PASSWORD" root@YOUR_SERVER 'echo test | timeout 3 nc -w 2 127.0.0.1 10000 2>&1'
+$hostkey = "ssh-ed25519 255 SHA256:服务器指纹"
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'echo test | timeout 3 nc -w 2 127.0.0.1 10000 2>&1'
 ```
 
 预期输出：测试服务响应的数据（如 `HELLO FROM WINDOWS TEST SERVER`）。

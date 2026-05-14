@@ -94,6 +94,7 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 		portLimiter:     NewRateLimiter(settings.MaxConnPerMin, time.Minute),
 	}
 
+	s.clients.SetStore(stateStore)
 	s.handler = NewHandler(s)
 
 	if config.Tunnel.Enabled {
@@ -102,8 +103,8 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 
 	s.upgrader = websocket.Upgrader{
 		CheckOrigin:     s.buildOriginChecker(config.Security.AllowedOrigins),
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+		ReadBufferSize:  32 * 1024,
+		WriteBufferSize: 32 * 1024,
 	}
 
 	return s

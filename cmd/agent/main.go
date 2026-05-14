@@ -18,6 +18,7 @@ func main() {
 	tlsCA := flag.String("tls-ca", "", "TLS CA certificate path")
 	insecureSkipVerify := flag.Bool("tls-insecure", false, "skip TLS certificate verification")
 	configPath := flag.String("config", "", "config file path (optional, CLI flags take precedence)")
+	identityDir := flag.String("identity-dir", "", "identity storage directory (default: $HOME/.goremote)")
 	flag.Parse()
 
 	agentCfg := agent.DefaultConfig()
@@ -55,9 +56,8 @@ func main() {
 
 	agent.InitLogger(agentCfg.Log.Level, agentCfg.Log.File)
 
-	identityDir := ""
-
-	identity, err := agent.LoadIdentity(identityDir)
+	identityDirVal := *identityDir
+	identity, err := agent.LoadIdentity(identityDirVal)
 	if err != nil {
 		slog.Error("failed to load identity", "error", err)
 		os.Exit(1)
@@ -65,7 +65,7 @@ func main() {
 
 	if identity == nil {
 		slog.Info("no existing identity found, creating new one")
-		identity, err = agent.CreateIdentity(identityDir, agentCfg.Server.Address)
+		identity, err = agent.CreateIdentity(identityDirVal, agentCfg.Server.Address)
 		if err != nil {
 			slog.Error("failed to create identity", "error", err)
 			os.Exit(1)
@@ -79,7 +79,7 @@ func main() {
 		identity.ServerURL = agentCfg.Server.Address
 		identity.ClientID = ""
 		identity.EncKey = ""
-		if err := identity.Save(identityDir); err != nil {
+		if err := identity.Save(identityDirVal); err != nil {
 			slog.Error("failed to save identity", "error", err)
 		}
 	}

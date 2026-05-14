@@ -182,6 +182,7 @@ func (a *Agent) connect() error {
 				a.identity.ClientID = payload.ClientID
 				a.identity.Save("")
 			}
+			a.setPendingApproval(true)
 			slog.Info("waiting for admin approval", "client_id", payload.ClientID)
 			return nil
 
@@ -258,6 +259,8 @@ func (a *Agent) handleConnection() error {
 
 		if err := a.handler.Handle(msg); err != nil {
 			slog.Error("failed to handle message", "type", msg.Type, "error", err)
+			close(hbDone)
+			return err
 		}
 	}
 }
