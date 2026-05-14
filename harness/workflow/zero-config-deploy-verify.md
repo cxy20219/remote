@@ -101,11 +101,18 @@ Start-Process -FilePath ".\agent-windows-amd64.exe" -ArgumentList "--server YOUR
 ### 5a. 启动 Agent（Android 手机 via adb）
 
 ```powershell
-# Android 上 os.UserHomeDir() 返回 /（只读），必须指定可写路径
-# 方案A：设置 HOME 环境变量
-adb shell "HOME=/data/local/tmp nohup /data/local/tmp/agent --server YOUR_SERVER:8080 > /data/local/tmp/agent.log 2>&1 &"
+# 0. 确认手机架构（当前仅 arm64 被测试验证）
+adb shell getprop ro.product.cpu.abi
 
-# 方案B：使用 --identity-dir 参数（推荐）
+# 1. 交叉编译 arm64 Agent
+$env:GOOS="linux"; $env:GOARCH="arm64"
+go build -ldflags "-s -w" -o bin/agent-linux-arm64 ./cmd/agent
+
+# 2. 推送到手机
+adb push bin/agent-linux-arm64 /data/local/tmp/agent
+adb shell chmod +x /data/local/tmp/agent
+
+# 3. 启动（--identity-dir 参数必须指定可写路径，因为 Android 的 HOME=/ 只读）
 adb shell "nohup /data/local/tmp/agent --server YOUR_SERVER:8080 --identity-dir /data/local/tmp > /data/local/tmp/agent.log 2>&1 &"
 ```
 
@@ -113,6 +120,18 @@ adb shell "nohup /data/local/tmp/agent --server YOUR_SERVER:8080 --identity-dir 
 ```
 "msg":"registering with new identity"
 "msg":"waiting for admin approval","client_id":"client-ff155a09"
+```
+
+注意：adb shell 断开后 nohup 进程继续运行。再次连接后可查看日志。
+
+### 5b. 启动 Agent（内网 Linux 服务器）
+
+```bash
+# 交叉编译 Linux amd64 后上传，启动
+chmod +x ~/agent
+rm -rf ~/.goremote  # 可选：清理旧身份进行全新注册
+nohup ./agent --server YOUR_SERVER:8080 > agent.log 2>&1 &
+tail -5 agent.log
 ```
 
 ### 6. 审批设备
@@ -170,7 +189,49 @@ plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'echo test | time
 
 预期输出：测试服务响应的数据（如 `HELLO FROM WINDOWS TEST SERVER`）。
 
-### 8. 验证 key 轮换
+### 8a. 验证高并发和长连接稳定性
+
+```powershell
+# 从服务端测试高并发 SSH 连接（需服务端安装 sshpass）
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'apt-get install -y sshpass > /dev/null 2>&1'
+
+# 并发测试：同时启动 10 个 SSH 会话
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER @'
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  sshpass -p 'PASSWORD' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p TUNNEL_PORT user@127.0.0.1 "echo SESSION_$i; hostname" &
+done
+wait
+echo ALL_CONCURRENT_DONE
+'@
+
+# 数据传输测试（5MB 加密传输）
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER @'
+sshpass -p 'PASSWORD' ssh -o StrictHostKeyChecking=no -p TUNNEL_PORT user@127.0.0.1 "dd if=/dev/zero bs=1M count=5 2>/dev/null | md5sum; echo DATA_TRANSFER_OK"
+'@
+
+# 长时间连接测试：检查 Agent 日志确认心跳正常
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER "grep -c 'client reconnected' /root/goremote/server.log"
+# 预期：2-4 次以内（仅重启/断线场景），非持续增长
+```
+
+预期结果：
+- 10 并发 SSH ≥ 8 成功
+- 5MB 数据传输 md5 一致
+- 服务端日志无持续连接断开重连记录
+
+### 8b. 验证服务端重启后的设备恢复
+
+```powershell
+# 模拟服务端重启
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'fuser -k 8080/tcp 2>/dev/null; cd /root/goremote && nohup ./server --data /root/goremote/data > server.log 2>&1 & sleep 2'
+
+# 检查 Agent 是否自动重连成功（已有 identity 应触发 reauth）
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'grep -E "reconnect|register_ok" /root/goremote/server.log | tail -3'
+
+# 注意：如果 server-state.json 丢失（如误删），所有设备消失，Agent 需重新审批
+```
+
+### 8c. 验证 key 轮换
 
 ```powershell
 $regen = Invoke-WebRequest -Uri "http://YOUR_SERVER:8080/api/devices/client-ff155a09/regen-key" -Method PUT -WebSession $session -UseBasicParsing
@@ -194,6 +255,10 @@ $regen.Content
 | key 轮换 | `PUT /api/devices/:id/regen-key` | `status: key_regenerated` |
 | 断线重连 | kill agent → 重启 | `client reconnected` |
 | 状态持久化 | 检查 server-state.json | 设备、设置完整 |
+| 高并发 SSH | 10+ 并发 SSH 会话 | ≥ 8/10 成功 |
+| 大数据传输 | 5MB 数据通过隧道加密传输 | md5 一致 |
+| 服务端重启恢复 | fuser 重启 server | Agent 自动 reauth 重连 |
+| Android Agent | adb push + nohup 启动 | 注册审批后加密激活 |
 
 ## 失败回退
 
@@ -202,9 +267,11 @@ $regen.Content
 | Agent 报 `unauthorized` | 设备被管理员删除 | 清空 `~/.goremote/identity` 重新注册 |
 | 隧道不通 | 本地端口未监听 | 确认本地服务运行，`ss -tlnp \| grep <port>` |
 | 审批后 Agent 无反应 | enc_key 传输失败 | 重新启动 Agent（携带已有 identity 自动重连获取密钥） |
+| Agent 不断注册新 pending ID | 审批未在 60 秒内完成，pending 连接超时；或服务端状态被重置 | 在 60 秒内审批；或先清空 Agent identity 文件再重新注册 |
+| agent.log 出现 `registration failed` | 服务端重启后旧设备消失 | 清空 `~/.goremote/identity` 重新注册，或在服务端重新审批 |
+| agent.log 出现 `non-fatal message error, continuing` | tunnel_data 解密失败或外部连接已关闭 | 正常行为（端口扫描器的短连接），不影响 Agent 连接 |
+| server-state.json 损坏 | 磁盘写异常 | 手工修复 JSON 或删除后重启（密钥和设备信息丢失） |
 | 服务端启动报端口占用 | 旧进程未清理 | `fuser -k 8080/tcp` 再启动 |
-| `server-state.json` 损坏 | 磁盘写异常 | 手工修复 JSON 或删除后重启（密钥和设备信息丢失） |
-
 ## 注意事项
 
 - **首次启动前必须清理旧状态**：旧版 `server-state.json` 的格式与新版不兼容，必须删除重新生成

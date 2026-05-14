@@ -12,6 +12,13 @@ import (
 	"goremote/internal/common"
 )
 
+var agentBufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
+
 // Tunnel tracks agent-side tunnel metadata.
 type Tunnel struct {
 	TunnelID   string
@@ -304,7 +311,10 @@ func (tm *TunnelManager) readFromLocal(connID, tunnelID string, localConn net.Co
 		tm.mu.Unlock()
 	}()
 
-	buf := make([]byte, 32*1024)
+	bufPtr := agentBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer agentBufPool.Put(bufPtr)
+
 	for {
 		n, err := localConn.Read(buf)
 		if n > 0 {

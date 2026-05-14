@@ -2,11 +2,11 @@
 # 文档索引，按需查阅
 
 - [Harness 开发指南](harness/Harness.md)：技术栈、目录结构、常用命令、开发规范、安全机制、API 端点、构建部署、常见问题、资源路由（含新旧架构）
-- [零配置部署验证流程](harness/workflow/zero-config-deploy-verify.md)：零配置架构从零部署到功能验证的全流程，含交叉编译、服务端启动、admin 密码获取、Agent 注册、设备审批、隧道贯通验证、密钥轮换验证（最后验证：2026-05-14）
+- [零配置部署验证流程](harness/workflow/zero-config-deploy-verify.md)：零配置架构从零部署到功能验证的全流程，含交叉编译、服务端启动、admin 密码获取、Agent 注册、设备审批、隧道贯通验证、密钥轮换验证、Android adb 部署、Android Agent 启动、高并发 SSH 吞吐测试（10+ 并发）、大数据传输测试（5MB）、服务端重启恢复、失败回退表（最后验证：2026-05-14）
 - [加密隧道部署与验证流程](harness/workflow/encrypted-tunnel-deploy-verify.md)：旧版（共享 auth.key）加密隧道部署验证流程，含交叉编译、磁盘检查、部署启动、隧道创建、连通性验证（最后验证：2026-05-12）
 - [SSH 隧道直通内网服务流程](harness/workflow/ssh-tunnel-direct-access.md)：SSH 隧道从公网访问内网服务的完整流程，包括隧道创建、SSH 直连内网、部署服务、问题排查等实操步骤
 - [Gitee Release 发布流程](harness/workflow/gitee-release-publish.md)：交叉编译全平台二进制、创建 Gitee Release、上传附件的完整步骤，含 API 调用注意事项和失败回退
-- [多平台集成测试实战经验](harness/experience/multi-platform-testing.md)：多端（Linux/Windows/Android）全流程测试经验，涵盖 pendingApproval bug、EOF 解密崩溃、pending 无心跳超时、localhost 黑名单误伤、IP 白名单空桩、plink 主机密钥缓存、Android 部署要点、已知代码问题列表
+- [多平台集成测试实战经验](harness/experience/multi-platform-testing.md)：多端（Linux/Windows/Android）全流程测试经验，涵盖 pendingApproval bug、EOF 解密崩溃、pending 无心跳超时、localhost 黑名单误伤、IP 白名单空桩、plink 主机密钥缓存、Android 部署要点、已知代码问题列表；新增：非致命 handler 错误隔离、AllocatePort TOCTOU 修复、ReadDeadline 刷新、Agent sync.Pool 优化、高并发 SSH 测试数据、pending 60s 超时困境、服务端重启身份漂移
 - [零配置测试与调试经验](harness/experience/zero-config-testing-lessons.md)：零配置架构测试踩坑记录，包括 PowerShell 远程命令转义、Agent 后台启动、fuser 安全、测试服务搭建、认证 Cookie、ECDH 密钥链路追踪、日志字段映射、pending 超时说明
 - [GoRemote 调试开发经验](harness/experience/go-remote-debugging.md)：综合调试排查手册，涵盖 TLS、PowerShell 坑点、Agent 启动、配置管理、隧道调试、交叉编译、磁盘管理、安全功能测试、Android adb 部署和常见错误速查
 - [加密隧道开发实战经验](harness/experience/encrypted-tunnel-lessons.md)：加密功能开发中的踩坑记录，包括 Go stdlib crypto/hkdf 不可用、磁盘满导致上传失败、swag 文档缺失、PowerShell curl 转义、plink 主机密钥等

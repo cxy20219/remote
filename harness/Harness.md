@@ -100,7 +100,11 @@ go vet ./internal/...
 | SSH 隧道直通内网 | [workflow/ssh-tunnel-direct-access.md](workflow/ssh-tunnel-direct-access.md) | [references/tunnel-design.md](references/tunnel-design.md) |
 | 零配置架构理解 | [references/zero-config-design.md](references/zero-config-design.md) | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) |
 | 零配置测试踩坑 | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) |
-| **多平台集成测试经验** | [experience/multi-platform-testing.md](experience/multi-platform-testing.md) | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) |
+| 多平台集成测试经验 | [experience/multi-platform-testing.md](experience/multi-platform-testing.md) | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) |
+| 代码安全与性能优化审查 | [experience/multi-platform-testing.md#9-已修正的代码问题列表](experience/multi-platform-testing.md#9-已修正的代码问题列表) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
+| 高并发 SSH 吞吐测试 | [workflow/zero-config-deploy-verify.md#8a-验证高并发和长连接稳定性](workflow/zero-config-deploy-verify.md) | [experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果](experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果) |
+| 服务端重启恢复流程 | [workflow/zero-config-deploy-verify.md#8b-验证服务端重启后的设备恢复](workflow/zero-config-deploy-verify.md) | [experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移](experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移) |
+| pending 连接超时排查 | [experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境](experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境) | [experience/zero-config-testing-lessons.md#6-pending-连接的生命周期](experience/zero-config-testing-lessons.md#6-pending-连接的生命周期) |
 | 编译/部署报错排查 | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) | [experience/encrypted-tunnel-lessons.md](experience/encrypted-tunnel-lessons.md) |
 | 部署环境运维坑 | [experience/remote-deployment-pitfalls.md](experience/remote-deployment-pitfalls.md) | — |
 | Gin 路由/认证问题 | [experience/gin-auth-route-tips.md](experience/gin-auth-route-tips.md) | — |
@@ -194,7 +198,7 @@ go vet ./internal/...
 | Agent 注册被拒绝 | 管理员拒绝或设备被删除，清空 `~/.goremote/identity` 重新注册 |
 | 审批后 Agent 无反应 | 重启 Agent（携带已有 identity 重连自动获取密钥） |
 | 隧道不通 | 确认本地服务监听，`ss -tlnp | grep <port>` 检查 |
-| **隧道偶尔断开**隧道 EOF 导致 Agent 重连 | Agent 日志搜 `ciphertext too short`，需应用 handler.go EOF 修复 |
+| **隧道偶尔断开**隧道 EOF 导致 Agent 重连 | Agent 日志搜 `ciphertext too short`，已修复（跳过 EOF 解密） |
 | server-state.json 损坏 | 手工修复或删除重启（设备信息丢失） |
 | **plink/pscp 首次连接失败** | 使用 `-hostkey` 参数缓存主机密钥，`echo y \| plink` 无效 |
 | **nc 隧道测试无响应** | 127.0.0.1 被黑名单误伤，加入全局白名单或应用 localhost 跳过修复 |
@@ -202,6 +206,11 @@ go vet ./internal/...
 | Start-Process 无法重定向 | 使用 `-WindowStyle Hidden` 或 PowerShell Job 替代 |
 | 密码遗忘 | 删除 `server-state.json` 重启重新生成 |
 | 扫描器连接日志噪音 | 不影响运行，是正常行为 |
+| Agent 日志出现 `non-fatal message error, continuing` | 正常行为，端口扫描器短连接造成，不影响 Agent |
+| Agent 不断注册新的 pending ID | 审批超过 60 秒 pending 超时断开。需在 60 秒内审批或让 Agent 发心跳 |
+| 服务端重启后 Agent 无法重连 | server-state.json 丢失导致设备消失，清空 Agent identity 文件重新注册 |
+| 高并发 SSH 部分报 `Connection closed` | SSH 服务端连接数限制，非隧道层问题 |
+| pending 超时断开 | Agent pending 状态不发心跳，60 秒后服务端断开（设计限制） |
 
 ## 测试注意
 

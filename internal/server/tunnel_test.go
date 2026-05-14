@@ -16,9 +16,12 @@ func TestSetPortRange_UpdatesPortStatus(t *testing.T) {
 		t.Fatalf("initial range: expected 10000-20000, got %d-%d", status.RangeStart, status.RangeEnd)
 	}
 
-	port, err := tm.AllocatePort()
+	port, ln, err := tm.AllocatePort()
 	if err != nil {
 		t.Fatalf("AllocatePort: %v", err)
+	}
+	if ln != nil {
+		ln.Close()
 	}
 	tm.ReleasePort(port)
 
@@ -33,31 +36,43 @@ func TestSetPortRange_UpdatesPortStatus(t *testing.T) {
 func TestSetPortRange_PortAllocationInNewRange(t *testing.T) {
 	tm := NewTunnelManager(nil, 100, 200)
 
-	p1, err := tm.AllocatePort()
+	p1, ln1, err := tm.AllocatePort()
 	if err != nil {
 		t.Fatalf("first allocate: %v", err)
 	}
 	if p1 < 100 || p1 > 200 {
 		t.Fatalf("port %d outside initial range", p1)
 	}
+	if ln1 != nil {
+		ln1.Close()
+	}
 	tm.ReleasePort(p1)
 
 	tm.SetPortRange(5000, 6000)
 
-	p2, err := tm.AllocatePort()
+	p2, ln2, err := tm.AllocatePort()
 	if err != nil {
 		t.Fatalf("allocate after range change: %v", err)
 	}
 	if p2 < 5000 || p2 > 6000 {
 		t.Fatalf("port %d outside new range 5000-6000", p2)
 	}
+	if ln2 != nil {
+		ln2.Close()
+	}
 }
 
 func TestSetPortRange_TracksAllocatedCount(t *testing.T) {
 	tm := NewTunnelManager(nil, 1000, 2000)
 
-	p1, _ := tm.AllocatePort()
-	p2, _ := tm.AllocatePort()
+	p1, ln1, _ := tm.AllocatePort()
+	p2, ln2, _ := tm.AllocatePort()
+	if ln1 != nil {
+		ln1.Close()
+	}
+	if ln2 != nil {
+		ln2.Close()
+	}
 
 	status := tm.GetPortStatus()
 	if status.Allocated != 2 {

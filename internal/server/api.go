@@ -181,7 +181,7 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		return
 	}
 
-	publicPort, err := s.tunnelManager.AllocatePort()
+	publicPort, ln, err := s.tunnelManager.AllocatePort()
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available ports"})
 		return
@@ -198,12 +198,13 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		req.LocalPort,
 		publicPort,
 	); err != nil {
+		ln.Close()
 		s.tunnelManager.ReleasePort(publicPort)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := s.tunnelManager.Listen(publicPort, tunnelID); err != nil {
+	if err := s.tunnelManager.AcceptOnListener(publicPort, tunnelID, ln); err != nil {
 		s.tunnelManager.CloseTunnel(tunnelID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

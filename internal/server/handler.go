@@ -168,7 +168,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 		return err
 	}
 
-	publicPort, err := h.server.tunnelManager.AllocatePort()
+	publicPort, ln, err := h.server.tunnelManager.AllocatePort()
 	if err != nil {
 		ackPayload := common.TunnelOpenAckPayload{
 			TunnelID: payload.TunnelID,
@@ -191,6 +191,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 		payload.LocalPort,
 		publicPort,
 	); err != nil {
+		ln.Close()
 		h.server.tunnelManager.ReleasePort(publicPort)
 		ackPayload := common.TunnelOpenAckPayload{
 			TunnelID: payload.TunnelID,
@@ -204,7 +205,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 		})
 	}
 
-	if err := h.server.tunnelManager.Listen(publicPort, payload.TunnelID); err != nil {
+	if err := h.server.tunnelManager.AcceptOnListener(publicPort, payload.TunnelID, ln); err != nil {
 		h.server.tunnelManager.CloseTunnel(payload.TunnelID)
 		ackPayload := common.TunnelOpenAckPayload{
 			TunnelID: payload.TunnelID,

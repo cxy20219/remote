@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"goremote/internal/common"
 )
 
@@ -67,8 +69,8 @@ func NewTunnelManager(server *Server, portStart, portEnd int) *TunnelManager {
 	}
 }
 
-// AllocatePort 分配一个可用端口（实绑检测，跳过系统占用端口）
-func (tm *TunnelManager) AllocatePort() (int, error) {
+// AllocatePort 分配一个可用端口并创建监听器（原子操作，避免 TOCTOU 竞态）
+func (tm *TunnelManager) AllocatePort() (int, net.Listener, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -79,18 +81,16 @@ func (tm *TunnelManager) AllocatePort() (int, error) {
 		if _, unavailable := tm.unavailablePorts[port]; unavailable {
 			continue
 		}
-		// 试探绑定，确认端口可用
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
 			tm.unavailablePorts[port] = struct{}{}
 			slog.Warn("port occupied by system, skipping", "port", port, "error", err)
 			continue
 		}
-		ln.Close()
-		tm.publicPorts[port] = "" // 临时标记为已用
-		return port, nil
+		tm.publicPorts[port] = "" // 标记为已用
+		return port, ln, nil
 	}
-	return 0, fmt.Errorf("no available ports in range %d-%d", tm.portStart, tm.portEnd)
+	return 0, nil, fmt.Errorf("no available ports in range %d-%d", tm.portStart, tm.portEnd)
 }
 
 // ReleasePort 释放端口（同时从 unavailablePorts 移除，下次可重新检测）
@@ -236,40 +236,35 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 		return nil, fmt.Errorf("tunnel is not active, current status: %s", tunnel.Status)
 	}
 
-	// 处理公网端口变更
 	portChanged := newPublicPort > 0 && newPublicPort != tunnel.PublicPort
 	if portChanged {
-		// 校验端口范围
 		if newPublicPort < tm.portStart || newPublicPort > tm.portEnd {
 			return nil, fmt.Errorf("public port %d out of range [%d, %d]", newPublicPort, tm.portStart, tm.portEnd)
 		}
-		// 校验端口未被其他隧道占用
 		if existingID, used := tm.publicPorts[newPublicPort]; used && existingID != "" && existingID != tunnelID {
 			return nil, fmt.Errorf("public port %d already in use", newPublicPort)
 		}
 
-		// 关闭旧监听器和连接
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", newPublicPort))
+		if err != nil {
+			return nil, fmt.Errorf("failed to bind new port %d: %w", newPublicPort, err)
+		}
+
 		tm.closeTunnelConnections(tunnelID)
 		if oldListener, ok := tm.listeners[tunnel.PublicPort]; ok {
 			oldListener.Close()
 			delete(tm.listeners, tunnel.PublicPort)
 		}
 
-		// 更新端口映射
 		oldPort := tunnel.PublicPort
 		delete(tm.publicPorts, oldPort)
 		tm.publicPorts[newPublicPort] = tunnelID
 		tunnel.PublicPort = newPublicPort
+		tm.listeners[newPublicPort] = ln
 
 		slog.Info("tunnel public port changed", "tunnel_id", tunnelID, "old_port", oldPort, "new_port", newPublicPort)
 
-		// 启动新监听器（内部不加锁，因为当前已持有锁）
-		if err := tm.startListener(newPublicPort, tunnelID); err != nil {
-			// 回滚端口映射
-			delete(tm.publicPorts, newPublicPort)
-			tm.publicPorts[tunnel.PublicPort] = tunnelID
-			return nil, fmt.Errorf("failed to start listener on new port %d: %w", newPublicPort, err)
-		}
+		go tm.acceptLoop(newPublicPort, tunnelID)
 	}
 
 	// 通知 Agent 更新目标地址
@@ -345,11 +340,23 @@ func (tm *TunnelManager) RemoveExternalConn(connID string) {
 	}
 }
 
-// Listen 开始监听公网端口（加锁，外部调用）
+// Listen 开始监听公网端口（创建新 listener，外部调用）
 func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	return tm.startListener(publicPort, tunnelID)
+}
+
+// AcceptOnListener 使用已分配的 listener 开始监听（避免 TOCTOU 竞态）
+func (tm *TunnelManager) AcceptOnListener(publicPort int, tunnelID string, ln net.Listener) error {
+	tm.mu.Lock()
+	tm.listeners[publicPort] = ln
+	tm.mu.Unlock()
+
+	slog.Info("tunnel listener started", "public_port", publicPort, "tunnel_id", tunnelID)
+
+	go tm.acceptLoop(publicPort, tunnelID)
+	return nil
 }
 
 // startListener 启动监听器（不加锁，由调用方保证线程安全）
@@ -432,7 +439,7 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 		}
 
 		// 生成 connID 并处理连接
-		connID := fmt.Sprintf("%s-%d", tunnelID, time.Now().UnixNano())
+		connID := fmt.Sprintf("%s-%s", tunnelID, uuid.New().String()[:8])
 		go tm.handleExternalConn(connID, tunnel, conn)
 	}
 }
@@ -451,7 +458,8 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 		"tunnel_id", tunnelID,
 		"remote", extConn.RemoteAddr())
 
-	extConn.SetReadDeadline(time.Now().Add(15 * time.Minute))
+	readDeadline := 15 * time.Minute
+	extConn.SetReadDeadline(time.Now().Add(readDeadline))
 
 	bufPtr := bufPool.Get().(*[]byte)
 	buf := *bufPtr
@@ -459,6 +467,9 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 
 	for {
 		n, err := extConn.Read(buf)
+		if n > 0 {
+			extConn.SetReadDeadline(time.Now().Add(readDeadline))
+		}
 		if n > 0 {
 			encoded, encErr := tm.server.cryptoMgr.Encrypt(clientID, buf[:n])
 			if encErr != nil {
@@ -597,8 +608,12 @@ func (tm *TunnelManager) HandleAgentData(tunnelID, connID string, data []byte, i
 		return fmt.Errorf("external connection not found: %s", connID)
 	}
 
-	if _, err := ec.Conn.Write(data); err != nil {
-		return err
+	if len(data) > 0 {
+		ec.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if _, err := ec.Conn.Write(data); err != nil {
+			return err
+		}
+		ec.Conn.SetWriteDeadline(time.Time{})
 	}
 
 	if isEOF {

@@ -258,9 +258,14 @@ func (a *Agent) handleConnection() error {
 		}
 
 		if err := a.handler.Handle(msg); err != nil {
-			slog.Error("failed to handle message", "type", msg.Type, "error", err)
-			close(hbDone)
-			return err
+			switch msg.Type {
+			case "register_ok", "register_fail", "register_update", "device_deleted":
+				slog.Error("fatal message error, reconnecting", "type", msg.Type, "error", err)
+				close(hbDone)
+				return err
+			default:
+				slog.Warn("non-fatal message error, continuing", "type", msg.Type, "error", err)
+			}
 		}
 	}
 }

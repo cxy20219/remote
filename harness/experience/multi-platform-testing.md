@@ -169,11 +169,190 @@ echo "test-data" | timeout 5 nc -w 3 127.0.0.1 TUNNEL_PORT
 
 ## 9. 已修正的代码问题列表
 
-| 文件 | 行号 | 问题 | 说明 |
-|------|------|------|------|
-| `agent/agent.go` | 185 | 缺少 `setPendingApproval(true)` | 新 Agent 加密密钥不生效 |
-| `agent/handler.go` | 182 | EOF 解密崩溃 | 每次连接关闭触发 |
-| `server/handler.go` | 270 | EOF 解密崩溃 | 同上 |
-| `server/client.go` | 85-87 | IP 白名单空桩 | 设备级白名单完全失效 |
-| `server/tunnel.go` | 393-424 | localhost 被黑名单误杀 | 添加 `127.0.0.1/::1` 跳过检查 |
-| `server/tunnel.go` | 448 | 外部连接无 ReadDeadline | 慢连接可耗尽 goroutine |
+| 文件 | 行号 | 问题 | 发现/修复时间 | 说明 |
+|------|------|------|------|------|
+| `agent/agent.go` | 185 | 缺少 `setPendingApproval(true)` | v1 | 新 Agent 加密密钥不生效 |
+| `agent/handler.go` | 182 | EOF 解密崩溃 | v1 | 每次连接关闭触发 |
+| `server/handler.go` | 270 | EOF 解密崩溃 | v1 | 同上 |
+| `server/client.go` | 85-87 | IP 白名单空桩 | v1 | 设备级白名单完全失效 |
+| `server/tunnel.go` | 393-424 | localhost 被黑名单误杀 | v1 | 添加 `127.0.0.1/::1` 跳过检查 |
+| `server/tunnel.go` | 448 | 外部连接无 ReadDeadline | v1 | 慢连接可耗尽 goroutine |
+| `agent/agent.go` | 260-263 | handler 非致命错误断开整个连接 | 2026-05-14 | 单个 tunnel_data 解密失败丢失所有隧道 |
+| `server/tunnel.go` | 454 | 外部连接 ReadDeadline 未刷新 | 2026-05-14 | SSH 长连接 15 分钟后被误断 |
+| `server/tunnel.go` | 71-93 | AllocatePort TOCTOU 竞态 | 2026-05-14 | 端口测试后释放再绑定期间可被抢占 |
+| `server/tunnel.go` | 598-608 | HandleAgentData 写操作无超时 | 2026-05-14 | 慢消费者导致无限阻塞 |
+| `agent/tunnel.go` | 307 | readFromLocal 每次分配 32KB | 2026-05-14 | 高并发 GC 压力 |
+| `server/tunnel.go` | 435 | connID 用 timestamp 碰撞风险 | 2026-05-14 | 改用 UUID |
+
+## 10. Agent 非致命 handler 错误不应断开整个连接
+
+### 问题
+
+`agent/agent.go` 的 `handleConnection` 中，任何 `handler.Handle` 返回的错误都会导致 Agent 关闭 WebSocket 连接并重新连接。这意味着：
+
+- 一个 `tunnel_data` 解密失败（可能是传输中的短暂数据损坏）会导致所有隧道同时丢失
+- Agent 重连 → 重建所有隧道 → 正在进行的 SSH 会话中断
+- **服务端 `readLoop` 同样遇到 handler 错误只记录日志，不中断连接** — 行为不一致
+
+### 修复
+
+```go
+// agent/agent.go handleConnection — 区分非致命错误
+if err := a.handler.Handle(msg); err != nil {
+    switch msg.Type {
+    case "register_ok", "register_fail", "register_update", "device_deleted":
+        // 注册/身份类错误 → 必须重新连接
+        close(hbDone)
+        return err
+    default:
+        // tunnel_data/tunnel_open 等运行时错误 → 只记录，不断开
+        slog.Warn("non-fatal message error, continuing", ...)
+    }
+}
+```
+
+### 验证
+
+Agent 日志出现 `"non-fatal message error, continuing"` 但 Agent 保持在线，其他隧道不受影响。
+
+### 适用边界
+
+- 注册/身份相关错误（`register_ok`/`register_fail` 等）仍然导致断开，这是正确的
+- `tunnel_data` 的 `"external connection not found"` 错误是端口扫描器短连接的正常行为
+
+## 11. handleExternalConn 读超时必须每次刷新
+
+### 问题
+
+`server/tunnel.go` 的 `handleExternalConn` 中，`extConn.SetReadDeadline(time.Now().Add(15 * time.Minute))` 仅在连接开始时设置一次。
+
+SSH 连接空闲一段时间后重新发送数据时，总连接时间已超过 15 分钟 → **ReadDeadline 触发 → 连接断**。
+
+### 修复
+
+每次成功读取数据后刷新 deadline：
+
+```go
+for {
+    n, err := extConn.Read(buf)
+    if n > 0 {
+        extConn.SetReadDeadline(time.Now().Add(15 * time.Minute))
+    }
+    // ...
+}
+```
+
+### 触发条件
+
+任何通过隧道建立的、单次空闲超过 15 分钟的 TCP 连接（SSH 会话、数据库连接池等）。
+
+## 12. AllocatePort TOCTOU 竞态
+
+### 问题
+
+`AllocatePort` 先 bind 测试端口可用，`ln.Close()` 释放，然后 `startListener` 再绑定。在 `Close()` 和 `startListener` 之间的窗口内，另一个进程或线程可能占用该端口。
+
+### 修复
+
+`AllocatePort` 返回已绑定的 `net.Listener`，不再需要二次绑定。新增 `AcceptOnListener` 方法直接注册 listener 到 TunnelManager。
+
+### 影响函数
+
+- `AllocatePort` — 签名从 `(int, error)` 改为 `(int, net.Listener, error)`
+- `handleTunnelOpen`（handler.go） — 调用方同步变更
+- `handleAPICreateTunnel`（api.go） — 同上
+- `UpdateTunnel` — 端口变更时直接创建 listener 而不是调用 startListener
+
+## 13. Agent pending 状态 60 秒超时困境
+
+### 问题（仍未完全解决）
+
+Agent 进入 pending 状态后 `handlePending()` **不主动发送心跳**。服务端 `pendingLoop` 设置 60 秒读超时，超时后关闭连接。
+
+Agent 重连 → 生成新的 `client_id` → 再次 pending → 等待审批。如果管理员审批超过 60 秒，Agent 永远无法进入工作状态。
+
+### 表现
+
+```
+Agent 日志不断交替：
+  "waiting for admin approval" (client_id=A)
+  → 60秒后 "connection error: websocket: close 1006"
+  → "reconnecting with existing identity"
+  → "waiting for admin approval" (client_id=B ← 新ID)
+  → 重复
+```
+
+### 缓解措施
+
+- 审批需在 Agent 首次连接后 60 秒内完成
+- 超时后的 Agent 需用 `--identity-dir` 删除 identity 文件重新注册，或在服务端**清理旧 pending 设备**后重新审批
+- **服务端重启后**所有旧设备消失，Agent 因 reauth 失败不断产生新 pending 记录（见 §14）
+
+### 建议的改进方向
+
+- `pendingLoop` 应主动发 ping 维持连接
+- 或 `handlePending` 应主动发心跳
+
+## 14. 服务器重启导致 Agent 身份漂移
+
+### 问题
+
+服务端 `server-state.json` 被删除或损坏重启后，所有设备记录消失。Agent 以旧 identity 重连：
+
+1. Agent 发送 reauth（含 ed25519 签名、timestamp）
+2. 服务端收到 `client_id` 不存在 → `register_fail`
+3. Agent 清除 identity 的 `ClientID` 和 `EncKey`
+4. Agent 以新身份注册 → 获得新 `client_id` → pending
+5. 需要管理员再次审批
+
+若审批速度慢（通常在手动模式下），Agent 不断进入 §13 的 60 秒超时循环。
+
+### 表现
+
+```
+Agent 日志:
+  "reconnecting with existing identity" (client_id=OLD)
+  "registration failed" → 清除身份
+  "registering with new identity"
+  "waiting for admin approval" (client_id=NEW)
+  60秒后... 循环
+```
+
+### 应对
+
+- 清空 `/root/goremote/data/server-state.json` 重启服务端后，必须在 Agent 端同时清除 identity 文件
+- 生产环境应使用 `--data` 持久化目录，避免误删
+
+## 15. 高并发 SSH 吞吐测试结果
+
+### 测试环境
+
+| 参数 | 值 |
+|------|-----|
+| 公网服务器 | 8.137.151.214 (2核4G) |
+| 内网服务器 | 192.168.66.42 (2核2G) |
+| 隧道协议 | TCP 端口映射 |
+| 目标服务 | SSH (端口 22) |
+
+### 并发会话测试
+
+| 并发数 | 成功 | 失败原因 |
+|--------|------|----------|
+| 10 并发 SSH | 10/10 | — |
+| 20 并发 SSH | 18/20 | 2 个因服务端 `Connection closed` 拒绝（SSH 连接数限制） |
+
+SSH 认证方式：密码认证，使用 `sshpass`。
+
+### 数据传输测试
+
+```
+# 5MB 零数据加密传输 → md5sum 验证
+dd if=/dev/zero bs=1M count=5 | md5sum
+# → 5f363e0e58a95f06cbe9bbc662c5dfb6  (传输完整)
+```
+
+### 结论
+
+- 零配置架构下隧道加密（AES-256-GCM）对并发和吞吐无显著性能退化
+- 并发瓶颈在于 SSH 服务自身连接数限制，非隧道层
+- 5MB 数据包完整加密传输通过，无数据损坏
