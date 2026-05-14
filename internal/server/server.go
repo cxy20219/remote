@@ -288,11 +288,21 @@ func (s *Server) pendingLoop(client *Client) {
 		}
 
 		if msg.Type == "ping" {
-			client.Conn.WriteJSON(common.Message{Type: "pong"})
-			continue
+			client.WriteJSON(common.Message{Type: "pong"})
 		}
 
-		slog.Debug("pending client message", "client_id", client.ClientID, "type", msg.Type)
+		device := s.stateStore.GetDeviceByID(client.ClientID)
+		if device != nil && device.Status == "authorized" {
+			slog.Info("device approved, transition to working state",
+				"client_id", client.ClientID)
+			s.clients.Add(client)
+			s.readLoop(client)
+			return
+		}
+		if device == nil {
+			slog.Info("device removed while pending", "client_id", client.ClientID)
+			return
+		}
 	}
 }
 

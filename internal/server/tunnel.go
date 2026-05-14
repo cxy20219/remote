@@ -505,6 +505,14 @@ type PortStatus struct {
 	AvailableCount int   `json:"available_count"`
 }
 
+// SetPortRange 热更新端口范围
+func (tm *TunnelManager) SetPortRange(start, end int) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.portStart = start
+	tm.portEnd = end
+}
+
 // GetPortStatus 返回端口范围使用状况
 func (tm *TunnelManager) GetPortStatus() PortStatus {
 	tm.mu.RLock()

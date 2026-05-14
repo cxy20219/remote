@@ -825,5 +825,10 @@ func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 		}
 	})
 
+	if s.tunnelManager != nil {
+		settings := s.stateStore.GetSettings()
+		s.tunnelManager.SetPortRange(settings.PortRangeStart, settings.PortRangeEnd)
+	}
+
 	c.JSON(http.StatusOK, s.stateStore.GetSettings())
 }
