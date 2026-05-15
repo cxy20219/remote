@@ -14,15 +14,16 @@ import (
 )
 
 type PendingConnInfo struct {
+	Client   *Client
 	Conn     interface{}
 	RemoteIP string
 }
 
 type DeviceManager struct {
-	mu            sync.RWMutex
-	store         *StateStore
-	pendingConns  map[string]*PendingConnInfo
-	cryptoMgr     *common.CryptoManager
+	mu           sync.RWMutex
+	store        *StateStore
+	pendingConns map[string]*PendingConnInfo
+	cryptoMgr    *common.CryptoManager
 }
 
 func NewDeviceManager(store *StateStore, cryptoMgr *common.CryptoManager) *DeviceManager {
@@ -62,10 +63,20 @@ func (dm *DeviceManager) RegisterNewClient(deviceSignPubkey, deviceDHPubkey, hos
 	dm.mu.Lock()
 	for _, d := range dm.store.GetState().Devices {
 		if d.DeviceSignPubkey == deviceSignPubkey && d.Status == "pending" {
-			if conn, ok := dm.pendingConns[d.ID]; ok && conn.Conn != nil {
-				dm.mu.Unlock()
-				return d.ID, fmt.Errorf("device already pending")
-			}
+			dm.store.UpdateDevice(d.ID, func(existing *DeviceState) {
+				if hostname != "" {
+					existing.Hostname = hostname
+					existing.Name = hostname
+				}
+				if osName != "" {
+					existing.OS = osName
+				}
+				if deviceDHPubkey != "" {
+					existing.DeviceDHPubkey = deviceDHPubkey
+				}
+			})
+			dm.mu.Unlock()
+			return d.ID, nil
 		}
 	}
 	dm.mu.Unlock()
@@ -192,6 +203,7 @@ func (dm *DeviceManager) ApproveDevice(deviceID string) (*DeviceState, string, s
 }
 
 func (dm *DeviceManager) DenyDevice(deviceID string) error {
+	dm.RemovePendingConn(deviceID)
 	if !dm.store.RemoveDevice(deviceID) {
 		return fmt.Errorf("device not found: %s", deviceID)
 	}
@@ -295,19 +307,63 @@ func (dm *DeviceManager) GetPendingDevices() []DeviceState {
 	return dm.store.GetDevicesByStatus("pending")
 }
 
-func (dm *DeviceManager) AddPendingConn(deviceID string, conn interface{}, remoteIP string) {
+func (dm *DeviceManager) AddPendingConn(deviceID string, client *Client, remoteIP string) {
 	dm.mu.Lock()
-	defer dm.mu.Unlock()
+	var oldConn interface{}
+	if old, ok := dm.pendingConns[deviceID]; ok && old.Client != client {
+		oldConn = old.Conn
+	}
+	var conn interface{}
+	if client != nil {
+		conn = client.Conn
+	}
 	dm.pendingConns[deviceID] = &PendingConnInfo{
+		Client:   client,
 		Conn:     conn,
 		RemoteIP: remoteIP,
 	}
+	dm.mu.Unlock()
+
+	closePendingConn(oldConn)
 }
 
 func (dm *DeviceManager) RemovePendingConn(deviceID string) {
 	dm.mu.Lock()
-	defer dm.mu.Unlock()
+	info := dm.pendingConns[deviceID]
 	delete(dm.pendingConns, deviceID)
+	dm.mu.Unlock()
+
+	if info != nil {
+		closePendingConn(info.Conn)
+	}
+}
+
+func (dm *DeviceManager) RemovePendingConnIfMatch(deviceID string, client *Client) {
+	dm.mu.Lock()
+	info := dm.pendingConns[deviceID]
+	if info == nil || info.Client != client {
+		dm.mu.Unlock()
+		return
+	}
+	delete(dm.pendingConns, deviceID)
+	dm.mu.Unlock()
+
+	closePendingConn(info.Conn)
+}
+
+func (dm *DeviceManager) DetachPendingConnIfMatch(deviceID string, client *Client) {
+	dm.mu.Lock()
+	info := dm.pendingConns[deviceID]
+	if info != nil && info.Client == client {
+		delete(dm.pendingConns, deviceID)
+	}
+	dm.mu.Unlock()
+}
+
+func closePendingConn(conn interface{}) {
+	if closer, ok := conn.(interface{ Close() error }); ok && closer != nil {
+		_ = closer.Close()
+	}
 }
 
 func (dm *DeviceManager) RemoveAuthorizedConn(deviceID string) {

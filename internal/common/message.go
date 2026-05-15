@@ -1,21 +1,39 @@
 package common
 
-import "encoding/json"
+import (
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+)
+
+const (
+	TunnelChunkSize         = 128 * 1024
+	WebSocketBufferSize     = 128 * 1024
+	MaxWebSocketMessageSize = 2 * 1024 * 1024
+)
 
 type Message struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+	Type       string            `json:"type"`
+	Payload    json.RawMessage   `json:"payload,omitempty"`
+	BinaryData *BinaryTunnelData `json:"-"`
+}
+
+type BinaryTunnelData struct {
+	TunnelID string
+	ConnID   string
+	Data     []byte
+	IsEOF    bool
 }
 
 type RegisterPayload struct {
-	ReAuth        bool   `json:"reauth"`
-	ClientID      string `json:"client_id,omitempty"`
-	DevicePubkey  string `json:"device_pubkey"`
+	ReAuth         bool   `json:"reauth"`
+	ClientID       string `json:"client_id,omitempty"`
+	DevicePubkey   string `json:"device_pubkey"`
 	DeviceDHPubkey string `json:"device_dh_pubkey,omitempty"`
-	Hostname      string `json:"hostname"`
-	OS            string `json:"os"`
-	Timestamp     int64  `json:"timestamp,omitempty"`
-	Signature     string `json:"signature,omitempty"`
+	Hostname       string `json:"hostname"`
+	OS             string `json:"os"`
+	Timestamp      int64  `json:"timestamp,omitempty"`
+	Signature      string `json:"signature,omitempty"`
 }
 
 type RegisterPendingPayload struct {
@@ -65,6 +83,64 @@ type TunnelDataPayload struct {
 	ConnID   string `json:"conn_id"`
 	Data     string `json:"data"`
 	IsEOF    bool   `json:"is_eof"`
+}
+
+func EncodeBinaryTunnelDataFrame(tunnelID, connID string, data []byte, isEOF bool) ([]byte, error) {
+	if len(tunnelID) > 0xffff {
+		return nil, fmt.Errorf("tunnel_id too long: %d", len(tunnelID))
+	}
+	if len(connID) > 0xffff {
+		return nil, fmt.Errorf("conn_id too long: %d", len(connID))
+	}
+
+	size := 10 + len(tunnelID) + len(connID) + len(data)
+	frame := make([]byte, size)
+	frame[0] = 1
+	if isEOF {
+		frame[1] = 1
+	}
+	binary.BigEndian.PutUint16(frame[2:4], uint16(len(tunnelID)))
+	binary.BigEndian.PutUint16(frame[4:6], uint16(len(connID)))
+	binary.BigEndian.PutUint32(frame[6:10], uint32(len(data)))
+
+	offset := 10
+	copy(frame[offset:], tunnelID)
+	offset += len(tunnelID)
+	copy(frame[offset:], connID)
+	offset += len(connID)
+	copy(frame[offset:], data)
+	return frame, nil
+}
+
+func DecodeBinaryTunnelDataFrame(frame []byte) (*BinaryTunnelData, error) {
+	if len(frame) < 10 {
+		return nil, fmt.Errorf("binary tunnel frame too short: %d", len(frame))
+	}
+	if frame[0] != 1 {
+		return nil, fmt.Errorf("unsupported binary tunnel frame version: %d", frame[0])
+	}
+
+	tunnelIDLen := int(binary.BigEndian.Uint16(frame[2:4]))
+	connIDLen := int(binary.BigEndian.Uint16(frame[4:6]))
+	dataLen := int(binary.BigEndian.Uint32(frame[6:10]))
+	expected := 10 + tunnelIDLen + connIDLen + dataLen
+	if expected != len(frame) {
+		return nil, fmt.Errorf("invalid binary tunnel frame length: got %d, expected %d", len(frame), expected)
+	}
+
+	offset := 10
+	tunnelID := string(frame[offset : offset+tunnelIDLen])
+	offset += tunnelIDLen
+	connID := string(frame[offset : offset+connIDLen])
+	offset += connIDLen
+	data := frame[offset : offset+dataLen]
+
+	return &BinaryTunnelData{
+		TunnelID: tunnelID,
+		ConnID:   connID,
+		Data:     data,
+		IsEOF:    frame[1]&1 == 1,
+	}, nil
 }
 
 type TunnelErrorPayload struct {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"goremote/internal/common"
 )
@@ -36,6 +37,8 @@ func (h *Handler) Handle(msg *common.Message) error {
 		return h.handleTunnelClose(msg)
 	case "tunnel_data":
 		return h.handleTunnelData(msg)
+	case "tunnel_data_bin":
+		return h.handleTunnelDataBinary(msg)
 	case "tunnel_error":
 		return h.handleTunnelError(msg)
 	default:
@@ -95,7 +98,7 @@ func (h *Handler) handleRegisterUpdate(msg *common.Message) error {
 	}
 
 	identity.EncEnabled = payload.EncEnabled
-	if err := identity.Save(""); err != nil {
+	if err := identity.Save(h.agent.config.IdentityDir); err != nil {
 		slog.Error("failed to save identity after update", "error", err)
 	}
 
@@ -107,7 +110,7 @@ func (h *Handler) handleDeviceDeleted(msg *common.Message) error {
 	if identity != nil {
 		identity.ClientID = ""
 		identity.EncKey = ""
-		identity.Save("")
+		identity.Save(h.agent.config.IdentityDir)
 	}
 	slog.Warn("device deleted by admin, will need to re-register")
 	return fmt.Errorf("device deleted by admin")
@@ -195,7 +198,51 @@ func (h *Handler) handleTunnelData(msg *common.Message) error {
 		return err
 	}
 
-	if _, err := conn.Write(data); err != nil {
+	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	_, err = conn.Write(data)
+	conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
+		h.agent.tunnelManager.SendError(payload.TunnelID, payload.ConnID, err.Error())
+		return err
+	}
+
+	h.agent.tunnelManager.StartReadLoop(payload.ConnID, payload.TunnelID)
+
+	if payload.IsEOF {
+		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
+	}
+
+	return nil
+}
+
+func (h *Handler) handleTunnelDataBinary(msg *common.Message) error {
+	payload := msg.BinaryData
+	if payload == nil {
+		return fmt.Errorf("missing binary tunnel payload")
+	}
+
+	if payload.IsEOF && len(payload.Data) == 0 {
+		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
+		return nil
+	}
+
+	clientID := h.agent.GetClientID()
+	data, err := h.agent.cryptoMgr.DecryptBytes(clientID, payload.Data)
+	if err != nil {
+		return fmt.Errorf("decrypt failed: %w", err)
+	}
+
+	conn, err := h.agent.tunnelManager.GetOrCreateLocalConn(payload.ConnID, payload.TunnelID)
+	if err != nil {
+		h.agent.tunnelManager.SendError(payload.TunnelID, payload.ConnID, err.Error())
+		return err
+	}
+
+	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	_, err = conn.Write(data)
+	conn.SetWriteDeadline(time.Time{})
+	if err != nil {
 		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
 		h.agent.tunnelManager.SendError(payload.TunnelID, payload.ConnID, err.Error())
 		return err

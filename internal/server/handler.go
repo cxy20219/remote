@@ -29,6 +29,8 @@ func (h *Handler) Handle(client *Client, msg *common.Message) error {
 		return h.handleTunnelClose(client, msg)
 	case "tunnel_data":
 		return h.handleTunnelData(client, msg)
+	case "tunnel_data_bin":
+		return h.handleTunnelDataBinary(client, msg)
 	case "tunnel_error":
 		return h.handleTunnelError(client, msg)
 	default:
@@ -65,7 +67,7 @@ func (h *Handler) handleNewRegistration(client *Client, payload *common.Register
 	client.Hostname = payload.Hostname
 	client.OS = payload.OS
 
-	h.server.deviceMgr.AddPendingConn(deviceID, client.Conn, client.RemoteAddr)
+	h.server.deviceMgr.AddPendingConn(deviceID, client, client.RemoteAddr)
 
 	slog.Info("new device registration pending",
 		"device_id", deviceID,
@@ -101,6 +103,21 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 		slog.Warn("reauth device not authorized, treating as new registration",
 			"client_id", payload.ClientID)
 		return h.handleNewRegistration(client, payload)
+	}
+
+	if payload.Hostname != "" || payload.OS != "" {
+		h.server.stateStore.UpdateDevice(device.ID, func(d *DeviceState) {
+			if payload.Hostname != "" {
+				d.Hostname = payload.Hostname
+				d.Name = payload.Hostname
+			}
+			if payload.OS != "" {
+				d.OS = payload.OS
+			}
+		})
+		if updated := h.server.stateStore.GetDeviceByID(device.ID); updated != nil {
+			device = updated
+		}
 	}
 
 	client.ClientID = device.ID
@@ -273,6 +290,33 @@ func (h *Handler) handleTunnelData(client *Client, msg *common.Message) error {
 	}
 
 	data, err := h.server.cryptoMgr.Decrypt(client.ClientID, payload.Data)
+	if err != nil {
+		return fmt.Errorf("decrypt failed: %w", err)
+	}
+
+	return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, data, payload.IsEOF)
+}
+
+func (h *Handler) handleTunnelDataBinary(client *Client, msg *common.Message) error {
+	if h.server.tunnelManager == nil {
+		return fmt.Errorf("tunnel is not enabled")
+	}
+
+	payload := msg.BinaryData
+	if payload == nil {
+		return fmt.Errorf("missing binary tunnel payload")
+	}
+
+	if payload.IsEOF && len(payload.Data) == 0 {
+		return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, nil, true)
+	}
+
+	tunnel, ok := h.server.tunnelManager.GetTunnel(payload.TunnelID)
+	if !ok || tunnel.ClientID != client.ClientID {
+		return fmt.Errorf("tunnel not found or not owned by client")
+	}
+
+	data, err := h.server.cryptoMgr.DecryptBytes(client.ClientID, payload.Data)
 	if err != nil {
 		return fmt.Errorf("decrypt failed: %w", err)
 	}

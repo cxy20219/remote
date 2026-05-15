@@ -126,7 +126,10 @@ func (c *Client) WriteJSON(v interface{}) (err error) {
 		return fmt.Errorf("client connection is nil")
 	}
 
-	return c.Conn.WriteJSON(v)
+	c.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	defer c.Conn.SetWriteDeadline(time.Time{})
+	err = c.Conn.WriteJSON(v)
+	return err
 }
 
 func (c *Client) WriteMessage(messageType int, data []byte) error {
@@ -137,5 +140,8 @@ func (c *Client) WriteMessage(messageType int, data []byte) error {
 		return fmt.Errorf("client connection is nil")
 	}
 
-	return c.Conn.WriteMessage(messageType, data)
+	c.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	defer c.Conn.SetWriteDeadline(time.Time{})
+	err := c.Conn.WriteMessage(messageType, data)
+	return err
 }

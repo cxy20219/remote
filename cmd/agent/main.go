@@ -57,6 +57,7 @@ func main() {
 	agent.InitLogger(agentCfg.Log.Level, agentCfg.Log.File)
 
 	identityDirVal := *identityDir
+	agentCfg.IdentityDir = identityDirVal
 	identity, err := agent.LoadIdentity(identityDirVal)
 	if err != nil {
 		slog.Error("failed to load identity", "error", err)

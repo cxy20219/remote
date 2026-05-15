@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -28,20 +29,20 @@ type Server struct {
 	tlsCert    string
 	tlsKey     string
 
-	config    *Config
-	staticFS  embed.FS
+	config   *Config
+	staticFS embed.FS
 
-	clients        *ClientManager
-	handler         *Handler
-	tunnelManager  *TunnelManager
-	adminAuth      *AdminAuth
-	cryptoMgr      *common.CryptoManager
-	stateStore     *StateStore
-	deviceMgr      *DeviceManager
-	loginLimiter   *RateLimiter
-	connLimiter    *RateLimiter
-	portLimiter    *RateLimiter
-	blacklist      *BlacklistManager
+	clients       *ClientManager
+	handler       *Handler
+	tunnelManager *TunnelManager
+	adminAuth     *AdminAuth
+	cryptoMgr     *common.CryptoManager
+	stateStore    *StateStore
+	deviceMgr     *DeviceManager
+	loginLimiter  *RateLimiter
+	connLimiter   *RateLimiter
+	portLimiter   *RateLimiter
+	blacklist     *BlacklistManager
 
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
@@ -76,22 +77,22 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	copy(globalWhitelist, settings.GlobalWhitelist)
 
 	s := &Server{
-		Addr:           config.Addr(),
-		tlsEnabled:     config.Server.TLS.Enabled,
-		tlsCert:        config.Server.TLS.Cert,
-		tlsKey:         config.Server.TLS.Key,
-		config:         config,
-		staticFS:       staticFS,
-		clients:        NewClientManager(),
-		handler:        nil,
-		stateStore:     stateStore,
-		adminAuth:      adminAuth,
-		cryptoMgr:      cryptoMgr,
-		deviceMgr:       deviceMgr,
-		blacklist:       blacklist,
-		loginLimiter:    NewRateLimiter(settings.LoginRateLimit, time.Minute),
-		connLimiter:     NewRateLimiter(settings.MaxConnPerMin, time.Minute),
-		portLimiter:     NewRateLimiter(settings.MaxConnPerMin, time.Minute),
+		Addr:         config.Addr(),
+		tlsEnabled:   config.Server.TLS.Enabled,
+		tlsCert:      config.Server.TLS.Cert,
+		tlsKey:       config.Server.TLS.Key,
+		config:       config,
+		staticFS:     staticFS,
+		clients:      NewClientManager(),
+		handler:      nil,
+		stateStore:   stateStore,
+		adminAuth:    adminAuth,
+		cryptoMgr:    cryptoMgr,
+		deviceMgr:    deviceMgr,
+		blacklist:    blacklist,
+		loginLimiter: NewRateLimiter(settings.LoginRateLimit, time.Minute),
+		connLimiter:  NewRateLimiter(settings.MaxConnPerMin, time.Minute),
+		portLimiter:  NewRateLimiter(settings.MaxConnPerMin, time.Minute),
 	}
 
 	s.clients.SetStore(stateStore)
@@ -213,9 +214,10 @@ func (s *Server) handleConn(c *gin.Context) {
 		slog.Error("failed to upgrade connection", "error", err)
 		return
 	}
+	conn.SetReadLimit(common.MaxWebSocketMessageSize)
 
 	remoteAddr := c.Request.RemoteAddr
-	slog.Info("connection opened", "remote", remoteAddr)
+	slog.Debug("connection opened", "remote", remoteAddr)
 
 	client := &Client{
 		Conn:       conn,
@@ -224,16 +226,16 @@ func (s *Server) handleConn(c *gin.Context) {
 
 	for {
 		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-		var msg common.Message
-		if err := conn.ReadJSON(&msg); err != nil {
+		msg, err := readWSMessage(conn)
+		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				slog.Warn("connection error", "error", err)
 			}
-			s.deviceMgr.RemovePendingConn(client.ClientID)
+			s.deviceMgr.RemovePendingConnIfMatch(client.ClientID, client)
 			break
 		}
 
-		if err := s.handler.Handle(client, &msg); err != nil {
+		if err := s.handler.Handle(client, msg); err != nil {
 			slog.Error("failed to handle message",
 				"type", msg.Type,
 				"error", err)
@@ -259,13 +261,13 @@ func (s *Server) handleConn(c *gin.Context) {
 		}
 
 		if client.ClientID == "" {
-			slog.Warn("registration failed, closing connection", "remote", remoteAddr)
+			slog.Debug("registration failed, closing connection", "remote", remoteAddr)
 			break
 		}
 	}
 
 	conn.Close()
-	slog.Info("connection closed", "remote", remoteAddr)
+	slog.Debug("connection closed", "remote", remoteAddr)
 }
 
 func jsonUnmarshal(data []byte, v interface{}) error {
@@ -274,14 +276,22 @@ func jsonUnmarshal(data []byte, v interface{}) error {
 
 func (s *Server) pendingLoop(client *Client) {
 	defer func() {
-		s.deviceMgr.RemovePendingConn(client.ClientID)
+		s.deviceMgr.RemovePendingConnIfMatch(client.ClientID, client)
 		client.Conn.Close()
 	}()
 
+	settings := s.stateStore.GetSettings()
+	timeout := time.Duration(settings.HeartbeatTimeout) * time.Second
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	} else if timeout < 60*time.Second {
+		timeout = 60 * time.Second
+	}
+
 	for {
-		client.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		var msg common.Message
-		if err := client.Conn.ReadJSON(&msg); err != nil {
+		client.Conn.SetReadDeadline(time.Now().Add(timeout))
+		msg, err := readWSMessage(client.Conn)
+		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				slog.Warn("pending connection error", "client_id", client.ClientID, "error", err)
 			}
@@ -296,6 +306,7 @@ func (s *Server) pendingLoop(client *Client) {
 		if device != nil && device.Status == "authorized" {
 			slog.Info("device approved, transition to working state",
 				"client_id", client.ClientID)
+			s.deviceMgr.DetachPendingConnIfMatch(client.ClientID, client)
 			s.clients.Add(client)
 			s.readLoop(client)
 			return
@@ -332,20 +343,44 @@ func (s *Server) readLoop(client *Client) {
 
 	for {
 		client.Conn.SetReadDeadline(time.Now().Add(timeout))
-		var msg common.Message
-		if err := client.Conn.ReadJSON(&msg); err != nil {
+		msg, err := readWSMessage(client.Conn)
+		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				slog.Warn("connection error", "client_id", client.ClientID, "error", err)
 			}
 			return
 		}
 
-		if err := s.handler.Handle(client, &msg); err != nil {
+		if err := s.handler.Handle(client, msg); err != nil {
 			slog.Error("failed to handle message",
 				"client_id", client.ClientID,
 				"type", msg.Type,
 				"error", err)
 		}
+	}
+}
+
+func readWSMessage(conn *websocket.Conn) (*common.Message, error) {
+	messageType, data, err := conn.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	switch messageType {
+	case websocket.TextMessage:
+		var msg common.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return nil, err
+		}
+		return &msg, nil
+	case websocket.BinaryMessage:
+		payload, err := common.DecodeBinaryTunnelDataFrame(data)
+		if err != nil {
+			return nil, err
+		}
+		return &common.Message{Type: "tunnel_data_bin", BinaryData: payload}, nil
+	default:
+		return nil, fmt.Errorf("unsupported websocket message type: %d", messageType)
 	}
 }
 

@@ -17,10 +17,8 @@ import (
 )
 
 const (
-	writeWait     = 10 * time.Second
-	pongWait      = 60 * time.Second
-	pingPeriod    = (pongWait * 9) / 10
-	maxMessageSize = 512 * 1024
+	writeWait = 30 * time.Second
+	pongWait  = 90 * time.Second
 )
 
 type Connector struct {
@@ -28,7 +26,7 @@ type Connector struct {
 	tlsEnabled         bool
 	tlsCA              string
 	insecureSkipVerify bool
-	identity          *AgentIdentity
+	identity           *AgentIdentity
 
 	conn   *websocket.Conn
 	mu     sync.Mutex
@@ -42,8 +40,8 @@ func NewConnector(serverAddr string, tlsEnabled bool, tlsCA string, insecureSkip
 		tlsEnabled:         tlsEnabled,
 		tlsCA:              tlsCA,
 		insecureSkipVerify: insecureSkipVerify,
-		identity:          identity,
-		done:              make(chan struct{}),
+		identity:           identity,
+		done:               make(chan struct{}),
 	}
 }
 
@@ -60,8 +58,8 @@ func (c *Connector) Connect() error {
 	slog.Info("connecting to server", "addr", c.serverAddr)
 
 	dialer := websocket.Dialer{
-		ReadBufferSize:   32 * 1024,
-		WriteBufferSize:  32 * 1024,
+		ReadBufferSize:   common.WebSocketBufferSize,
+		WriteBufferSize:  common.WebSocketBufferSize,
 		HandshakeTimeout: 10 * time.Second,
 	}
 
@@ -85,6 +83,9 @@ func (c *Connector) Connect() error {
 }
 
 func (c *Connector) resetConnectionState(conn *websocket.Conn) {
+	if conn != nil {
+		conn.SetReadLimit(common.MaxWebSocketMessageSize)
+	}
 	c.conn = conn
 	c.done = make(chan struct{})
 	c.closed = false
@@ -145,7 +146,21 @@ func (c *Connector) Send(msg *common.Message) error {
 	}
 
 	c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+	defer c.conn.SetWriteDeadline(time.Time{})
 	return c.conn.WriteJSON(msg)
+}
+
+func (c *Connector) SendBinary(data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+	defer c.conn.SetWriteDeadline(time.Time{})
+	return c.conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 func (c *Connector) Receive() (*common.Message, error) {
@@ -159,12 +174,27 @@ func (c *Connector) Receive() (*common.Message, error) {
 		return nil
 	})
 
-	msg := &common.Message{}
-	err := c.conn.ReadJSON(msg)
+	messageType, data, err := c.conn.ReadMessage()
 	if err != nil {
 		return nil, err
 	}
-	return msg, nil
+
+	switch messageType {
+	case websocket.TextMessage:
+		msg := &common.Message{}
+		if err := json.Unmarshal(data, msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+	case websocket.BinaryMessage:
+		payload, err := common.DecodeBinaryTunnelDataFrame(data)
+		if err != nil {
+			return nil, err
+		}
+		return &common.Message{Type: "tunnel_data_bin", BinaryData: payload}, nil
+	default:
+		return nil, fmt.Errorf("unsupported websocket message type: %d", messageType)
+	}
 }
 
 func (c *Connector) Done() <-chan struct{} {
@@ -192,7 +222,7 @@ func (c *Connector) RegisterNew(hostname, osName string) error {
 	})
 }
 
-func (c *Connector) RegisterReauth(clientID string, timestamp int64) error {
+func (c *Connector) RegisterReauth(clientID string, timestamp int64, hostname, osName string) error {
 	privKey, err := c.identity.GetSignPrivKey()
 	if err != nil {
 		return fmt.Errorf("get sign privkey: %w", err)
@@ -204,13 +234,13 @@ func (c *Connector) RegisterReauth(clientID string, timestamp int64) error {
 	}
 
 	payload := common.RegisterPayload{
-		ReAuth:        true,
-		ClientID:      clientID,
-		DevicePubkey:  c.identity.DeviceSignPubkey,
-		Timestamp:     timestamp,
-		Signature:     common.EncodeBytes(signature),
-		Hostname:      "",
-		OS:            "",
+		ReAuth:       true,
+		ClientID:     clientID,
+		DevicePubkey: c.identity.DeviceSignPubkey,
+		Timestamp:    timestamp,
+		Signature:    common.EncodeBytes(signature),
+		Hostname:     hostname,
+		OS:           osName,
 	}
 	payloadJSON, _ := json.Marshal(payload)
 

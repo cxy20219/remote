@@ -11,18 +11,18 @@ import (
 )
 
 type Agent struct {
-	config        *Config
-	connector     *Connector
-	handler       *Handler
-	reconnect     *Reconnect
-	tunnelManager *TunnelManager
-	cryptoMgr     *common.CryptoManager
-	hostname      string
-	os            string
-	clientID      string
-	identity      *AgentIdentity
-	mu            sync.RWMutex
-	stopped       bool
+	config          *Config
+	connector       *Connector
+	handler         *Handler
+	reconnect       *Reconnect
+	tunnelManager   *TunnelManager
+	cryptoMgr       *common.CryptoManager
+	hostname        string
+	os              string
+	clientID        string
+	identity        *AgentIdentity
+	mu              sync.RWMutex
+	stopped         bool
 	pendingApproval bool
 }
 
@@ -53,7 +53,7 @@ func NewAgent(config *Config, identity *AgentIdentity) *Agent {
 		handler:       nil,
 		reconnect:     NewReconnect(config.Reconnect.Interval, config.Reconnect.MaxAttempts, config.Reconnect.MaxInterval),
 		tunnelManager: NewTunnelManager(nil),
-		cryptoMgr:    cryptoMgr,
+		cryptoMgr:     cryptoMgr,
 		hostname:      hostname,
 		os:            osName,
 		identity:      identity,
@@ -139,7 +139,7 @@ func (a *Agent) connect() error {
 	identity := a.identity
 	if identity != nil && identity.ClientID != "" {
 		timestamp := time.Now().Unix()
-		if err := a.connector.RegisterReauth(identity.ClientID, timestamp); err != nil {
+		if err := a.connector.RegisterReauth(identity.ClientID, timestamp, a.hostname, a.os); err != nil {
 			a.connector.Close()
 			return err
 		}
@@ -180,7 +180,7 @@ func (a *Agent) connect() error {
 			a.SetClientID(payload.ClientID)
 			if a.identity != nil {
 				a.identity.ClientID = payload.ClientID
-				a.identity.Save("")
+				a.identity.Save(a.config.IdentityDir)
 			}
 			a.setPendingApproval(true)
 			slog.Info("waiting for admin approval", "client_id", payload.ClientID)
@@ -194,7 +194,7 @@ func (a *Agent) connect() error {
 				slog.Warn("reauth failed, clearing identity for re-registration", "reason", payload.Reason)
 				a.identity.ClientID = ""
 				a.identity.EncKey = ""
-				a.identity.Save("")
+				a.identity.Save(a.config.IdentityDir)
 			}
 
 			a.connector.Close()
@@ -237,23 +237,25 @@ func (a *Agent) processRegisterOK(payload *common.RegisterOKPayload) {
 		identity.EncEnabled = payload.EncEnabled
 	}
 
-	if err := identity.Save(""); err != nil {
+	if err := identity.Save(a.config.IdentityDir); err != nil {
 		slog.Error("failed to save identity", "error", err)
 	}
 }
 
 func (a *Agent) handleConnection() error {
 	if a.isPendingApproval() {
-		return a.handlePending()
+		if err := a.handlePending(); err != nil {
+			return err
+		}
 	}
 
 	hbDone := make(chan struct{})
 	go a.startHeartbeat(hbDone)
+	defer close(hbDone)
 
 	for {
 		msg, err := a.connector.Receive()
 		if err != nil {
-			close(hbDone)
 			return err
 		}
 
@@ -261,7 +263,6 @@ func (a *Agent) handleConnection() error {
 			switch msg.Type {
 			case "register_ok", "register_fail", "register_update", "device_deleted":
 				slog.Error("fatal message error, reconnecting", "type", msg.Type, "error", err)
-				close(hbDone)
 				return err
 			default:
 				slog.Warn("non-fatal message error, continuing", "type", msg.Type, "error", err)
@@ -271,6 +272,10 @@ func (a *Agent) handleConnection() error {
 }
 
 func (a *Agent) handlePending() error {
+	hbDone := make(chan struct{})
+	go a.startHeartbeat(hbDone)
+	defer close(hbDone)
+
 	for {
 		msg, err := a.connector.Receive()
 		if err != nil {
@@ -287,6 +292,9 @@ func (a *Agent) handlePending() error {
 			a.processRegisterOK(&payload)
 			a.setPendingApproval(false)
 			slog.Info("approved, entering work state", "client_id", payload.ClientID)
+			if err := a.connector.SendPing(); err != nil {
+				slog.Warn("failed to notify server after approval", "client_id", payload.ClientID, "error", err)
+			}
 			return nil
 
 		case "register_fail":
@@ -296,7 +304,7 @@ func (a *Agent) handlePending() error {
 			if a.identity != nil {
 				a.identity.ClientID = ""
 				a.identity.EncKey = ""
-				a.identity.Save("")
+				a.identity.Save(a.config.IdentityDir)
 			}
 
 			a.connector.Close()
@@ -306,7 +314,7 @@ func (a *Agent) handlePending() error {
 			if a.identity != nil {
 				a.identity.ClientID = ""
 				a.identity.EncKey = ""
-				a.identity.Save("")
+				a.identity.Save(a.config.IdentityDir)
 			}
 			a.connector.Close()
 			return fmt.Errorf("device deleted by admin")
@@ -334,6 +342,9 @@ func (a *Agent) setPendingApproval(pending bool) {
 
 func (a *Agent) startHeartbeat(done chan struct{}) {
 	interval := time.Duration(a.config.Heartbeat.Interval) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

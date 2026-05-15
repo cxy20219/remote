@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 
 var agentBufPool = sync.Pool{
 	New: func() interface{} {
-		b := make([]byte, 32*1024)
+		b := make([]byte, common.TunnelChunkSize)
 		return &b
 	},
 }
@@ -161,6 +162,7 @@ func (tm *TunnelManager) GetOrCreateLocalConn(connID, tunnelID string) (net.Conn
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to local service: %w", err)
 	}
+	common.TuneTCPConn(conn)
 
 	lc = &LocalConn{
 		ConnID:   connID,
@@ -169,7 +171,7 @@ func (tm *TunnelManager) GetOrCreateLocalConn(connID, tunnelID string) (net.Conn
 	}
 	tm.localConns[connID] = lc
 
-	slog.Info("local connection established",
+	slog.Debug("local connection established",
 		"conn_id", connID,
 		"tunnel_id", tunnelID,
 		"local_addr", addr)
@@ -185,7 +187,7 @@ func (tm *TunnelManager) CloseLocalConn(connID string) {
 	if lc, ok := tm.localConns[connID]; ok {
 		lc.Conn.Close()
 		delete(tm.localConns, connID)
-		slog.Info("local connection closed", "conn_id", connID)
+		slog.Debug("local connection closed", "conn_id", connID)
 	}
 }
 
@@ -196,23 +198,17 @@ func (tm *TunnelManager) HandleLocalResponse(connID, tunnelID string, data []byt
 	}
 
 	clientID := tm.agent.GetClientID()
-	encoded, err := tm.agent.cryptoMgr.Encrypt(clientID, data)
+	encrypted, err := tm.agent.cryptoMgr.EncryptBytes(clientID, data)
 	if err != nil {
 		return fmt.Errorf("encrypt failed: %w", err)
 	}
 
-	payload := common.TunnelDataPayload{
-		TunnelID: tunnelID,
-		ConnID:   connID,
-		Data:     encoded,
-		IsEOF:    isEOF,
+	frame, err := common.EncodeBinaryTunnelDataFrame(tunnelID, connID, encrypted, isEOF)
+	if err != nil {
+		return err
 	}
-	payloadJSON, _ := json.Marshal(payload)
 
-	if err := tm.agent.connector.Send(&common.Message{
-		Type:    "tunnel_data",
-		Payload: payloadJSON,
-	}); err != nil {
+	if err := tm.agent.connector.SendBinary(frame); err != nil {
 		if isEOF {
 			tm.CloseLocalConn(connID)
 		}
@@ -326,8 +322,12 @@ func (tm *TunnelManager) readFromLocal(connID, tunnelID string, localConn net.Co
 			}
 		}
 		if err != nil {
-			if err != io.EOF {
+			if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
 				slog.Warn("local conn read error",
+					"conn_id", connID,
+					"error", err)
+			} else {
+				slog.Debug("local conn closed",
 					"conn_id", connID,
 					"error", err)
 			}

@@ -2,9 +2,19 @@ package server
 
 import (
 	"testing"
+	"time"
 
 	"goremote/internal/common"
 )
+
+type fakePendingConn struct {
+	closed bool
+}
+
+func (f *fakePendingConn) Close() error {
+	f.closed = true
+	return nil
+}
 
 func TestSetPortRange_UpdatesPortStatus(t *testing.T) {
 	cryptoMgr := common.NewCryptoManager()
@@ -135,6 +145,11 @@ func TestDenyDevice_RemovesFromStore(t *testing.T) {
 	dm := NewDeviceManager(stateStore, cryptoMgr)
 
 	deviceID, _ := dm.RegisterNewClient("aabbccdd00112233445566778899aabb00112233445566778899aabbccdd0011", "00112233445566778899aabbccdd00112233445566778899aabbccdd0011", "test", "linux", "10.0.0.2")
+	fakeConn := &fakePendingConn{}
+	dm.pendingConns[deviceID] = &PendingConnInfo{
+		Client: &Client{ClientID: deviceID},
+		Conn:   fakeConn,
+	}
 
 	if err := dm.DenyDevice(deviceID); err != nil {
 		t.Fatalf("DenyDevice: %v", err)
@@ -142,6 +157,148 @@ func TestDenyDevice_RemovesFromStore(t *testing.T) {
 
 	if stateStore.GetDeviceByID(deviceID) != nil {
 		t.Fatal("device should be removed after deny")
+	}
+	if _, ok := dm.GetPendingConn(deviceID); ok {
+		t.Fatal("pending connection should be removed after deny")
+	}
+	if !fakeConn.closed {
+		t.Fatal("pending connection should be closed after deny")
+	}
+}
+
+func TestRegisterNewClient_ReusesExistingPendingDevice(t *testing.T) {
+	_, stateStore := newTestConfig(t)
+	cryptoMgr := common.NewCryptoManager()
+	dm := NewDeviceManager(stateStore, cryptoMgr)
+
+	pubkey := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dhPubkey1 := "1111111111111111111111111111111111111111111111111111111111111111"
+	dhPubkey2 := "2222222222222222222222222222222222222222222222222222222222222222"
+
+	firstID, err := dm.RegisterNewClient(pubkey, dhPubkey1, "old-host", "linux", "10.0.0.1")
+	if err != nil {
+		t.Fatalf("first RegisterNewClient: %v", err)
+	}
+	secondID, err := dm.RegisterNewClient(pubkey, dhPubkey2, "new-host", "linux", "10.0.0.2")
+	if err != nil {
+		t.Fatalf("second RegisterNewClient: %v", err)
+	}
+	if secondID != firstID {
+		t.Fatalf("expected pending device to be reused, got %s then %s", firstID, secondID)
+	}
+
+	pending := stateStore.GetDevicesByStatus("pending")
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending device, got %d", len(pending))
+	}
+	device := stateStore.GetDeviceByID(firstID)
+	if device.Hostname != "new-host" {
+		t.Fatalf("expected hostname to be refreshed, got %q", device.Hostname)
+	}
+	if device.DeviceDHPubkey != dhPubkey2 {
+		t.Fatal("expected DH pubkey to be refreshed for the pending device")
+	}
+}
+
+func TestPendingConnReplacementDoesNotLetOldCleanupDeleteNew(t *testing.T) {
+	dm := &DeviceManager{
+		pendingConns: make(map[string]*PendingConnInfo),
+	}
+
+	deviceID := "client-test"
+	oldClient := &Client{ClientID: deviceID}
+	newClient := &Client{ClientID: deviceID}
+	oldConn := &fakePendingConn{}
+
+	dm.pendingConns[deviceID] = &PendingConnInfo{
+		Client:   oldClient,
+		Conn:     oldConn,
+		RemoteIP: "10.0.0.1",
+	}
+
+	dm.AddPendingConn(deviceID, newClient, "10.0.0.2")
+
+	if !oldConn.closed {
+		t.Fatal("old pending connection should be closed when replaced")
+	}
+
+	info, ok := dm.GetPendingConn(deviceID)
+	if !ok {
+		t.Fatal("expected replacement pending connection to exist")
+	}
+	if info.Client != newClient {
+		t.Fatal("expected replacement pending connection to be stored")
+	}
+	if info.RemoteIP != "10.0.0.2" {
+		t.Fatalf("expected remote IP to be refreshed, got %q", info.RemoteIP)
+	}
+
+	dm.RemovePendingConnIfMatch(deviceID, oldClient)
+	info, ok = dm.GetPendingConn(deviceID)
+	if !ok || info.Client != newClient {
+		t.Fatal("old pending cleanup should not remove the replacement connection")
+	}
+
+	dm.DetachPendingConnIfMatch(deviceID, newClient)
+	if _, ok := dm.GetPendingConn(deviceID); ok {
+		t.Fatal("detach should remove matching pending connection")
+	}
+}
+
+func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
+	_, stateStore := newTestConfig(t)
+	cryptoMgr := common.NewCryptoManager()
+	dm := NewDeviceManager(stateStore, cryptoMgr)
+
+	pub, priv, err := common.GenerateSignKeypair()
+	if err != nil {
+		t.Fatalf("GenerateSignKeypair: %v", err)
+	}
+	pubHex := common.EncodePublicKey(pub)
+
+	deviceID, err := dm.RegisterNewClient(pubHex, "", "old-host", "linux", "10.0.0.6")
+	if err != nil {
+		t.Fatalf("RegisterNewClient: %v", err)
+	}
+	if _, _, _, err := dm.ApproveDevice(deviceID); err != nil {
+		t.Fatalf("ApproveDevice: %v", err)
+	}
+
+	timestamp := time.Now().Unix()
+	signature, err := common.SignTimestamp(priv, deviceID, timestamp)
+	if err != nil {
+		t.Fatalf("SignTimestamp: %v", err)
+	}
+
+	srv := &Server{
+		stateStore: stateStore,
+		deviceMgr:  dm,
+		clients:    NewClientManager(),
+	}
+	handler := NewHandler(srv)
+
+	err = handler.handleReconnect(&Client{}, &common.RegisterPayload{
+		ReAuth:       true,
+		ClientID:     deviceID,
+		DevicePubkey: pubHex,
+		Timestamp:    timestamp,
+		Signature:    common.EncodeBytes(signature),
+		Hostname:     "new-host",
+		OS:           "android",
+	})
+	if err == nil {
+		t.Fatal("expected nil websocket client to fail only while sending register_ok")
+	}
+
+	device := stateStore.GetDeviceByID(deviceID)
+	if device.Hostname != "new-host" {
+		t.Fatalf("expected hostname to refresh, got %q", device.Hostname)
+	}
+	if device.Name != "new-host" {
+		t.Fatalf("expected name to refresh, got %q", device.Name)
+	}
+	if device.OS != "android" {
+		t.Fatalf("expected OS to refresh, got %q", device.OS)
 	}
 }
 
@@ -216,5 +373,17 @@ func TestRegenerateEncKey_ChangesCryptoKey(t *testing.T) {
 	}
 	if updated.EncKey == oldKey {
 		t.Fatal("enc_key should change after regenerate")
+	}
+}
+
+func TestHandleAgentData_MissingExternalConnIsNonFatal(t *testing.T) {
+	tm := NewTunnelManager(nil, 10000, 20000)
+
+	if err := tm.HandleAgentData("missing-tunnel", "missing-conn", []byte("late-data"), false); err != nil {
+		t.Fatalf("expected late data for closed external connection to be ignored, got %v", err)
+	}
+
+	if err := tm.HandleAgentData("missing-tunnel", "missing-conn", nil, true); err != nil {
+		t.Fatalf("expected late EOF for closed external connection to be ignored, got %v", err)
 	}
 }

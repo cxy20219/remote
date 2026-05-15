@@ -76,6 +76,55 @@ func TestEncryptDecrypt_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestEncryptDecryptBytes_RoundTrip(t *testing.T) {
+	cc, err := NewCryptoContext("my-secret-key")
+	if err != nil {
+		t.Fatalf("NewCryptoContext failed: %v", err)
+	}
+
+	plaintext := []byte("binary tunnel payload")
+	ciphertext, err := cc.EncryptBytes(plaintext)
+	if err != nil {
+		t.Fatalf("EncryptBytes failed: %v", err)
+	}
+	if len(ciphertext) == 0 {
+		t.Fatal("expected non-empty ciphertext")
+	}
+
+	decoded, err := cc.DecryptBytes(ciphertext)
+	if err != nil {
+		t.Fatalf("DecryptBytes failed: %v", err)
+	}
+	if !bytes.Equal(decoded, plaintext) {
+		t.Fatalf("round-trip mismatch: got %q, want %q", decoded, plaintext)
+	}
+}
+
+func TestBinaryTunnelDataFrame_RoundTrip(t *testing.T) {
+	data := []byte("encrypted bytes")
+	frame, err := EncodeBinaryTunnelDataFrame("tun-1", "conn-2", data, true)
+	if err != nil {
+		t.Fatalf("EncodeBinaryTunnelDataFrame failed: %v", err)
+	}
+
+	decoded, err := DecodeBinaryTunnelDataFrame(frame)
+	if err != nil {
+		t.Fatalf("DecodeBinaryTunnelDataFrame failed: %v", err)
+	}
+	if decoded.TunnelID != "tun-1" {
+		t.Fatalf("unexpected tunnel id: %q", decoded.TunnelID)
+	}
+	if decoded.ConnID != "conn-2" {
+		t.Fatalf("unexpected conn id: %q", decoded.ConnID)
+	}
+	if !decoded.IsEOF {
+		t.Fatal("expected EOF flag")
+	}
+	if !bytes.Equal(decoded.Data, data) {
+		t.Fatalf("unexpected data: %q", decoded.Data)
+	}
+}
+
 func TestEncryptDecrypt_EmptyData(t *testing.T) {
 	cc, _ := NewCryptoContext("key")
 	encoded, err := cc.Encrypt([]byte{})

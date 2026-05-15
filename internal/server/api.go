@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 
 	"goremote/internal/common"
 )
@@ -554,15 +553,15 @@ func (s *Server) handleAPIPortStatus(c *gin.Context) {
 func (s *Server) handleAPIListDevices(c *gin.Context) {
 	devices := s.stateStore.GetAllDevices()
 	type deviceInfo struct {
-		ID              string    `json:"id"`
-		Name            string    `json:"name"`
-		Hostname        string    `json:"hostname"`
-		OS              string    `json:"os"`
-		Status          string    `json:"status"`
-		EncEnabled      bool      `json:"enc_enabled"`
-		FirstSeen       time.Time `json:"first_seen"`
-		ApprovedAt      *time.Time `json:"approved_at,omitempty"`
-		Online          bool      `json:"online"`
+		ID         string     `json:"id"`
+		Name       string     `json:"name"`
+		Hostname   string     `json:"hostname"`
+		OS         string     `json:"os"`
+		Status     string     `json:"status"`
+		EncEnabled bool       `json:"enc_enabled"`
+		FirstSeen  time.Time  `json:"first_seen"`
+		ApprovedAt *time.Time `json:"approved_at,omitempty"`
+		Online     bool       `json:"online"`
 	}
 
 	result := make([]deviceInfo, 0, len(devices))
@@ -630,7 +629,6 @@ func (s *Server) handleAPIApproveDevice(c *gin.Context) {
 	}
 
 	if conn, ok := s.deviceMgr.GetPendingConn(deviceID); ok {
-		wsConn := conn.Conn.(*websocket.Conn)
 		okPayload := common.RegisterOKPayload{
 			ClientID:        deviceID,
 			EncKeyEncrypted: encKeyEncrypted,
@@ -638,10 +636,12 @@ func (s *Server) handleAPIApproveDevice(c *gin.Context) {
 			EncEnabled:      device.EncEnabled,
 		}
 		payloadJSON, _ := json.Marshal(okPayload)
-		wsConn.WriteJSON(common.Message{
-			Type:    "register_ok",
-			Payload: payloadJSON,
-		})
+		if conn.Client != nil {
+			conn.Client.WriteJSON(common.Message{
+				Type:    "register_ok",
+				Payload: payloadJSON,
+			})
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -654,14 +654,17 @@ func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 
 	if conn, ok := s.deviceMgr.GetPendingConn(deviceID); ok {
-		wsConn := conn.Conn.(*websocket.Conn)
 		failPayload := common.RegisterFailPayload{Reason: "registration denied by admin"}
 		payloadJSON, _ := json.Marshal(failPayload)
-		wsConn.WriteJSON(common.Message{
-			Type:    "register_fail",
-			Payload: payloadJSON,
-		})
-		wsConn.Close()
+		if conn.Client != nil {
+			conn.Client.WriteJSON(common.Message{
+				Type:    "register_fail",
+				Payload: payloadJSON,
+			})
+			if conn.Client.Conn != nil {
+				conn.Client.Conn.Close()
+			}
+		}
 	}
 
 	if err := s.deviceMgr.DenyDevice(deviceID); err != nil {
@@ -704,9 +707,9 @@ func (s *Server) handleAPIUpdateDeviceConfig(c *gin.Context) {
 	deviceID := c.Param("id")
 
 	var req struct {
-		Name         string   `json:"name"`
-		EncEnabled   *bool    `json:"enc_enabled"`
-		IPWhitelist  []string `json:"ip_whitelist"`
+		Name        string   `json:"name"`
+		EncEnabled  *bool    `json:"enc_enabled"`
+		IPWhitelist []string `json:"ip_whitelist"`
 	}
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {

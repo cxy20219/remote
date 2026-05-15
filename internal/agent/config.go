@@ -8,17 +8,18 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig     `yaml:"server"`
-	Agent     AgentConfig     `yaml:"agent"`
-	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
-	Reconnect ReconnectConfig `yaml:"reconnect"`
-	Log       LogConfig       `yaml:"log"`
-	Tunnel    TunnelConfig    `yaml:"tunnel"`
+	IdentityDir string          `yaml:"-"`
+	Server      ServerConfig    `yaml:"server"`
+	Agent       AgentConfig     `yaml:"agent"`
+	Heartbeat   HeartbeatConfig `yaml:"heartbeat"`
+	Reconnect   ReconnectConfig `yaml:"reconnect"`
+	Log         LogConfig       `yaml:"log"`
+	Tunnel      TunnelConfig    `yaml:"tunnel"`
 }
 
 type ServerConfig struct {
 	Address string    `yaml:"address"`
-	TLS    TLSConfig `yaml:"tls"`
+	TLS     TLSConfig `yaml:"tls"`
 }
 
 type TLSConfig struct {
