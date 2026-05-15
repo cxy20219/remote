@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	TunnelChunkSize         = 128 * 1024
+	TunnelChunkSize         = 256 * 1024
 	WebSocketBufferSize     = 128 * 1024
 	MaxWebSocketMessageSize = 2 * 1024 * 1024
 )
@@ -78,13 +78,6 @@ type TunnelClosePayload struct {
 	ConnID   string `json:"conn_id,omitempty"`
 }
 
-type TunnelDataPayload struct {
-	TunnelID string `json:"tunnel_id"`
-	ConnID   string `json:"conn_id"`
-	Data     string `json:"data"`
-	IsEOF    bool   `json:"is_eof"`
-}
-
 func EncodeBinaryTunnelDataFrame(tunnelID, connID string, data []byte, isEOF bool) ([]byte, error) {
 	if len(tunnelID) > 0xffff {
 		return nil, fmt.Errorf("tunnel_id too long: %d", len(tunnelID))
@@ -118,6 +111,9 @@ func DecodeBinaryTunnelDataFrame(frame []byte) (*BinaryTunnelData, error) {
 	}
 	if frame[0] != 1 {
 		return nil, fmt.Errorf("unsupported binary tunnel frame version: %d", frame[0])
+	}
+	if frame[1]&^byte(1) != 0 {
+		return nil, fmt.Errorf("unsupported binary tunnel frame flags: %d", frame[1])
 	}
 
 	tunnelIDLen := int(binary.BigEndian.Uint16(frame[2:4]))

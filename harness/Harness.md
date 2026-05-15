@@ -86,7 +86,7 @@ go vet ./internal/...
 | `internal/common/identity.go` | ed25519 签名/验证、x25519 ECDH 密钥交换、HKDF 派生 |
 | `internal/server/persist.go` | `StateStore` 异步原子写入 `server-state.json` |
 | `internal/server/device_mgr.go` | `DeviceManager` pending/authorized 审批状态机 |
-| `internal/server/tunnel.go` | 隧道管理，`bufPool` sync.Pool 复用 128KB buffer，支持 WebSocket Binary 隧道数据帧 |
+| `internal/server/tunnel.go` | 隧道管理，`bufPool` sync.Pool 复用 256KB chunk，支持 WebSocket Binary 隧道数据帧 |
 | `internal/server/client.go` | `ClientManager`+`DeviceQuerier` 接口，支持设备级 IP 白名单查询 |
 | `internal/agent/identity.go` | Agent 本地 `~/.goremote/identity` 管理，ECDH 解密 enc_key |
 | `internal/agent/agent.go` | Agent 主循环（pending 等待审批 → reauth 重连，含 pendingApproval 标志） |
@@ -124,14 +124,15 @@ go vet ./internal/...
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 隧道数据加密 | `common/crypto.go` | AES-256-GCM，每设备密钥，ECDH 安全传输 |
-| 隧道数据帧 | `common/message.go` / `server/tunnel.go` / `agent/tunnel.go` | WebSocket Binary frame 传输 nonce+ciphertext，JSON `tunnel_data` 仅作兼容路径 |
+| 隧道数据帧 | `common/message.go` / `server/tunnel.go` / `agent/tunnel.go` | WebSocket Binary frame 传输 nonce+ciphertext；旧 JSON/base64 `tunnel_data` 路径已移除 |
 | 设备身份认证 | `common/identity.go` | ed25519 签名 `client_id:timestamp`，5 分钟窗口防重放 |
 | X25519 密钥交换 | `common/identity.go` | 审批时 ECDH + HKDF-SHA256 派生密钥，加密传输 enc_key |
 | 审批制注册 | `server/device_mgr.go` | 新设备需管理员批准才能接入，pending → authorized |
 | 密钥轮换 | `server/device_mgr.go` | Web UI 一键重新生成密钥，Agent 通过 `register_update` 自动接收 |
-| CheckOrigin | `server/server.go` | `allowed_origins` 白名单，空=放行（含警告日志） |
+| CheckOrigin | `server/server.go` | `allowed_origins` 白名单；空配置只允许无 Origin 的 Agent 请求，拒绝浏览器 Origin |
+| 真实客户端 IP | `server/server.go` | 默认 `SetTrustedProxies(nil)`，公网直连时限流/黑名单只信任 TCP RemoteAddr，避免伪造 `X-Forwarded-For` |
 | 安全响应头 | `server/security.go` | X-Content-Type-Options、X-Frame-Options 等 |
-| Body 大小限制 | `server/security.go` | `max_body_size_mb`，默认不限 |
+| Body 大小限制 | `server/security.go` | `max_body_size_mb`，默认 10MB；运行时修改立即生效，0 表示禁用限制 |
 | 登录速率限制 | `server/security.go` | `login_rate_limit`，默认 5/min/IP |
 | WS 连接限流 | `server/security.go` | `max_conn_per_min`，默认 10/min/IP |
 | 隧道端口防扫描 | `server/tunnel.go` | 同上，黑名单联动 |

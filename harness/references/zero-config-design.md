@@ -195,7 +195,7 @@ Agent 下次重连:
 | `ping` / `pong` | C↔S | 心跳 |
 | `tunnel_open` / `tunnel_open_ack` | C↔S | 隧道创建 |
 | `tunnel_close` | C↔S | 隧道关闭 |
-| `tunnel_data` | C↔S | 隧道数据 |
+| `tunnel_data_bin` | C↔S | 隧道数据（WebSocket Binary frame） |
 | `tunnel_error` | S→C | 隧道错误 |
 
 ### 6.2 register 消息详

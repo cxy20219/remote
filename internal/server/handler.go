@@ -27,8 +27,6 @@ func (h *Handler) Handle(client *Client, msg *common.Message) error {
 		return h.handleTunnelOpen(client, msg)
 	case "tunnel_close":
 		return h.handleTunnelClose(client, msg)
-	case "tunnel_data":
-		return h.handleTunnelData(client, msg)
 	case "tunnel_data_bin":
 		return h.handleTunnelDataBinary(client, msg)
 	case "tunnel_error":
@@ -166,7 +164,7 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 }
 
 func (h *Handler) handlePing(client *Client, msg *common.Message) error {
-	h.server.clients.UpdatePing(client.ClientID)
+	h.server.clients.UpdatePingIfMatch(client.ClientID, client)
 	return client.WriteJSON(common.Message{Type: "pong"})
 }
 
@@ -271,33 +269,6 @@ func (h *Handler) handleTunnelClose(client *Client, msg *common.Message) error {
 	}
 
 	return h.server.tunnelManager.CloseTunnel(payload.TunnelID)
-}
-
-func (h *Handler) handleTunnelData(client *Client, msg *common.Message) error {
-	if h.server.tunnelManager == nil {
-		return fmt.Errorf("tunnel is not enabled")
-	}
-
-	var payload common.TunnelDataPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-		return err
-	}
-
-	if payload.IsEOF && payload.Data == "" {
-		return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, nil, true)
-	}
-
-	tunnel, ok := h.server.tunnelManager.GetTunnel(payload.TunnelID)
-	if !ok || tunnel.ClientID != client.ClientID {
-		return fmt.Errorf("tunnel not found or not owned by client")
-	}
-
-	data, err := h.server.cryptoMgr.Decrypt(client.ClientID, payload.Data)
-	if err != nil {
-		return fmt.Errorf("decrypt failed: %w", err)
-	}
-
-	return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, data, payload.IsEOF)
 }
 
 func (h *Handler) handleTunnelDataBinary(client *Client, msg *common.Message) error {

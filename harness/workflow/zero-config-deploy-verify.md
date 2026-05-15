@@ -254,7 +254,7 @@ $regen.Content
 | 验证项 | 验证方式 | 预期 |
 |--------|---------|------|
 | 服务端健康 | `curl /health` | `{"status":"ok"}` |
-| admin 登录 | `POST /api/login` | 返回 token |
+| admin 登录 | `POST /api/login` | 返回 `status: ok` 并设置 HttpOnly `go_remote_token` Cookie |
 | Agent 注册 | server.log | `waiting for admin approval` |
 | 设备审批 | `POST /api/devices/pending/:id/approve` | `status: approved` |
 | 加密激活 | agent.log | `tunnel data encryption enabled` |
@@ -278,7 +278,7 @@ $regen.Content
 | Agent 不断注册新 pending ID | 未部署 pending 心跳修复；或未知旧 Agent 持续重连；或服务端状态被重置 | 部署新版 Agent/Server；清理或拉黑未知 pending 来源；必要时清空 Agent identity 后重新注册 |
 | 高并发 SSH 大量关闭 | 压测来源触发 `max_conn_per_min=10` 防扫描限流 | 将压测来源 IP 加入全局白名单后复测 |
 | agent.log 出现 `registration failed` | 服务端重启后旧设备消失 | 清空 `~/.goremote/identity` 重新注册，或在服务端重新审批 |
-| agent.log 出现 `non-fatal message error, continuing` | tunnel_data 解密失败或外部连接已关闭 | 正常行为（端口扫描器的短连接），不影响 Agent 连接 |
+| agent.log 出现 `non-fatal message error, continuing` | 二进制隧道帧处理失败或外部连接已关闭 | 正常行为（端口扫描器的短连接），不影响 Agent 连接 |
 | server-state.json 损坏 | 磁盘写异常 | 手工修复 JSON 或删除后重启（密钥和设备信息丢失） |
 | 服务端启动报端口占用 | 旧进程未清理 | `fuser -k 8080/tcp` 再启动 |
 

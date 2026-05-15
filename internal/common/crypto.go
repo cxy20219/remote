@@ -57,13 +57,14 @@ func (cc *CryptoContext) EncryptBytes(plaintext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("crypto context is nil")
 	}
 
-	nonce := make([]byte, cc.gcm.NonceSize())
+	nonceSize := cc.gcm.NonceSize()
+	out := make([]byte, nonceSize, nonceSize+len(plaintext)+cc.gcm.Overhead())
+	nonce := out[:nonceSize]
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
 	}
 
-	ciphertext := cc.gcm.Seal(nonce, nonce, plaintext, nil)
-	return ciphertext, nil
+	return cc.gcm.Seal(out, nonce, plaintext, nil), nil
 }
 
 func (cc *CryptoContext) Decrypt(encoded string) ([]byte, error) {

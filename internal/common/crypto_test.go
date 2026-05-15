@@ -125,6 +125,18 @@ func TestBinaryTunnelDataFrame_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestBinaryTunnelDataFrameRejectsUnknownFlags(t *testing.T) {
+	frame, err := EncodeBinaryTunnelDataFrame("tun-1", "conn-2", []byte("data"), false)
+	if err != nil {
+		t.Fatalf("EncodeBinaryTunnelDataFrame failed: %v", err)
+	}
+
+	frame[1] = 0b10
+	if _, err := DecodeBinaryTunnelDataFrame(frame); err == nil {
+		t.Fatal("expected unknown flags to be rejected")
+	}
+}
+
 func TestEncryptDecrypt_EmptyData(t *testing.T) {
 	cc, _ := NewCryptoContext("key")
 	encoded, err := cc.Encrypt([]byte{})

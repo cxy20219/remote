@@ -5,17 +5,17 @@ server:
     enabled: false
 
 auth:
-  key: "test-secret-key"
+  key: "CHANGE-ME-auth-key"
 
 admin:
-  password: "admin123"
+  password: "CHANGE-ME-admin-password"
 
 security:
-  # WebSocket origin whitelist (empty = allow all)
+  # WebSocket origin whitelist (empty = reject browser Origin; agent requests without Origin are allowed)
   allowed_origins: []
   # Max login attempts per minute per IP
   login_rate_limit: 5
-  # Max HTTP request body size in MB
+  # Max HTTP request body size in MB (default 10; 0 disables the limit)
   max_body_size_mb: 10
   # Max connections per minute per IP (anti-scanning, 0 to disable, default 10)
   max_conn_per_min: 10

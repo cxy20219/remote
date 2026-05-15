@@ -35,8 +35,7 @@
 | tunnel_open | C→S | 客户端申请创建隧道 |
 | tunnel_open_ack | S→C | 服务端返回分配的公网端口 |
 | tunnel_close | C↔S | 任一方关闭隧道 |
-| tunnel_data | C↔S | 隧道数据（旧 JSON/base64 兼容路径） |
-| tunnel_data_bin | C↔S | 隧道数据（二进制 WebSocket frame，当前主路径） |
+| tunnel_data_bin | C↔S | 隧道数据（二进制 WebSocket frame，唯一数据路径） |
 | tunnel_error | S→C | 隧道错误通知 |
 
 ### 2.2 消息格式
@@ -64,14 +63,6 @@ type TunnelClosePayload struct {
     ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
 }
 
-// TunnelDataPayload - 隧道数据传输（双向，旧 JSON/base64 兼容路径）
-type TunnelDataPayload struct {
-    TunnelID string `json:"tunnel_id"`
-    ConnID   string `json:"conn_id"`  // 外部连接的标识，区分同一隧道的多个并发连接
-    Data     string `json:"data"`     // base64 encoded AES-GCM nonce+ciphertext
-    IsEOF    bool   `json:"is_eof"`   // 是否结束，用于短连接协议如 HTTP
-}
-
 // TunnelErrorPayload - 隧道错误
 type TunnelErrorPayload struct {
     TunnelID string `json:"tunnel_id"`
@@ -80,7 +71,7 @@ type TunnelErrorPayload struct {
 }
 ```
 
-当前主路径使用 WebSocket BinaryMessage 传输隧道数据，避免 JSON/base64 对大吞吐 SSH/SCP 的额外开销。控制消息仍使用 JSON text frame。
+当前只使用 WebSocket BinaryMessage 传输隧道数据，避免 JSON/base64 对大吞吐 SSH/SCP 的额外开销。控制消息仍使用 JSON text frame。
 
 二进制帧布局（`internal/common/message.go`）：
 
@@ -95,16 +86,18 @@ type TunnelErrorPayload struct {
 | 10+N | M | conn_id | UTF-8 字符串 |
 | ... | K | data | AES-GCM nonce+ciphertext 原始字节 |
 
+`flags` 当前只允许 bit0。收到未知 bit 必须拒绝该帧，避免畸形帧或未来协议扩展被旧逻辑静默接受。
+
 服务端和 Agent 的 `ReadMessage()` 会按 frame type 分流：
 
 - TextMessage → `common.Message` JSON 控制消息。
 - BinaryMessage → `DecodeBinaryTunnelDataFrame`，包装为内部消息类型 `tunnel_data_bin`。
 
-`tunnel_data` JSON 路径仍保留，用于兼容旧 Agent/Server 或测试旧协议；新性能验证应以 `tunnel_data_bin` 为准。
+旧 `tunnel_data` JSON/base64 路径已移除；旧 Agent/Server 必须升级后才能互通。
 
 ### 2.3 数据流说明
 
-**tunnel_data 双向含义**：
+**tunnel_data_bin 双向含义**：
 - **Server → Agent**：外部用户的请求数据
 - **Agent → Server**：本地服务的响应数据
 
@@ -506,13 +499,13 @@ curl http://server.example.com:15002/
 
 1. **端口监听架构**：Server 需要在 Gin HTTP 服务器（8080）**之外**，使用独立的 `net.Listener` 监听公网映射端口
 
-2. **二进制数据帧**：隧道数据使用 WebSocket Binary frame 传输 AES-GCM nonce+ciphertext，控制消息仍为 JSON；旧 `tunnel_data` JSON/base64 路径仅作兼容
+2. **二进制数据帧**：隧道数据只使用 WebSocket Binary frame 传输 AES-GCM nonce+ciphertext，控制消息仍为 JSON；旧 `tunnel_data` JSON/base64 路径已移除
 
 3. **Goroutine 管理**：
    - Server：每个公网端口监听独立 goroutine
    - Agent：每个 conn_id 的本地连接独立 goroutine
 
-4. **按需连接**：Agent 在收到 `tunnel_data` 之前不连接本地服务，确保有数据消费方
+4. **按需连接**：Agent 在收到 `tunnel_data_bin` 之前不连接本地服务，确保有数据消费方
 
 5. **conn_id 设计**：用于区分同一隧道上的多个并发外部连接（如 SSH keep-alive、HTTP keep-alive）
 

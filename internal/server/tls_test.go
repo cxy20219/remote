@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,7 +36,7 @@ func generateServerCert(t *testing.T, dir string) (certPath, keyPath string) {
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:            []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
 	}
@@ -111,6 +112,40 @@ func TestNewServer_TLSDisabled(t *testing.T) {
 
 	if srv.tlsEnabled {
 		t.Fatal("tlsEnabled should be false")
+	}
+}
+
+func TestBuildOriginCheckerRejectsBrowserOriginByDefault(t *testing.T) {
+	srv := &Server{}
+	check := srv.buildOriginChecker(nil)
+
+	if !check(&http.Request{Header: http.Header{}}) {
+		t.Fatal("agent-style request without Origin should be allowed")
+	}
+
+	req := &http.Request{Header: http.Header{"Origin": []string{"https://evil.example"}}}
+	if check(req) {
+		t.Fatal("browser request with Origin should be rejected when no allowed origins are configured")
+	}
+}
+
+func TestBuildOriginCheckerRequiresExactOrigin(t *testing.T) {
+	srv := &Server{}
+	check := srv.buildOriginChecker([]string{"https://admin.example:8443"})
+
+	allowed := &http.Request{Header: http.Header{"Origin": []string{"https://admin.example:8443"}}}
+	if !check(allowed) {
+		t.Fatal("configured origin should be allowed")
+	}
+
+	differentPort := &http.Request{Header: http.Header{"Origin": []string{"https://admin.example"}}}
+	if check(differentPort) {
+		t.Fatal("same host with different implicit port should be rejected")
+	}
+
+	differentScheme := &http.Request{Header: http.Header{"Origin": []string{"http://admin.example:8443"}}}
+	if check(differentScheme) {
+		t.Fatal("same host with different scheme should be rejected")
 	}
 }
 

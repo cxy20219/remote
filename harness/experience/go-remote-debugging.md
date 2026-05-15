@@ -80,7 +80,7 @@ curl.exe -d '{"key":"value"}' -H "Content-Type: application/json" url
 ### 2.3 Cookie 管理
 
 ```powershell
-curl.exe -k -c cookies.txt -X POST https://server/api/login -d '{"password":"admin123"}'
+curl.exe -k -c cookies.txt -X POST https://server/api/login -d '{"password":"ADMIN_PASSWORD"}'
 curl.exe -k -b cookies.txt https://server/api/tunnels
 ```
 
@@ -240,7 +240,7 @@ curl.exe -k -b cookies.txt -s -X PUT "http://server:8080/api/security/blacklist-
 
 # 2. 发送超过限流次数的请求触发违规累计
 # 以 login_rate_limit=5 为例，发送6次请求
-$body = '{"password":"admin123"}'; 1..6 | ForEach-Object {
+$body = '{"password":"ADMIN_PASSWORD"}'; 1..6 | ForEach-Object {
   $r = curl.exe -k -s -c cookies.txt -X POST "http://server:8080/api/login" -H "Content-Type: application/json" -d $body
   Write-Host "$_ : $r"
 }
@@ -261,19 +261,18 @@ plink root@host "bash /path/to/recover.sh"
 当本地 IP 被误拉黑时，通过 plink 从服务器 localhost 执行 curl：
 
 ```bash
-# 登录获取 token（127.0.0.1 不受黑名单限制）
-TOKEN=$(curl -s -X POST http://localhost:8080/api/login \
+# 登录获取 HttpOnly Cookie（127.0.0.1 不受黑名单限制）
+curl -s -c /tmp/goremote-cookie.txt -X POST http://localhost:8080/api/login \
   -H "Content-Type: application/json" \
-  -d '{"password":"admin123"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+  -d '{"password":"ADMIN_PASSWORD"}'
 
-# 注意 cookie 名称是 go_remote_token，不是 token
 curl -s -X DELETE "http://localhost:8080/api/security/blacklist/1.2.3.4" \
-  -H "Cookie: go_remote_token=$TOKEN"
+  -b /tmp/goremote-cookie.txt
 ```
 
 **关键要点**：
 - admin auth cookie 名称为 `go_remote_token`（见 `admin_auth.go:89`）
-- 前端 API 通过 cookie 校验，`/api/login` 返回的 JSON 中的 token 字段也是此值
+- 前端 API 通过 HttpOnly Cookie 校验；新版 `/api/login` 不再在 JSON 正文返回 token
 - 本地 IP 被黑名单不影响服务器 127.0.0.1 的 API 访问
 - 恢复脚本适合写入临时文件后通过 pscp 上传执行
 
@@ -373,11 +372,11 @@ curl.exe -k -b cookies.txt -s -X PUT "http://server:8080/api/security/global-whi
 
 # 验证旁路限流：白名单 IP 连续多次请求不应被限流
 1..10 | ForEach-Object {
-  '{"password":"admin123"}' | Out-File "log$_.json" -Encoding ascii
+  '{"password":"ADMIN_PASSWORD"}' | Out-File "log$_.json" -Encoding ascii
   $r = curl.exe -k -c cookies.txt -s -X POST "http://server:8080/api/login" -H "Content-Type: application/json" -d "@log$_.json"
   Write-Host "$_ : $r"
 }
-# 全部应返回 {"status":"ok","token":"..."}，无 "too many requests"
+# 全部应返回 {"status":"ok"}，并通过 Set-Cookie 写入 `go_remote_token`，无 "too many requests"
 ```
 
 ### 9.2 黑名单管理 API

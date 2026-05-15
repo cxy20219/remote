@@ -35,8 +35,6 @@ func (h *Handler) Handle(msg *common.Message) error {
 		return h.handleTunnelOpenAck(msg)
 	case "tunnel_close":
 		return h.handleTunnelClose(msg)
-	case "tunnel_data":
-		return h.handleTunnelData(msg)
 	case "tunnel_data_bin":
 		return h.handleTunnelDataBinary(msg)
 	case "tunnel_error":
@@ -173,47 +171,6 @@ func (h *Handler) handleTunnelClose(msg *common.Message) error {
 
 	slog.Info("tunnel close request", "tunnel_id", payload.TunnelID)
 	return h.agent.tunnelManager.CloseTunnel(payload.TunnelID)
-}
-
-func (h *Handler) handleTunnelData(msg *common.Message) error {
-	var payload common.TunnelDataPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-		return err
-	}
-
-	if payload.IsEOF && payload.Data == "" {
-		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
-		return nil
-	}
-
-	clientID := h.agent.GetClientID()
-	data, err := h.agent.cryptoMgr.Decrypt(clientID, payload.Data)
-	if err != nil {
-		return fmt.Errorf("decrypt failed: %w", err)
-	}
-
-	conn, err := h.agent.tunnelManager.GetOrCreateLocalConn(payload.ConnID, payload.TunnelID)
-	if err != nil {
-		h.agent.tunnelManager.SendError(payload.TunnelID, payload.ConnID, err.Error())
-		return err
-	}
-
-	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	_, err = conn.Write(data)
-	conn.SetWriteDeadline(time.Time{})
-	if err != nil {
-		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
-		h.agent.tunnelManager.SendError(payload.TunnelID, payload.ConnID, err.Error())
-		return err
-	}
-
-	h.agent.tunnelManager.StartReadLoop(payload.ConnID, payload.TunnelID)
-
-	if payload.IsEOF {
-		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
-	}
-
-	return nil
 }
 
 func (h *Handler) handleTunnelDataBinary(msg *common.Message) error {

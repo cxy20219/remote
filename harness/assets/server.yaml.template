@@ -5,10 +5,10 @@ server:
     enabled: false
 
 auth:
-  key: "test-secret-key"
+  key: "CHANGE-ME-auth-key"
 
 admin:
-  password: "admin123"
+  password: "CHANGE-ME-admin-password"
 
 security:
   allowed_origins:

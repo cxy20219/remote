@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,9 +28,13 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	token, _ := s.adminAuth.GenerateToken()
-	c.SetCookie("go_remote_token", token, 86400, "/", "", false, true)
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "token": token})
+	token, err := s.adminAuth.GenerateToken()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
+		return
+	}
+	s.setAdminCookie(c, token, 86400)
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func (s *Server) handleLogout(c *gin.Context) {
@@ -37,8 +42,14 @@ func (s *Server) handleLogout(c *gin.Context) {
 	if token != "" {
 		s.adminAuth.Logout(token)
 	}
-	c.SetCookie("go_remote_token", "", -1, "/", "", false, true)
+	s.setAdminCookie(c, "", -1)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (s *Server) setAdminCookie(c *gin.Context, token string, maxAge int) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	secure := s.tlsEnabled || c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	c.SetCookie("go_remote_token", token, maxAge, "/", "", secure, true)
 }
 
 func (s *Server) handleCheckAuth(c *gin.Context) {
@@ -78,6 +89,51 @@ type TunnelRequest struct {
 	LocalAddr string `json:"local_addr"`
 	LocalPort int    `json:"local_port"`
 	Protocol  string `json:"protocol"`
+}
+
+type settingsUpdateRequest struct {
+	PortRangeStart      *int     `json:"port_range_start"`
+	PortRangeEnd        *int     `json:"port_range_end"`
+	MaxTunnelsPerClient *int     `json:"max_tunnels_per_client"`
+	DefaultLocalAddr    *string  `json:"default_local_addr"`
+	PublicHost          *string  `json:"public_host"`
+	MaxConnPerMin       *int     `json:"max_conn_per_min"`
+	LoginRateLimit      *int     `json:"login_rate_limit"`
+	BlacklistThreshold  *int     `json:"blacklist_threshold"`
+	MaxBodySizeMB       *int     `json:"max_body_size_mb"`
+	HeartbeatInterval   *int     `json:"heartbeat_interval"`
+	HeartbeatTimeout    *int     `json:"heartbeat_timeout"`
+	GlobalWhitelist     []string `json:"global_whitelist"`
+}
+
+func normalizeTunnelTarget(localAddr string, localPort int, protocol string, defaultLocalAddr string) (string, string, error) {
+	localAddr = strings.TrimSpace(localAddr)
+	if localAddr == "" {
+		localAddr = strings.TrimSpace(defaultLocalAddr)
+	}
+	if localAddr == "" {
+		return "", "", fmt.Errorf("local_addr is required")
+	}
+	if strings.ContainsAny(localAddr, "\x00\r\n\t ") {
+		return "", "", fmt.Errorf("local_addr contains invalid whitespace or control characters")
+	}
+	if host, port, err := net.SplitHostPort(localAddr); err == nil && host != "" && port != "" {
+		return "", "", fmt.Errorf("local_addr must not include a port")
+	}
+
+	if localPort < 1 || localPort > 65535 {
+		return "", "", fmt.Errorf("local_port must be in range 1-65535")
+	}
+
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	if protocol != "tcp" {
+		return "", "", fmt.Errorf("unsupported protocol %q: only tcp is supported", protocol)
+	}
+
+	return localAddr, protocol, nil
 }
 
 func (s *Server) handleAPIClients(c *gin.Context) {
@@ -160,19 +216,19 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		return
 	}
 
-	if req.ClientID == "" || req.LocalPort == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "client_id and local_port are required"})
+	if req.ClientID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "client_id is required"})
 		return
 	}
 
-	if req.Protocol == "" {
-		req.Protocol = "tcp"
-	}
-
 	settings := s.stateStore.GetSettings()
-	if req.LocalAddr == "" {
-		req.LocalAddr = settings.DefaultLocalAddr
+	localAddr, protocol, err := normalizeTunnelTarget(req.LocalAddr, req.LocalPort, req.Protocol, settings.DefaultLocalAddr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
+	req.LocalAddr = localAddr
+	req.Protocol = protocol
 
 	client, ok := s.clients.Get(req.ClientID)
 	if !ok {
@@ -342,18 +398,14 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 		return
 	}
 
-	if req.LocalPort == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "local_port is required"})
+	settings := s.stateStore.GetSettings()
+	localAddr, protocol, err := normalizeTunnelTarget(req.LocalAddr, req.LocalPort, req.Protocol, settings.DefaultLocalAddr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	settings := s.stateStore.GetSettings()
-	if req.LocalAddr == "" {
-		req.LocalAddr = settings.DefaultLocalAddr
-	}
-	if req.Protocol == "" {
-		req.Protocol = "tcp"
-	}
+	req.LocalAddr = localAddr
+	req.Protocol = protocol
 
 	tunnel, err := s.tunnelManager.UpdateTunnel(tunnelID, req.LocalAddr, req.LocalPort, req.PublicPort, req.Protocol)
 	if err != nil {
@@ -781,7 +833,7 @@ func (s *Server) handleAPIGetSettings(c *gin.Context) {
 }
 
 func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
-	var req ServerSettings
+	var req settingsUpdateRequest
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
@@ -793,46 +845,93 @@ func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 		return
 	}
 
-	s.stateStore.UpdateSettings(func(st *ServerSettings) {
-		if req.PortRangeStart > 0 {
-			st.PortRangeStart = req.PortRangeStart
+	settings := s.stateStore.GetSettings()
+	if req.PortRangeStart != nil {
+		if *req.PortRangeStart < 1 || *req.PortRangeStart > 65535 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "port_range_start must be in range 1-65535"})
+			return
 		}
-		if req.PortRangeEnd > 0 {
-			st.PortRangeEnd = req.PortRangeEnd
-		}
-		if req.MaxTunnelsPerClient > 0 {
-			st.MaxTunnelsPerClient = req.MaxTunnelsPerClient
-		}
-		if req.DefaultLocalAddr != "" {
-			st.DefaultLocalAddr = req.DefaultLocalAddr
-		}
-		if req.MaxConnPerMin > 0 {
-			st.MaxConnPerMin = req.MaxConnPerMin
-		}
-		if req.LoginRateLimit > 0 {
-			st.LoginRateLimit = req.LoginRateLimit
-		}
-		if req.BlacklistThreshold > 0 {
-			st.BlacklistThreshold = req.BlacklistThreshold
-		}
-		if req.MaxBodySizeMB > 0 {
-			st.MaxBodySizeMB = req.MaxBodySizeMB
-		}
-		if req.HeartbeatInterval > 0 {
-			st.HeartbeatInterval = req.HeartbeatInterval
-		}
-		if req.HeartbeatTimeout > 0 {
-			st.HeartbeatTimeout = req.HeartbeatTimeout
-		}
-		if req.GlobalWhitelist != nil {
-			st.GlobalWhitelist = req.GlobalWhitelist
-		}
-	})
-
-	if s.tunnelManager != nil {
-		settings := s.stateStore.GetSettings()
-		s.tunnelManager.SetPortRange(settings.PortRangeStart, settings.PortRangeEnd)
+		settings.PortRangeStart = *req.PortRangeStart
 	}
+	if req.PortRangeEnd != nil {
+		if *req.PortRangeEnd < 1 || *req.PortRangeEnd > 65535 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "port_range_end must be in range 1-65535"})
+			return
+		}
+		settings.PortRangeEnd = *req.PortRangeEnd
+	}
+	if settings.PortRangeStart > settings.PortRangeEnd {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "port_range_start must be <= port_range_end"})
+		return
+	}
+	if req.MaxTunnelsPerClient != nil {
+		if *req.MaxTunnelsPerClient < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "max_tunnels_per_client must be >= 0"})
+			return
+		}
+		settings.MaxTunnelsPerClient = *req.MaxTunnelsPerClient
+	}
+	if req.DefaultLocalAddr != nil {
+		addr := strings.TrimSpace(*req.DefaultLocalAddr)
+		if addr == "" || strings.ContainsAny(addr, "\x00\r\n\t ") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "default_local_addr is invalid"})
+			return
+		}
+		settings.DefaultLocalAddr = addr
+	}
+	if req.PublicHost != nil {
+		settings.PublicHost = strings.TrimSpace(*req.PublicHost)
+	}
+	if req.MaxConnPerMin != nil {
+		if *req.MaxConnPerMin < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "max_conn_per_min must be >= 0"})
+			return
+		}
+		settings.MaxConnPerMin = *req.MaxConnPerMin
+	}
+	if req.LoginRateLimit != nil {
+		if *req.LoginRateLimit < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "login_rate_limit must be >= 0"})
+			return
+		}
+		settings.LoginRateLimit = *req.LoginRateLimit
+	}
+	if req.BlacklistThreshold != nil {
+		if *req.BlacklistThreshold < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "blacklist_threshold must be >= 0"})
+			return
+		}
+		settings.BlacklistThreshold = *req.BlacklistThreshold
+	}
+	if req.MaxBodySizeMB != nil {
+		if *req.MaxBodySizeMB < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "max_body_size_mb must be >= 0"})
+			return
+		}
+		settings.MaxBodySizeMB = *req.MaxBodySizeMB
+	}
+	if req.HeartbeatInterval != nil {
+		if *req.HeartbeatInterval < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "heartbeat_interval must be >= 1"})
+			return
+		}
+		settings.HeartbeatInterval = *req.HeartbeatInterval
+	}
+	if req.HeartbeatTimeout != nil {
+		if *req.HeartbeatTimeout < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "heartbeat_timeout must be >= 1"})
+			return
+		}
+		settings.HeartbeatTimeout = *req.HeartbeatTimeout
+	}
+	if req.GlobalWhitelist != nil {
+		settings.GlobalWhitelist = deduplicateIPs(req.GlobalWhitelist)
+	}
+
+	s.stateStore.UpdateSettings(func(st *ServerSettings) {
+		*st = settings
+	})
+	s.applyRuntimeSettings(settings)
 
 	c.JSON(http.StatusOK, s.stateStore.GetSettings())
 }

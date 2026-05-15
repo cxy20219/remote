@@ -16,21 +16,21 @@
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `key` | string | `test-secret-key` | Agent 注册认证密钥 |
+| `key` | string | `CHANGE-ME-auth-key` | 旧版共享密钥字段；零配置架构下不再作为 Agent 身份主路径 |
 
 ### admin
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `password` | string | `admin123` | Web 管理界面登录密码 |
+| `password` | string | `CHANGE-ME-admin-password` | 旧版配置密码字段；零配置架构下首次启动会随机生成 admin 密码并写入 bcrypt hash |
 
 ### security
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `allowed_origins` | []string | `[]` | WebSocket Origin 白名单（空=允许所有，生产建议配置） |
+| `allowed_origins` | []string | `[]` | WebSocket Origin 白名单；空配置只允许无 Origin 的 Agent 请求，拒绝浏览器 Origin；配置值需为完整 Origin（如 `https://admin.example.com:8443`） |
 | `login_rate_limit` | int | `5` | 每分钟每 IP 最大登录尝试次数（0=禁用） |
-| `max_body_size_mb` | int | `10` | HTTP 请求体最大大小（MB，0=无限制） |
+| `max_body_size_mb` | int | `10` | HTTP 请求体最大大小（MB，运行时修改立即生效；0=禁用限制） |
 | `max_conn_per_min` | int | `10` | WebSocket 连接和隧道端口每分钟每 IP 最大连接数（防扫描，0=禁用） |
 | `global_whitelist` | []string | `[]` | 全局 IP 白名单，支持 CIDR（如 `192.168.1.0/24`）；白名单内 IP 绕过所有限流检查 |
 | `blacklist_threshold` | int | `100` | 累计限流违规次数阈值；达到后 IP 自动拉黑，后续请求直接拒绝（0=禁用自动拉黑） |
@@ -126,7 +126,7 @@ server:
   port: 8080
 
 auth:
-  key: "test-secret-key"
+  key: "CHANGE-ME-auth-key"
 
 tunnel:
   public_host: "localhost"
@@ -140,7 +140,7 @@ server:
   address: "localhost:8080"
 
 auth:
-  key: "test-secret-key"
+  key: "CHANGE-ME-auth-key"
 
 reconnect:
   interval: 5

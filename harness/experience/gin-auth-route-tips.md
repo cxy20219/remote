@@ -85,7 +85,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 }
 ```
 
-`curl -X POST -d '{"password":"admin123"}'` 返回 `invalid request`。
+`curl -X POST -d '{"password":"ADMIN_PASSWORD"}'` 返回 `invalid request`。
 
 ### 原因
 `ShouldBindJSON` 要求 `Content-Type: application/json` 头。
@@ -93,7 +93,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 ### 正确调用
 ```bash
 # ✅ 必须带 Content-Type 头
-curl -X POST -H 'Content-Type: application/json' -d '{"password":"admin123"}'
+curl -X POST -H 'Content-Type: application/json' -d '{"password":"ADMIN_PASSWORD"}'
 
 # ✅ 用文件传 JSON 也需指定 Content-Type
 curl -X POST -H 'Content-Type: application/json' -d @file.json
@@ -105,19 +105,23 @@ curl -X POST -H 'Content-Type: application/json' -d @file.json
 
 ### `SetCookie` 参数
 ```go
-c.SetCookie("go_remote_token", token, 86400, "/", "", false, true)
+secure := s.tlsEnabled || c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+c.SetSameSite(http.SameSiteStrictMode)
+c.SetCookie("go_remote_token", token, 86400, "/", "", secure, true)
 //                  name      value   maxAge path domain secure httpOnly
 ```
 
 - `maxAge`: 秒，`86400` = 24h
 - `path`: `"/"` 使 cookie 对整个站点生效
 - `domain`: 空字符串 = 当前请求域名
-- `secure`: `false`（开发环境 HTTP 可用）
+- `secure`: TLS 或反向代理 HTTPS 场景下为 `true`
 - `httpOnly`: `true`（JS 不可读，防 XSS）
+- `SameSite=Strict`: 降低跨站请求携带管理 Cookie 的风险
 
 ### 清除 Cookie（登出）
 ```go
-c.SetCookie("go_remote_token", "", -1, "/", "", false, true)
+c.SetSameSite(http.SameSiteStrictMode)
+c.SetCookie("go_remote_token", "", -1, "/", "", secure, true)
 ```
 
 ---

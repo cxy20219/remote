@@ -16,10 +16,10 @@ admin:
   password: "your-admin-password"    # Web 管理界面密码（必改）
 
 security:
-  allowed_origins:                   # WebSocket Origin 白名单
-    - "your-domain.com"
+  allowed_origins:                   # WebSocket Origin 白名单；空配置拒绝浏览器 Origin
+    - "https://your-domain.com"
   login_rate_limit: 5                # 登录速率限制（次/分/IP），0=禁用
-  max_body_size_mb: 10               # 请求体最大大小（MB），0=无限制
+  max_body_size_mb: 10               # 请求体最大大小（MB），默认 10，0=禁用限制
 
 heartbeat:
   interval: 30           # 心跳检测间隔（秒）

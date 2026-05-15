@@ -43,7 +43,7 @@
 | Client Manager | 维护客户端在线状态，client_id ↔ 连接映射，IP 白名单存储 |
 | Tunnel Manager | 管理端口映射隧道，含端口防扫描限流（portLimiter） |
 | Handler | 消息路由，分发给对应处理函数 |
-| Security | 安全中间件：响应头、Body 限大、登录限流、WS 限流（connLimiter）、IP 白名单检查 |
+| Security | 安全中间件：响应头、CSP、动态 Body 限大、登录限流、WS 限流（connLimiter）、IP 白名单检查；公网直连默认不信任代理头 |
 | Logger | 日志记录 |
 
 ## 3. 数据结构
@@ -106,13 +106,6 @@ type TunnelClosePayload struct {
     ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
 }
 
-type TunnelDataPayload struct {
-    TunnelID string `json:"tunnel_id"`
-    ConnID   string `json:"conn_id"`  // 外部连接的标识，区分同一隧道的多个并发连接
-    Data     string `json:"data"`     // base64 encoded
-    IsEOF    bool   `json:"is_eof"`   // 是否结束，用于短连接协议如 HTTP
-}
-
 type TunnelErrorPayload struct {
     TunnelID string `json:"tunnel_id"`
     ConnID   string `json:"conn_id,omitempty"`
@@ -134,7 +127,7 @@ type TunnelErrorPayload struct {
 | tunnel_open | C→S | 申请创建隧道 |
 | tunnel_open_ack | S→C | 隧道创建确认 |
 | tunnel_close | C↔S | 关闭隧道 |
-| tunnel_data | C↔S | 隧道数据（双向） |
+| tunnel_data_bin | C↔S | 隧道数据（双向，WebSocket Binary frame） |
 | tunnel_error | S→C | 隧道错误通知 |
 
 ### 4.2 消息流程
@@ -191,9 +184,9 @@ type Server struct {
     tunnelManager *TunnelManager
 
     // Rate limiter 实例
-    loginLimiter  *RateLimiter  // 登录限流（login_rate_limit/min/IP）
-    connLimiter   *RateLimiter  // WS 连接限流（max_conn_per_min/IP）
-    portLimiter   *RateLimiter  // 隧道端口防扫描（max_conn_per_min/IP）
+    loginLimiter  *RateLimiter  // 登录限流（login_rate_limit/min/IP，运行时可更新）
+    connLimiter   *RateLimiter  // WS 连接限流（max_conn_per_min/IP，运行时可更新）
+    portLimiter   *RateLimiter  // 隧道端口防扫描（max_conn_per_min/IP，运行时可更新）
 
     upgrader websocket.Upgrader
     engine   *gin.Engine
@@ -242,8 +235,8 @@ func (h *Handler) Handle(client *Client, msg *Message) error {
         return h.handleTunnelOpen(client, msg)
     case "tunnel_close":
         return h.handleTunnelClose(client, msg)
-    case "tunnel_data":
-        return h.handleTunnelData(client, msg)
+    case "tunnel_data_bin":
+        return h.handleTunnelDataBinary(client, msg)
     default:
         return fmt.Errorf("unknown message type: %s", msg.Type)
     }

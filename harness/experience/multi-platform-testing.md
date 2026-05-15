@@ -390,7 +390,7 @@ plink -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw "PASSWORD" user@YOUR_SERV
 ### 性能结论
 
 - 隧道数据从 JSON+base64 改为 WebSocket Binary frame，控制消息仍走 JSON；AES-GCM 直接传 nonce+ciphertext 字节。
-- buffer 和 WebSocket 读写缓冲统一为 128KB，减少帧数和分配压力。
+- 隧道读写 chunk 提升到 256KB，WebSocket 缓冲保持 128KB，减少大文件传输帧数和加密调用次数。
 - 50MB 上传从 JSON 版约 176 秒降到二进制帧版约 133 秒，SHA256 一致。
 - 50MB 下载约 129 秒；公网服务端直连下载到本地约 0.38MB/s，说明主要瓶颈是公网服务端出方向链路，不应继续盲目归因到隧道协议。
 - 内网直连 50MB 上传/下载约 5-7 秒，说明内网 SSH 服务和本地网络不是瓶颈。
@@ -419,3 +419,28 @@ plink -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw "PASSWORD" user@YOUR_SERV
 ### 应升级为固定流程
 
 已沉淀为 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md)。以后涉及隧道协议、pending、WebSocket、设备身份、Android Agent、端口限流的改动，均应执行该流程的核心检查。
+
+## 17. 2026-05-15 第二轮极限稳定性与安全优化
+
+### 背景
+
+在二进制隧道和三端压测通过后，继续从“默认安全边界、运行时设置生效、坏链路隔离、协议完整性”复查代码。目标不是兼容旧行为，而是降低公网复杂 SSH/短连接场景下的尾部风险。
+
+### 可复用判断
+
+- Gin 默认代理信任会让 `ClientIP()` 受 `X-Forwarded-For` 影响；公网直连部署必须默认 `SetTrustedProxies(nil)`，否则登录限流、WS 限流、黑名单可能被伪造请求头绕过。若未来需要反代，应显式增加可信代理配置，而不是恢复“信任所有代理”。
+- `max_conn_per_min`、`login_rate_limit` 等运行时设置修改后必须同步刷新内存限流器；只写入 `server-state.json` 会造成 UI 显示已保存但实际仍按旧阈值执行。
+- Agent 连接本地服务时不要持有 `TunnelManager` 写锁做 `DialTimeout`。本地端口异常或防火墙阻断时，10 秒拨号会拖住其他连接、关闭和 cleanup。
+- EOF 控制帧不需要再做 AES-GCM 空明文加密。发送空 data + `is_eof=true` 可减少关闭路径的一次随机数读取、加密和解密，同时服务端/Agent 已有兼容处理。
+- 隧道二进制帧的 flags 应拒绝未知 bit。协议扩展必须显式升级版本或定义新 flag，不能静默接受未来/畸形帧。
+- HTTP 请求体默认应有限制。当前默认 `max_body_size_mb=10`；运行时可改，`0` 表示禁用限制，但生产不建议长期关闭。
+
+### 验证
+
+- 新增/补充测试覆盖：限流器 `0=禁用`、限流器运行时更新、动态请求体限制、隧道目标参数校验、二进制帧未知 flags 拒绝。
+- 已通过 `go test ./...`、`go vet ./internal/...`、`go build ./...`。
+
+### 关联流程
+
+- 代码改动后仍按 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md) 做三端回归。
+- 配置和安全边界说明见 [配置参考](../references/config-reference.md) 与 [Harness 开发指南](../Harness.md)。

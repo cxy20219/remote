@@ -53,7 +53,7 @@
 | tunnel_open | C→S | 申请创建隧道 |
 | tunnel_open_ack | S→C | 隧道创建确认 |
 | tunnel_close | C↔S | 关闭隧道 |
-| tunnel_data | C↔S | 隧道数据（双向） |
+| tunnel_data_bin | C↔S | 隧道数据（双向，WebSocket Binary frame） |
 | tunnel_error | S→C | 隧道错误通知 |
 
 ### 3.2 消息格式
@@ -85,13 +85,6 @@ type TunnelOpenAckPayload struct {
 type TunnelClosePayload struct {
     TunnelID string `json:"tunnel_id"`
     ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
-}
-
-type TunnelDataPayload struct {
-    TunnelID string `json:"tunnel_id"`
-    ConnID   string `json:"conn_id"`  // 外部连接的标识，区分同一隧道的多个并发连接
-    Data     string `json:"data"`     // base64 encoded
-    IsEOF    bool   `json:"is_eof"`  // 是否结束，用于短连接协议如 HTTP
 }
 
 type TunnelErrorPayload struct {
@@ -232,8 +225,8 @@ func (h *Handler) Handle(msg *Message) error {
         return h.handleTunnelOpenAck(msg)
     case "tunnel_close":
         return h.handleTunnelClose(msg)
-    case "tunnel_data":
-        return h.handleTunnelData(msg)
+    case "tunnel_data_bin":
+        return h.handleTunnelDataBinary(msg)
     case "tunnel_error":
         return h.handleTunnelError(msg)
     default:

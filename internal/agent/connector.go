@@ -164,17 +164,21 @@ func (c *Connector) SendBinary(data []byte) error {
 }
 
 func (c *Connector) Receive() (*common.Message, error) {
-	if c.conn == nil {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+
+	if conn == nil {
 		return nil, fmt.Errorf("not connected")
 	}
 
-	c.conn.SetReadDeadline(time.Now().Add(pongWait))
-	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
 
-	messageType, data, err := c.conn.ReadMessage()
+	messageType, data, err := conn.ReadMessage()
 	if err != nil {
 		return nil, err
 	}

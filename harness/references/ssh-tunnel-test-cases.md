@@ -347,7 +347,7 @@
 | tunnel_open | C→S | 申请创建隧道 |
 | tunnel_open_ack | S→C | 隧道创建确认 |
 | tunnel_close | C↔S | 关闭隧道 |
-| tunnel_data | C↔S | 隧道数据（双向） |
+| tunnel_data_bin | C↔S | 隧道数据（双向，WebSocket Binary frame） |
 | tunnel_error | S→C | 隧道错误通知 |
 
 ### 6.3 测试注意事项

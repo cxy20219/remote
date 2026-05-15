@@ -225,6 +225,25 @@ func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 	return nil
 }
 
+func (tm *TunnelManager) CloseAll() {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	for _, ec := range tm.extConns {
+		ec.Conn.Close()
+	}
+	for _, listener := range tm.listeners {
+		listener.Close()
+	}
+
+	tm.extConns = make(map[string]*ExternalConn)
+	tm.listeners = make(map[int]net.Listener)
+	tm.tunnels = make(map[string]*Tunnel)
+	tm.publicPorts = make(map[int]string)
+
+	slog.Info("all tunnels closed")
+}
+
 func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPort int, newPublicPort int, protocol string) (*Tunnel, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -496,7 +515,7 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 			}
 			err := client.WriteMessage(websocket.BinaryMessage, frame)
 			if err != nil {
-				slog.Warn("failed to send tunnel_data to agent",
+				slog.Warn("failed to send tunnel_data_bin to agent",
 					"conn_id", connID,
 					"error", err)
 				return
@@ -576,6 +595,14 @@ func (tm *TunnelManager) SendToClient(tunnelID, connID string, data []byte, isEO
 		return fmt.Errorf("encryption not available")
 	}
 
+	if isEOF && len(data) == 0 {
+		frame, err := common.EncodeBinaryTunnelDataFrame(tunnelID, connID, nil, true)
+		if err != nil {
+			return err
+		}
+		return tunnel.Client.WriteMessage(websocket.BinaryMessage, frame)
+	}
+
 	encrypted, err := tm.server.cryptoMgr.EncryptBytes(tunnel.ClientID, data)
 	if err != nil {
 		return fmt.Errorf("encrypt failed: %w", err)
@@ -585,7 +612,6 @@ func (tm *TunnelManager) SendToClient(tunnelID, connID string, data []byte, isEO
 	if err != nil {
 		return err
 	}
-
 	return tunnel.Client.WriteMessage(websocket.BinaryMessage, frame)
 }
 

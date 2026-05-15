@@ -119,14 +119,14 @@ func (s *Server) Start() error {
 
 	gin.SetMode(gin.ReleaseMode)
 	s.engine = gin.New()
+	if err := s.engine.SetTrustedProxies(nil); err != nil {
+		slog.Error("failed to disable trusted proxies", "error", err)
+	}
 	s.engine.Use(gin.Recovery())
 	s.engine.Use(SecurityHeadersMiddleware())
-
-	settings := stateStore.GetSettings()
-	if settings.MaxBodySizeMB > 0 {
-		maxBytes := int64(settings.MaxBodySizeMB) * 1024 * 1024
-		s.engine.Use(BodySizeLimitMiddleware(maxBytes))
-	}
+	s.engine.Use(DynamicBodySizeLimitMiddleware(func() int64 {
+		return maxBodySizeBytes(stateStore.GetSettings().MaxBodySizeMB)
+	}))
 
 	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s), s.handleConn)
 	s.engine.GET("/health", s.handleHealth)
@@ -200,6 +200,9 @@ func (s *Server) Start() error {
 func (s *Server) Stop() error {
 	slog.Info("server stopping")
 	s.stateStore.Stop()
+	if s.tunnelManager != nil {
+		s.tunnelManager.CloseAll()
+	}
 	if s.httpSrv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -321,16 +324,21 @@ func (s *Server) pendingLoop(client *Client) {
 func (s *Server) readLoop(client *Client) {
 	defer func() {
 		if client.ClientID != "" {
-			if s.tunnelManager != nil {
+			current := s.clients.IsCurrent(client.ClientID, client)
+			if current && s.tunnelManager != nil {
 				for _, t := range s.tunnelManager.ListTunnelsByClient(client.ClientID) {
 					if err := s.tunnelManager.CloseTunnel(t.TunnelID); err != nil {
 						slog.Warn("failed to close tunnel on disconnect", "tunnel_id", t.TunnelID, "error", err)
 					}
 				}
 			}
-			s.clients.Remove(client.ClientID)
-			s.deviceMgr.RemoveAuthorizedConn(client.ClientID)
-			slog.Info("client disconnected", "client_id", client.ClientID)
+			if current {
+				s.clients.RemoveIfMatch(client.ClientID, client)
+				s.deviceMgr.RemoveAuthorizedConn(client.ClientID)
+				slog.Info("client disconnected", "client_id", client.ClientID)
+			} else {
+				slog.Debug("stale client connection closed", "client_id", client.ClientID)
+			}
 		}
 		client.Conn.Close()
 	}()
@@ -443,6 +451,25 @@ func (s *Server) SetGlobalWhitelist(ips []string) {
 
 func (s *Server) UpdateSettings(fn func(*ServerSettings)) {
 	s.stateStore.UpdateSettings(fn)
+	s.applyRuntimeSettings(s.stateStore.GetSettings())
+}
+
+func (s *Server) applyRuntimeSettings(settings ServerSettings) {
+	if s.tunnelManager != nil {
+		s.tunnelManager.SetPortRange(settings.PortRangeStart, settings.PortRangeEnd)
+	}
+	if s.loginLimiter != nil {
+		s.loginLimiter.SetLimit(settings.LoginRateLimit)
+	}
+	if s.connLimiter != nil {
+		s.connLimiter.SetLimit(settings.MaxConnPerMin)
+	}
+	if s.portLimiter != nil {
+		s.portLimiter.SetLimit(settings.MaxConnPerMin)
+	}
+	if s.blacklist != nil {
+		s.blacklist.SetThreshold(settings.BlacklistThreshold)
+	}
 }
 
 func (s *Server) IsGloballyWhitelisted(ip string) bool {
@@ -452,13 +479,18 @@ func (s *Server) IsGloballyWhitelisted(ip string) bool {
 
 func (s *Server) buildOriginChecker(allowedOrigins []string) func(r *http.Request) bool {
 	if len(allowedOrigins) == 0 {
-		slog.Warn("no allowed_origins configured, WebSocket origin check is disabled")
-		return func(r *http.Request) bool { return true }
+		slog.Warn("no allowed_origins configured, rejecting browser WebSocket origins by default")
+		return func(r *http.Request) bool {
+			return r.Header.Get("Origin") == ""
+		}
 	}
 
 	originSet := make(map[string]bool, len(allowedOrigins))
 	for _, o := range allowedOrigins {
-		originSet[strings.ToLower(o)] = true
+		normalized, ok := normalizeOrigin(o)
+		if ok {
+			originSet[normalized] = true
+		}
 	}
 
 	return func(r *http.Request) bool {
@@ -467,20 +499,35 @@ func (s *Server) buildOriginChecker(allowedOrigins []string) func(r *http.Reques
 			return true
 		}
 
-		u, err := url.Parse(origin)
-		if err != nil {
-			slog.Warn("invalid Origin header", "origin", origin, "error", err)
+		normalized, ok := normalizeOrigin(origin)
+		if !ok {
+			slog.Warn("invalid Origin header", "origin", origin)
 			return false
 		}
 
-		hostname := strings.ToLower(u.Hostname())
-		if originSet[hostname] {
+		if originSet[normalized] {
 			return true
 		}
 
-		slog.Warn("WebSocket origin denied", "origin", origin, "hostname", hostname)
+		slog.Warn("WebSocket origin denied", "origin", origin)
 		return false
 	}
+}
+
+func normalizeOrigin(raw string) (string, bool) {
+	raw = strings.TrimRight(strings.TrimSpace(strings.ToLower(raw)), "/")
+	if raw == "" {
+		return "", false
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", false
+	}
+	return u.Scheme + "://" + u.Host, true
 }
 
 func generateUUID() string {

@@ -213,10 +213,12 @@ func (bm *BlacklistManager) cleanupLoop() {
 // SecurityHeadersMiddleware adds common security headers to all responses.
 func SecurityHeadersMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		csp := "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("Referrer-Policy", "no-referrer")
 		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		c.Header("Content-Security-Policy", csp)
 		c.Next()
 	}
 }
@@ -230,6 +232,26 @@ func BodySizeLimitMiddleware(maxBytes int64) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// DynamicBodySizeLimitMiddleware limits HTTP request bodies using the latest settings.
+// getMaxBytes returning 0 keeps the request unlimited.
+func DynamicBodySizeLimitMiddleware(getMaxBytes func() int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if getMaxBytes != nil {
+			if maxBytes := getMaxBytes(); maxBytes > 0 {
+				c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+			}
+		}
+		c.Next()
+	}
+}
+
+func maxBodySizeBytes(maxBodySizeMB int) int64 {
+	if maxBodySizeMB <= 0 {
+		return 0
+	}
+	return int64(maxBodySizeMB) * 1024 * 1024
 }
 
 // RateLimiter is a simple sliding-window per-IP rate limiter.
@@ -258,8 +280,16 @@ func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 
 // Allow returns true if the request from the given key (typically IP) is allowed.
 func (rl *RateLimiter) Allow(key string) bool {
+	if rl == nil {
+		return true
+	}
+
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+
+	if rl.limit <= 0 {
+		return true
+	}
 
 	now := time.Now()
 	entry, exists := rl.requests[key]
@@ -274,6 +304,19 @@ func (rl *RateLimiter) Allow(key string) bool {
 
 	entry.count++
 	return true
+}
+
+func (rl *RateLimiter) SetLimit(limit int) {
+	if rl == nil {
+		return
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.limit = limit
+	if limit <= 0 {
+		rl.requests = make(map[string]*rateLimitEntry)
+	}
 }
 
 func (rl *RateLimiter) cleanupLoop() {

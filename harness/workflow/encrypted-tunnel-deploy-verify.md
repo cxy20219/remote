@@ -105,7 +105,7 @@ server:
     insecure_skip_verify: true   # 测试用，生产应配置 CA
 
 auth:
-  key: test-secret-key            # 必须与服务端一致
+  key: CHANGE-ME-auth-key         # 必须与服务端一致
 
 agent:
   hostname: win-local
@@ -141,7 +141,7 @@ Start-Process -FilePath "E:\AI-work\go-remote\opencode\assets\bin\agent-windows-
 ```powershell
 # 登录获取 token
 curl.exe -k -c cookies.txt -X POST https://SERVER_IP:8080/api/login `
-  -H "Content-Type: application/json" -d '{"password":"admin123"}'
+  -H "Content-Type: application/json" -d '{"password":"ADMIN_PASSWORD"}'
 
 # 查看在线客户端
 curl.exe -k -b cookies.txt -s https://SERVER_IP:8080/api/clients
@@ -234,7 +234,7 @@ plink -batch -pw "PASSWORD" root@SERVER_IP "bash -c 'nc -l 10002 & nc -l 10005 &
 
 ```powershell
 # 登录 Web API
-curl.exe -c cookies.txt -s -X POST "http://SERVER_IP:8080/api/login" -H "Content-Type: application/json" -d '{"password":"admin123"}'
+curl.exe -c cookies.txt -s -X POST "http://SERVER_IP:8080/api/login" -H "Content-Type: application/json" -d '{"password":"ADMIN_PASSWORD"}'
 
 # 创建隧道（使用不同的 client_id 和内网端口）
 curl.exe -b cookies.txt -s -X POST "http://SERVER_IP:8080/api/tunnels" -H "Content-Type: application/json" -d '{"client_id":"client-xxx","local_port":80,"protocol":"tcp"}'

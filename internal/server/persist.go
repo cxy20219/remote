@@ -17,33 +17,33 @@ import (
 )
 
 type ServerSettings struct {
-	PortRangeStart    int      `json:"port_range_start"`
-	PortRangeEnd      int      `json:"port_range_end"`
-	MaxTunnelsPerClient int    `json:"max_tunnels_per_client"`
-	DefaultLocalAddr  string   `json:"default_local_addr"`
-	PublicHost        string   `json:"public_host"`
-	MaxConnPerMin     int      `json:"max_conn_per_min"`
-	LoginRateLimit    int      `json:"login_rate_limit"`
-	BlacklistThreshold int     `json:"blacklist_threshold"`
-	GlobalWhitelist   []string `json:"global_whitelist"`
-	MaxBodySizeMB     int      `json:"max_body_size_mb"`
-	HeartbeatInterval int      `json:"heartbeat_interval"`
-	HeartbeatTimeout   int      `json:"heartbeat_timeout"`
+	PortRangeStart      int      `json:"port_range_start"`
+	PortRangeEnd        int      `json:"port_range_end"`
+	MaxTunnelsPerClient int      `json:"max_tunnels_per_client"`
+	DefaultLocalAddr    string   `json:"default_local_addr"`
+	PublicHost          string   `json:"public_host"`
+	MaxConnPerMin       int      `json:"max_conn_per_min"`
+	LoginRateLimit      int      `json:"login_rate_limit"`
+	BlacklistThreshold  int      `json:"blacklist_threshold"`
+	GlobalWhitelist     []string `json:"global_whitelist"`
+	MaxBodySizeMB       int      `json:"max_body_size_mb"`
+	HeartbeatInterval   int      `json:"heartbeat_interval"`
+	HeartbeatTimeout    int      `json:"heartbeat_timeout"`
 }
 
 type DeviceState struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	DeviceSignPubkey string  `json:"device_sign_pubkey"`
-	DeviceDHPubkey  string    `json:"device_dh_pubkey"`
-	Hostname        string    `json:"hostname"`
-	OS              string    `json:"os"`
-	Status          string    `json:"status"`
-	EncKey          string    `json:"enc_key"`
-	EncEnabled      bool      `json:"enc_enabled"`
-	IPWhitelist     []string  `json:"ip_whitelist"`
-	FirstSeen       time.Time `json:"first_seen"`
-	ApprovedAt      *time.Time `json:"approved_at,omitempty"`
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	DeviceSignPubkey string     `json:"device_sign_pubkey"`
+	DeviceDHPubkey   string     `json:"device_dh_pubkey"`
+	Hostname         string     `json:"hostname"`
+	OS               string     `json:"os"`
+	Status           string     `json:"status"`
+	EncKey           string     `json:"enc_key"`
+	EncEnabled       bool       `json:"enc_enabled"`
+	IPWhitelist      []string   `json:"ip_whitelist"`
+	FirstSeen        time.Time  `json:"first_seen"`
+	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
 }
 
 type ServerState struct {
@@ -57,26 +57,63 @@ type ServerState struct {
 
 func defaultSettings() ServerSettings {
 	return ServerSettings{
-		PortRangeStart:    10000,
-		PortRangeEnd:      20000,
+		PortRangeStart:      10000,
+		PortRangeEnd:        20000,
 		MaxTunnelsPerClient: 10,
-		DefaultLocalAddr:  "127.0.0.1",
-		MaxConnPerMin:     10,
-		LoginRateLimit:    5,
-		BlacklistThreshold: 100,
-		GlobalWhitelist:   []string{},
-		MaxBodySizeMB:     0,
-		HeartbeatInterval: 30,
-		HeartbeatTimeout:  90,
+		DefaultLocalAddr:    "127.0.0.1",
+		MaxConnPerMin:       10,
+		LoginRateLimit:      5,
+		BlacklistThreshold:  100,
+		GlobalWhitelist:     []string{},
+		MaxBodySizeMB:       defaultMaxBodySizeMB,
+		HeartbeatInterval:   30,
+		HeartbeatTimeout:    90,
 	}
 }
 
+func cloneSettings(settings ServerSettings) ServerSettings {
+	cloned := settings
+	if settings.GlobalWhitelist != nil {
+		cloned.GlobalWhitelist = append([]string(nil), settings.GlobalWhitelist...)
+	}
+	return cloned
+}
+
+func cloneDevice(device DeviceState) DeviceState {
+	cloned := device
+	if device.IPWhitelist != nil {
+		cloned.IPWhitelist = append([]string(nil), device.IPWhitelist...)
+	}
+	if device.ApprovedAt != nil {
+		approvedAt := *device.ApprovedAt
+		cloned.ApprovedAt = &approvedAt
+	}
+	return cloned
+}
+
+func cloneServerState(state *ServerState) ServerState {
+	if state == nil {
+		return ServerState{}
+	}
+
+	cloned := *state
+	cloned.Settings = cloneSettings(state.Settings)
+	if state.Devices != nil {
+		cloned.Devices = make([]DeviceState, len(state.Devices))
+		for i := range state.Devices {
+			cloned.Devices[i] = cloneDevice(state.Devices[i])
+		}
+	}
+	return cloned
+}
+
 type StateStore struct {
-	mu     sync.RWMutex
-	state  *ServerState
-	path   string
-	dirty  bool
-	stopCh chan struct{}
+	mu       sync.RWMutex
+	state    *ServerState
+	path     string
+	dirty    bool
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 func NewStateStore(path string) *StateStore {
@@ -168,7 +205,7 @@ func (s *StateStore) Save() error {
 }
 
 func (s *StateStore) saveLocked() error {
-	copy := *s.state
+	copy := cloneServerState(s.state)
 	copy.AdminPassword = ""
 
 	data, err := json.MarshalIndent(copy, "", "  ")
@@ -190,6 +227,8 @@ func (s *StateStore) saveLocked() error {
 }
 
 func (s *StateStore) MarkDirty() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.dirty = true
 }
 
@@ -200,14 +239,18 @@ func (s *StateStore) StartSyncLoop() {
 		for {
 			select {
 			case <-ticker.C:
-				if s.dirty {
-					s.mu.Lock()
+				s.mu.Lock()
+				dirty := s.dirty
+				if dirty {
 					s.dirty = false
-					err := s.saveLocked()
-					s.mu.Unlock()
-					if err != nil {
-						slog.Error("failed to save state", "error", err)
-					}
+				}
+				var err error
+				if dirty {
+					err = s.saveLocked()
+				}
+				s.mu.Unlock()
+				if err != nil {
+					slog.Error("failed to save state", "error", err)
 				}
 			case <-s.stopCh:
 				s.mu.Lock()
@@ -222,19 +265,22 @@ func (s *StateStore) StartSyncLoop() {
 }
 
 func (s *StateStore) Stop() {
-	close(s.stopCh)
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+	})
 }
 
 func (s *StateStore) GetState() *ServerState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.state
+	cloned := cloneServerState(s.state)
+	return &cloned
 }
 
 func (s *StateStore) GetSettings() ServerSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.state.Settings
+	return cloneSettings(s.state.Settings)
 }
 
 func (s *StateStore) UpdateSettings(fn func(*ServerSettings)) {
@@ -249,7 +295,8 @@ func (s *StateStore) GetDeviceByID(id string) *DeviceState {
 	defer s.mu.RUnlock()
 	for i := range s.state.Devices {
 		if s.state.Devices[i].ID == id {
-			return &s.state.Devices[i]
+			device := cloneDevice(s.state.Devices[i])
+			return &device
 		}
 	}
 	return nil
@@ -261,7 +308,7 @@ func (s *StateStore) GetDevicesByStatus(status string) []DeviceState {
 	var result []DeviceState
 	for _, d := range s.state.Devices {
 		if d.Status == status {
-			result = append(result, d)
+			result = append(result, cloneDevice(d))
 		}
 	}
 	return result
@@ -271,7 +318,9 @@ func (s *StateStore) GetAllDevices() []DeviceState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]DeviceState, len(s.state.Devices))
-	copy(result, s.state.Devices)
+	for i := range s.state.Devices {
+		result[i] = cloneDevice(s.state.Devices[i])
+	}
 	return result
 }
 

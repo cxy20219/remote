@@ -1,15 +1,16 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type AdminAuth struct {
-	store *StateStore
-	mu    sync.RWMutex
+	store    *StateStore
+	mu       sync.RWMutex
 	sessions map[string]*adminSession
 }
 
@@ -30,7 +31,11 @@ func (a *AdminAuth) Login(password string) bool {
 }
 
 func (a *AdminAuth) GenerateToken() (string, error) {
-	token := uuid.New().String()
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate admin token: %w", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw[:])
 	a.mu.Lock()
 	a.sessions[token] = &adminSession{
 		token:     token,

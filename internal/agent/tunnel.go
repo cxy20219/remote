@@ -111,6 +111,7 @@ func (tm *TunnelManager) Cleanup() {
 	for tunnelID := range tm.tunnels {
 		delete(tm.tunnels, tunnelID)
 	}
+	tm.readLoops = make(map[string]bool)
 	slog.Info("tunnel manager cleaned up", "tunnels", len(tm.tunnels), "connections", len(tm.localConns))
 }
 
@@ -140,29 +141,45 @@ func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 func (tm *TunnelManager) GetOrCreateLocalConn(connID, tunnelID string) (net.Conn, error) {
 	tm.mu.RLock()
 	lc, ok := tm.localConns[connID]
-	tm.mu.RUnlock()
 	if ok {
-		return lc.Conn, nil
-	}
-
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-
-	if lc, ok := tm.localConns[connID]; ok {
+		tm.mu.RUnlock()
 		return lc.Conn, nil
 	}
 
 	tunnel, ok := tm.tunnels[tunnelID]
 	if !ok {
+		tm.mu.RUnlock()
 		return nil, fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
+	localAddr := tunnel.LocalAddr
+	localPort := tunnel.LocalPort
+	protocol := tunnel.Protocol
+	tm.mu.RUnlock()
 
-	addr := localServiceAddr(tunnel.LocalAddr, tunnel.LocalPort)
-	conn, err := net.DialTimeout(tunnel.Protocol, addr, 10*time.Second)
+	addr := localServiceAddr(localAddr, localPort)
+	conn, err := net.DialTimeout(protocol, addr, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to local service: %w", err)
 	}
 	common.TuneTCPConn(conn)
+
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if lc, ok := tm.localConns[connID]; ok {
+		conn.Close()
+		return lc.Conn, nil
+	}
+
+	current, ok := tm.tunnels[tunnelID]
+	if !ok {
+		conn.Close()
+		return nil, fmt.Errorf("tunnel not found: %s", tunnelID)
+	}
+	if current.LocalAddr != localAddr || current.LocalPort != localPort || current.Protocol != protocol {
+		conn.Close()
+		return nil, fmt.Errorf("tunnel target changed while connecting: %s", tunnelID)
+	}
 
 	lc = &LocalConn{
 		ConnID:   connID,
@@ -195,6 +212,19 @@ func (tm *TunnelManager) CloseLocalConn(connID string) {
 func (tm *TunnelManager) HandleLocalResponse(connID, tunnelID string, data []byte, isEOF bool) error {
 	if _, ok := tm.GetTunnel(tunnelID); !ok {
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
+	}
+
+	if isEOF && len(data) == 0 {
+		frame, err := common.EncodeBinaryTunnelDataFrame(tunnelID, connID, nil, true)
+		if err != nil {
+			return err
+		}
+		if err := tm.agent.connector.SendBinary(frame); err != nil {
+			tm.CloseLocalConn(connID)
+			return err
+		}
+		tm.CloseLocalConn(connID)
+		return nil
 	}
 
 	clientID := tm.agent.GetClientID()

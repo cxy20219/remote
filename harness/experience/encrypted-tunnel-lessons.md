@@ -87,7 +87,7 @@ swag init -g cmd/server/main.go -o docs
 
 **现象**：
 ```powershell
-curl.exe -d '{"password":"admin123"}' -H "Content-Type: application/json" url
+curl.exe -d '{"password":"ADMIN_PASSWORD"}' -H "Content-Type: application/json" url
 # → {"error":"invalid request"}
 ```
 
@@ -98,12 +98,12 @@ curl.exe -d '{"password":"admin123"}' -H "Content-Type: application/json" url
 ```powershell
 # 方案 1：JSON 写入文件（最可靠，推荐）
 @'
-{"password":"admin123"}
+{"password":"ADMIN_PASSWORD"}
 '@ | Out-File body.json -Encoding ascii
 curl.exe -d "@body.json" -H "Content-Type: application/json" url
 
 # 方案 2：单引号内双引号（简单场景可用）
-curl.exe -d '{\"password\":\"admin123\"}' -H "Content-Type: application/json" url
+curl.exe -d '{\"password\":\"ADMIN_PASSWORD\"}' -H "Content-Type: application/json" url
 
 # 方案 3：登录 token 管理
 curl.exe -k -c cookies.txt -X POST url -d "@body.json"

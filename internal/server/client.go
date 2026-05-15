@@ -42,16 +42,41 @@ func (m *ClientManager) SetStore(store DeviceQuerier) {
 
 func (m *ClientManager) Add(client *Client) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var old *Client
+	if existing, ok := m.clients[client.ClientID]; ok && existing != client {
+		old = existing
+	}
 	client.RegTime = time.Now()
 	client.LastPing = time.Now()
 	m.clients[client.ClientID] = client
+	m.mu.Unlock()
+
+	if old != nil && old.Conn != nil {
+		old.Conn.Close()
+	}
 }
 
 func (m *ClientManager) Remove(clientID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.clients, clientID)
+}
+
+func (m *ClientManager) RemoveIfMatch(clientID string, client *Client) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if current, ok := m.clients[clientID]; ok && current == client {
+		delete(m.clients, clientID)
+		return true
+	}
+	return false
+}
+
+func (m *ClientManager) IsCurrent(clientID string, client *Client) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	current, ok := m.clients[clientID]
+	return ok && current == client
 }
 
 func (m *ClientManager) Get(clientID string) (*Client, bool) {
@@ -71,12 +96,14 @@ func (m *ClientManager) List() []*Client {
 	return clients
 }
 
-func (m *ClientManager) UpdatePing(clientID string) {
+func (m *ClientManager) UpdatePingIfMatch(clientID string, client *Client) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if client, ok := m.clients[clientID]; ok {
-		client.LastPing = time.Now()
+	if current, ok := m.clients[clientID]; ok && current == client {
+		current.LastPing = time.Now()
+		return true
 	}
+	return false
 }
 
 func (m *ClientManager) IsIPWhitelisted(ip string) bool {

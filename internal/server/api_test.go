@@ -82,3 +82,41 @@ func TestTunnelPublicAddr(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeTunnelTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		localAddr string
+		localPort int
+		protocol  string
+		wantAddr  string
+		wantProto string
+		wantErr   bool
+	}{
+		{name: "default addr and protocol", localPort: 22, wantAddr: "127.0.0.1", wantProto: "tcp"},
+		{name: "trim and lowercase protocol", localAddr: " localhost ", localPort: 8080, protocol: "TCP", wantAddr: "localhost", wantProto: "tcp"},
+		{name: "reject udp", localAddr: "127.0.0.1", localPort: 53, protocol: "udp", wantErr: true},
+		{name: "reject port zero", localAddr: "127.0.0.1", localPort: 0, protocol: "tcp", wantErr: true},
+		{name: "reject port above range", localAddr: "127.0.0.1", localPort: 70000, protocol: "tcp", wantErr: true},
+		{name: "reject addr with embedded port", localAddr: "127.0.0.1:22", localPort: 22, protocol: "tcp", wantErr: true},
+		{name: "allow ipv6 host", localAddr: "::1", localPort: 22, protocol: "tcp", wantAddr: "::1", wantProto: "tcp"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, proto, err := normalizeTunnelTarget(tc.localAddr, tc.localPort, tc.protocol, "127.0.0.1")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if addr != tc.wantAddr || proto != tc.wantProto {
+				t.Fatalf("got addr/proto %q/%q, want %q/%q", addr, proto, tc.wantAddr, tc.wantProto)
+			}
+		})
+	}
+}

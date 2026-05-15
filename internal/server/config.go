@@ -6,13 +6,15 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig
-	Admin     AdminConfig
-	Security  SecurityConfig
-	Tunnel    TunnelConfig
-	Swagger   SwaggerConfig
-	dataDir   string
+	Server   ServerConfig
+	Admin    AdminConfig
+	Security SecurityConfig
+	Tunnel   TunnelConfig
+	Swagger  SwaggerConfig
+	dataDir  string
 }
+
+const defaultMaxBodySizeMB = 10
 
 type ServerConfig struct {
 	Host string
@@ -79,7 +81,7 @@ func ParseConfig() *Config {
 	cfg.Security.BlacklistThreshold = 100
 	cfg.Security.GlobalWhitelist = []string{}
 	cfg.Security.AllowedOrigins = []string{}
-	cfg.Security.MaxBodySizeMB = 0
+	cfg.Security.MaxBodySizeMB = defaultMaxBodySizeMB
 
 	return cfg
 }
