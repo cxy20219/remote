@@ -35,7 +35,8 @@
 | tunnel_open | C→S | 客户端申请创建隧道 |
 | tunnel_open_ack | S→C | 服务端返回分配的公网端口 |
 | tunnel_close | C↔S | 任一方关闭隧道 |
-| tunnel_data | C↔S | 隧道数据（双向） |
+| tunnel_data | C↔S | 隧道数据（旧 JSON/base64 兼容路径） |
+| tunnel_data_bin | C↔S | 隧道数据（二进制 WebSocket frame，当前主路径） |
 | tunnel_error | S→C | 隧道错误通知 |
 
 ### 2.2 消息格式
@@ -63,11 +64,11 @@ type TunnelClosePayload struct {
     ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
 }
 
-// TunnelDataPayload - 隧道数据传输（双向）
+// TunnelDataPayload - 隧道数据传输（双向，旧 JSON/base64 兼容路径）
 type TunnelDataPayload struct {
     TunnelID string `json:"tunnel_id"`
     ConnID   string `json:"conn_id"`  // 外部连接的标识，区分同一隧道的多个并发连接
-    Data     string `json:"data"`     // base64 encoded
+    Data     string `json:"data"`     // base64 encoded AES-GCM nonce+ciphertext
     IsEOF    bool   `json:"is_eof"`   // 是否结束，用于短连接协议如 HTTP
 }
 
@@ -78,6 +79,28 @@ type TunnelErrorPayload struct {
     Error    string `json:"error"`
 }
 ```
+
+当前主路径使用 WebSocket BinaryMessage 传输隧道数据，避免 JSON/base64 对大吞吐 SSH/SCP 的额外开销。控制消息仍使用 JSON text frame。
+
+二进制帧布局（`internal/common/message.go`）：
+
+| 偏移 | 长度 | 字段 | 说明 |
+|------|------|------|------|
+| 0 | 1 | version | 当前为 `1` |
+| 1 | 1 | flags | bit0=`is_eof` |
+| 2 | 2 | tunnel_id_len | big endian uint16 |
+| 4 | 2 | conn_id_len | big endian uint16 |
+| 6 | 4 | data_len | big endian uint32 |
+| 10 | N | tunnel_id | UTF-8 字符串 |
+| 10+N | M | conn_id | UTF-8 字符串 |
+| ... | K | data | AES-GCM nonce+ciphertext 原始字节 |
+
+服务端和 Agent 的 `ReadMessage()` 会按 frame type 分流：
+
+- TextMessage → `common.Message` JSON 控制消息。
+- BinaryMessage → `DecodeBinaryTunnelDataFrame`，包装为内部消息类型 `tunnel_data_bin`。
+
+`tunnel_data` JSON 路径仍保留，用于兼容旧 Agent/Server 或测试旧协议；新性能验证应以 `tunnel_data_bin` 为准。
 
 ### 2.3 数据流说明
 
@@ -192,13 +215,13 @@ func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 外部用户 ──TCP连接──▶ [Server:15001] ──accept──┐
                                                 │
                          ┌───────────────────────┘
-                         │ Server 推送 tunnel_data(conn_id=x, data=请求)
+                         │ Server 推送 tunnel_data_bin(conn_id=x, data=加密请求)
                          ▼
-                   Agent 收到 tunnel_data
+                   Agent 收到 tunnel_data_bin
                          │ 首次收到该 conn_id → 连接本地服务
-                         │ Agent 发送 tunnel_data(conn_id=x, data=响应)
+                         │ Agent 发送 tunnel_data_bin(conn_id=x, data=加密响应)
                          ▼
-                    Server 收到 tunnel_data → 写入外部 TCP 连接
+                    Server 收到 tunnel_data_bin → 解密后写入外部 TCP 连接
 ```
 
 ### 3.6 端口状态查询
@@ -267,11 +290,11 @@ type TunnelManager struct {
 
 **按需连接本地服务**：
 - Agent **不预先连接**本地服务
-- 收到 `tunnel_data(conn_id=x)` 时，**首次**为该 conn_id 创建到本地服务的连接
-- 将 data 写入 localConn，读取响应后发送 `tunnel_data(conn_id=x, data=响应)`
+- 收到 `tunnel_data_bin(conn_id=x)` 时，**首次**为该 conn_id 创建到本地服务的连接
+- 解密 data 写入 localConn，读取响应后加密并发送 `tunnel_data_bin(conn_id=x, data=响应)`
 
 **连接复用**：
-- 同一 conn_id 的后续 `tunnel_data` 复用已建立的 localConn
+- 同一 conn_id 的后续 `tunnel_data_bin` 复用已建立的 localConn
 - 收到 `is_eof=true` 时关闭 localConn
 
 ---
@@ -483,7 +506,7 @@ curl http://server.example.com:15002/
 
 1. **端口监听架构**：Server 需要在 Gin HTTP 服务器（8080）**之外**，使用独立的 `net.Listener` 监听公网映射端口
 
-2. **base64 编码**：复用文件传输的 base64 编码方式，确保 JSON 消息格式正确
+2. **二进制数据帧**：隧道数据使用 WebSocket Binary frame 传输 AES-GCM nonce+ciphertext，控制消息仍为 JSON；旧 `tunnel_data` JSON/base64 路径仅作兼容
 
 3. **Goroutine 管理**：
    - Server：每个公网端口监听独立 goroutine

@@ -2,6 +2,8 @@
 # Usage: .\deploy-server.ps1 -ServerIp "1.2.3.4" -SshUser "root" -SshPassword "xxx"
 # 关联流程: ../workflow/zero-config-deploy-verify.md
 # 依赖: plink.exe, pscp.exe (PuTTY 工具链)
+# 输入: build/server-linux-amd64
+# 输出: 远端 /root/goremote/server + /root/goremote/server.log
 
 param(
     [Parameter(Mandatory=$true)]
@@ -17,7 +19,7 @@ param(
 
     [string]$RemoteDir = "/root/goremote",
 
-    [string]$LocalBinary = "harness/assets/bin/server-linux-amd64",
+    [string]$LocalBinary = "build/server-linux-amd64",
 
     [int]$ServerPort = 8080
 )
@@ -26,7 +28,7 @@ $ErrorActionPreference = "Stop"
 $RemoteBinary = "$RemoteDir/server"
 
 if (-not (Test-Path $LocalBinary)) {
-    Write-Error "Binary not found at $LocalBinary`nBuild with: `$env:GOOS=`"linux`"; `$env:GOARCH=`"amd64`"; go build -o $LocalBinary ./cmd/server/"
+    Write-Error "Binary not found at $LocalBinary`nBuild with: `$env:CGO_ENABLED='0'; `$env:GOOS='linux'; `$env:GOARCH='amd64'; go build -trimpath -ldflags='-s -w' -o $LocalBinary ./cmd/server"
     exit 1
 }
 

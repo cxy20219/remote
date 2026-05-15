@@ -29,11 +29,11 @@ swag init -g cmd/server/main.go -o docs
 
 # 编译 Linux 服务端
 $env:GOOS="linux"; $env:GOARCH="amd64"
-go build -ldflags "-s -w" -o harness/assets/bin/server-linux-amd64 ./cmd/server/
+go build -ldflags "-s -w" -o build/server-linux-amd64 ./cmd/server/
 
 # 编译 Windows Agent
 $env:GOOS="windows"; $env:GOARCH="amd64"
-go build -ldflags "-s -w" -o harness/assets/bin/agent-windows-amd64.exe ./cmd/agent/
+go build -ldflags "-s -w" -o build/agent-windows-amd64.exe ./cmd/agent/
 ```
 
 > `-ldflags "-s -w"` 去除调试信息，减小二进制体积。

@@ -160,6 +160,16 @@ curl -X PUT http://your-server-ip:8080/api/tunnels/<tunnel_id> \
 
 ## 问题排查
 
+### 高并发 SSH 连接被大量关闭
+
+GoRemote 隧道端口默认启用防扫描限流，`max_conn_per_min=10`。如果从同一压测源同时发起 20/30 个 SSH 连接，未加白名单时会看到大量 `Remote side unexpectedly closed network connection`，服务端日志出现 `external connection rate limited (anti-scanning)`。
+
+处理顺序：
+
+1. 将压测来源 IP 加入全局白名单。
+2. 以 100-200ms 错峰方式复测 30 并发，避免把 SSH 握手尖峰误判为隧道不稳定。
+3. 若仍失败，再检查内网 SSHD `MaxStartups`、公网入口超时和服务端资源。
+
 ### 隧道创建成功但无法连接
 
 1. 检查公网服务器端口是否监听：`netstat -tlnp | grep <port>`
@@ -238,3 +248,4 @@ curl http://your-server-ip:10005/
 - [服务端设计文档](../references/server-design.md) - GoRemote 服务端架构
 - [客户端设计文档](../references/agent-design.md) - GoRemote Agent 架构
 - [项目结构文档](../references/project-structure.md) - 项目目录结构说明
+- [稳定性、性能、完整性综合验证流程](stability-performance-completeness-verify.md) - 高并发 SSH、Android、50MB 完整性和 pending 长等待验收

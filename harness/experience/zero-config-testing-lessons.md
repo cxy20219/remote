@@ -1,6 +1,6 @@
 # 零配置架构测试与调试经验
 
-> 最后更新：2026-05-14 | 关联流程：[零配置部署验证](../workflow/zero-config-deploy-verify.md) | 关联参考：[零配置设计](../references/zero-config-design.md)
+> 最后更新：2026-05-15 | 关联流程：[零配置部署验证](../workflow/zero-config-deploy-verify.md)、[稳定性性能完整性综合验证](../workflow/stability-performance-completeness-verify.md) | 关联参考：[零配置设计](../references/zero-config-design.md)
 
 ## 1. PowerShell 远程命令转义
 
@@ -34,6 +34,10 @@ plink -batch -pw "PWD" root@IP "kill -9 `$(pgrep -f server) 2>/dev/null; echo re
 
 - 不需要传递特殊字符的简单命令（如 `hostname`、`df -h /root`）可直接用双引号
 - `Invoke-WebRequest` 不存在此问题（body 字符串不走 plink）
+
+### 额外坑点
+
+PowerShell 的 `$PID` 是只读内置变量，临时保存远端进程 ID 时不要写 `$pid = ...`。推荐使用 `$remotePid`、`$agentPid` 等变量名。
 
 ## 2. Agent 后台启动（Windows）
 
@@ -115,11 +119,18 @@ Agent 注册后进入 pending 状态，连接保持存活等待审批。如果�
 - Agent 收到 `register_ok` → 解密 enc_key → 保存 identity → 进入工作状态
 - `pendingLoop` 的 read goroutine 检测到 `device.Status == "authorized"` → 停止 pending goroutine → 启动 `readLoop`
 
-### 注意
+### 2026-05-15 后的行为
 
-pending 连接的服务端读超时为 60 秒。Agent 在 pending 状态下**不主动发送心跳**（`handlePending` 只读取消息），因此若审批未在 60 秒内完成，服务端读超时断开连接，Agent 重连后获得新的 `client_id`，需重新审批。
+pending 阶段已支持 Agent 主动心跳，服务端 `pendingLoop` 会回复 pong，并使用 `heartbeat_timeout`（默认 90 秒）控制读超时。审批超过 60 秒不应再导致 Agent 不断换 pending ID。
 
-**影响**：审批操作必须在 Agent 首次连接后 60 秒内完成。超时后即使管理员审批，原连接已断开，`register_ok` 发送到已关闭的 WebSocket。Agent 每次重连都生成新的 pending 记录。
+关键实现：
+
+- Agent `handlePending()` 启动 heartbeat goroutine。
+- Agent 收到 `register_ok` 后保存 identity，并立即发送一次 ping，触发服务端 pendingLoop 检测 authorized 状态。
+- 服务端从 pending 表摘除连接时区分“关闭连接”和“仅摘除”，审批成功后不关闭正在复用的 WebSocket。
+- 同一设备公钥已有 pending 时复用原设备 ID，刷新 hostname/os/DH 公钥。
+
+**失效信号**：如果日志仍然每 60 秒出现一次 `waiting for admin approval` 且 pending ID 变化，说明运行的不是新版二进制，或存在未知旧 Agent/旧 identity 持续重连。
 
 ## 7. ECDH 密钥交换的完整链路追踪
 

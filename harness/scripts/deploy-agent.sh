@@ -3,6 +3,8 @@
 # Usage: ./deploy-agent.sh <agent_ip> <ssh_user> <ssh_password> <server_address>
 # 关联流程: ../workflow/zero-config-deploy-verify.md
 # 依赖: plink (PuTTY), pscp
+# 输入: build/agent-linux-amd64
+# 输出: 远端 /opt/goremote/agent + /opt/goremote/agent.log
 #
 # 零配置架构：Agent 只需服务器地址，无需任何配置文件。
 
@@ -12,7 +14,7 @@ AGENT_IP="${1:?Usage: $0 <agent_ip> <ssh_user> <ssh_password> <server_address>}"
 SSH_USER="${2:?}"
 SSH_PASS="${3:?}"
 SERVER_ADDR="${4:?}"
-BINARY_PATH="harness/assets/bin/agent-linux-amd64"
+BINARY_PATH="build/agent-linux-amd64"
 REMOTE_DIR="/opt/goremote"
 
 echo "=== GoRemote Agent Zero-Config Deploy ==="
@@ -21,7 +23,7 @@ echo "Server: ${SERVER_ADDR}"
 
 if [ ! -f "$BINARY_PATH" ]; then
     echo "ERROR: Binary not found at $BINARY_PATH"
-    echo "Build: GOOS=linux GOARCH=amd64 go build -o $BINARY_PATH ./cmd/agent"
+    echo "Build: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o $BINARY_PATH ./cmd/agent"
     exit 1
 fi
 

@@ -50,7 +50,7 @@ go-remote/
 │   ├── experience/          # 经验教训与排查记录
 │   ├── scripts/             # 自动化部署和运维脚本
 │   ├── references/          # 设计文档、配置参考
-│   └── assets/              # 配置模板、预编译二进制
+│   └── assets/              # 配置模板、静态模板资源
 └── go.mod
 ```
 
@@ -70,11 +70,13 @@ go install github.com/swaggo/swag/cmd/swag@latest
 swag init -g cmd/server/main.go -o docs
 
 # 测试
-go test ./internal/...
+go test ./...
 
 # 静态检查
 go vet ./internal/...
 ```
+
+> `go test -race ./internal/...` 需要 gcc/cgo。Windows 本机没有 gcc 时会报 `C compiler "gcc" not found`，属于环境限制。
 
 ## 关键文件
 
@@ -84,11 +86,11 @@ go vet ./internal/...
 | `internal/common/identity.go` | ed25519 签名/验证、x25519 ECDH 密钥交换、HKDF 派生 |
 | `internal/server/persist.go` | `StateStore` 异步原子写入 `server-state.json` |
 | `internal/server/device_mgr.go` | `DeviceManager` pending/authorized 审批状态机 |
-| `internal/server/tunnel.go` | 隧道管理，`bufPool` sync.Pool 复用 32KB buffer |
+| `internal/server/tunnel.go` | 隧道管理，`bufPool` sync.Pool 复用 128KB buffer，支持 WebSocket Binary 隧道数据帧 |
 | `internal/server/client.go` | `ClientManager`+`DeviceQuerier` 接口，支持设备级 IP 白名单查询 |
 | `internal/agent/identity.go` | Agent 本地 `~/.goremote/identity` 管理，ECDH 解密 enc_key |
 | `internal/agent/agent.go` | Agent 主循环（pending 等待审批 → reauth 重连，含 pendingApproval 标志） |
-| `internal/agent/connector.go` | WebSocket 连接（32KB buffer），`send`/`receive` 封装 |
+| `internal/agent/connector.go` | WebSocket 连接（128KB buffer），JSON 控制消息 + Binary 隧道数据帧收发 |
 | `web/static.go` | `go:embed static` 嵌入 Web 界面到服务端二进制 |
 
 ## harness 资源路由
@@ -96,15 +98,17 @@ go vet ./internal/...
 | 任务类型 | 首选资源 | 备用资源 |
 |----------|----------|----------|
 | 零配置部署验证 | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) | [scripts/deploy-server.ps1](scripts/deploy-server.ps1) |
+| 稳定性/性能/完整性综合验收 | [workflow/stability-performance-completeness-verify.md](workflow/stability-performance-completeness-verify.md) | [experience/multi-platform-testing.md#16-2026-05-15-稳定性性能完整性优化复盘](experience/multi-platform-testing.md#16-2026-05-15-稳定性性能完整性优化复盘) |
 | 加密隧道（旧版）部署 | [workflow/encrypted-tunnel-deploy-verify.md](workflow/encrypted-tunnel-deploy-verify.md) | [scripts/deploy-server.ps1](scripts/deploy-server.ps1) |
 | SSH 隧道直通内网 | [workflow/ssh-tunnel-direct-access.md](workflow/ssh-tunnel-direct-access.md) | [references/tunnel-design.md](references/tunnel-design.md) |
 | 零配置架构理解 | [references/zero-config-design.md](references/zero-config-design.md) | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) |
 | 零配置测试踩坑 | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) |
 | 多平台集成测试经验 | [experience/multi-platform-testing.md](experience/multi-platform-testing.md) | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) |
 | 代码安全与性能优化审查 | [experience/multi-platform-testing.md#9-已修正的代码问题列表](experience/multi-platform-testing.md#9-已修正的代码问题列表) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
-| 高并发 SSH 吞吐测试 | [workflow/zero-config-deploy-verify.md#8a-验证高并发和长连接稳定性](workflow/zero-config-deploy-verify.md) | [experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果](experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果) |
+| 高并发 SSH 吞吐测试 | [workflow/stability-performance-completeness-verify.md#6-ssh-并发验证](workflow/stability-performance-completeness-verify.md#6-ssh-并发验证) | [experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果](experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果) |
 | 服务端重启恢复流程 | [workflow/zero-config-deploy-verify.md#8b-验证服务端重启后的设备恢复](workflow/zero-config-deploy-verify.md) | [experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移](experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移) |
-| pending 连接超时排查 | [experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境](experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境) | [experience/zero-config-testing-lessons.md#6-pending-连接的生命周期](experience/zero-config-testing-lessons.md#6-pending-连接的生命周期) |
+| pending 连接超时排查 | [experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境已修复](experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境已修复) | [experience/zero-config-testing-lessons.md#6-pending-连接的生命周期](experience/zero-config-testing-lessons.md#6-pending-连接的生命周期) |
+| 隧道协议/二进制帧理解 | [references/tunnel-design.md#2-消息协议](references/tunnel-design.md#2-消息协议) | [experience/multi-platform-testing.md#16-2026-05-15-稳定性性能完整性优化复盘](experience/multi-platform-testing.md#16-2026-05-15-稳定性性能完整性优化复盘) |
 | 编译/部署报错排查 | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) | [experience/encrypted-tunnel-lessons.md](experience/encrypted-tunnel-lessons.md) |
 | 部署环境运维坑 | [experience/remote-deployment-pitfalls.md](experience/remote-deployment-pitfalls.md) | — |
 | Gin 路由/认证问题 | [experience/gin-auth-route-tips.md](experience/gin-auth-route-tips.md) | — |
@@ -120,6 +124,7 @@ go vet ./internal/...
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 隧道数据加密 | `common/crypto.go` | AES-256-GCM，每设备密钥，ECDH 安全传输 |
+| 隧道数据帧 | `common/message.go` / `server/tunnel.go` / `agent/tunnel.go` | WebSocket Binary frame 传输 nonce+ciphertext，JSON `tunnel_data` 仅作兼容路径 |
 | 设备身份认证 | `common/identity.go` | ed25519 签名 `client_id:timestamp`，5 分钟窗口防重放 |
 | X25519 密钥交换 | `common/identity.go` | 审批时 ECDH + HKDF-SHA256 派生密钥，加密传输 enc_key |
 | 审批制注册 | `server/device_mgr.go` | 新设备需管理员批准才能接入，pending → authorized |
@@ -207,10 +212,11 @@ go vet ./internal/...
 | 密码遗忘 | 删除 `server-state.json` 重启重新生成 |
 | 扫描器连接日志噪音 | 不影响运行，是正常行为 |
 | Agent 日志出现 `non-fatal message error, continuing` | 正常行为，端口扫描器短连接造成，不影响 Agent |
-| Agent 不断注册新的 pending ID | 审批超过 60 秒 pending 超时断开。需在 60 秒内审批或让 Agent 发心跳 |
+| Agent 不断注册新的 pending ID | 确认是否运行新版 pending 心跳；清理未知旧 Agent/pending；检查服务端状态是否被重置 |
 | 服务端重启后 Agent 无法重连 | server-state.json 丢失导致设备消失，清空 Agent identity 文件重新注册 |
-| 高并发 SSH 部分报 `Connection closed` | SSH 服务端连接数限制，非隧道层问题 |
-| pending 超时断开 | Agent pending 状态不发心跳，60 秒后服务端断开（设计限制） |
+| 高并发 SSH 部分报 `Connection closed` | 先确认压测来源已加入全局白名单，再判断 SSHD `MaxStartups` 或公网入口瞬时超时 |
+| 大文件下载慢 | 先做公网服务端直连下载和内网 SSH 直连对照；若公网直连也慢，瓶颈不在隧道协议 |
+| pending 超时断开 | 新版已通过 pending heartbeat 修复；若复现，多半是旧二进制或未知旧 Agent 持续重连 |
 
 ## 测试注意
 

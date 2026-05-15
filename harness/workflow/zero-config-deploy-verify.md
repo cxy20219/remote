@@ -1,6 +1,6 @@
 # 零配置部署与验证直通流程
 
-> 最后验证：2026-05-14 | 适用场景：首次部署零配置版、版本升级、功能验证 | 对应二进制：`./server`（无 config 文件）+ `./agent --server <ip>:<port>`
+> 最后验证：2026-05-15 | 适用场景：首次部署零配置版、版本升级、功能验证 | 对应二进制：`./server`（无 config 文件）+ `./agent --server <ip>:<port>`
 
 ## 适用场景
 
@@ -22,6 +22,7 @@
 - [设计文档](../references/zero-config-design.md)：架构设计与实现差异
 - [部署脚本](../scripts/deploy-server.ps1)：自动化部署（Windows→Linux）
 - [Agent 部署脚本](../scripts/deploy-agent.sh)：自动化 Agent 部署
+- [稳定性、性能、完整性综合验证](stability-performance-completeness-verify.md)：隧道核心改动后的压测和回归验收
 - [测试经验](../experience/zero-config-testing-lessons.md)：调试踩坑记录
 - [远程部署坑点](../experience/remote-deployment-pitfalls.md)：binary in use、fuser、nohup 卡住
 
@@ -38,12 +39,14 @@ swag init -g cmd/server/main.go -o docs
 
 # 编译 Linux 服务端
 $env:GOOS="linux"; $env:GOARCH="amd64"
-go build -ldflags "-s -w" -o harness/assets/bin/server-linux-amd64 ./cmd/server/
+go build -ldflags "-s -w" -o build/server-linux-amd64 ./cmd/server/
 
 # 编译 Windows Agent
 $env:GOOS="windows"; $env:GOARCH="amd64"
-go build -ldflags "-s -w" -o harness/assets/bin/agent-windows-amd64.exe ./cmd/agent/
+go build -ldflags "-s -w" -o build/agent-windows-amd64.exe ./cmd/agent/
 ```
+
+> 生成产物放 `build/`，验证后可清理。`harness/assets/` 只保存模板和静态资源，不保存临时二进制。
 
 ### 2. 检查服务器状态（首次连接需缓存主机密钥）
 
@@ -105,11 +108,11 @@ Start-Process -FilePath ".\agent-windows-amd64.exe" -ArgumentList "--server YOUR
 adb shell getprop ro.product.cpu.abi
 
 # 1. 交叉编译 arm64 Agent
-$env:GOOS="linux"; $env:GOARCH="arm64"
-go build -ldflags "-s -w" -o bin/agent-linux-arm64 ./cmd/agent
+$env:GOOS="android"; $env:GOARCH="arm64"
+go build -ldflags "-s -w" -o build/agent-android-arm64 ./cmd/agent
 
 # 2. 推送到手机
-adb push bin/agent-linux-arm64 /data/local/tmp/agent
+adb push build/agent-android-arm64 /data/local/tmp/agent
 adb shell chmod +x /data/local/tmp/agent
 
 # 3. 启动（--identity-dir 参数必须指定可写路径，因为 Android 的 HOME=/ 只读）
@@ -161,11 +164,11 @@ Agent 自动收到 `register_ok` 和加密密钥，日志出现：
 ### 7. 将 127.0.0.1 加入全局白名单
 
 ```powershell
-# 防止服务端扫描器将 localhost 加入黑名单导致本地 nc 测试被拒
+# 防止服务端本机 nc 测试被限流；高并发压测时还需加入压测来源公网 IP
 $wl = Invoke-WebRequest -Uri "http://YOUR_SERVER:8080/api/security/global-whitelist" -Method PUT `
-  -Body '{"ips":["127.0.0.1"]}' -ContentType "application/json" -WebSession $session -UseBasicParsing
+  -Body '{"ips":["127.0.0.1","YOUR_TEST_SOURCE_IP"]}' -ContentType "application/json" -WebSession $session -UseBasicParsing
 $wl.Content
-# → {"global_whitelist":["127.0.0.1"]}
+# → {"global_whitelist":["127.0.0.1","YOUR_TEST_SOURCE_IP"]}
 ```
 
 ### 8. 验证隧道
@@ -192,22 +195,26 @@ plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'echo test | time
 ### 8a. 验证高并发和长连接稳定性
 
 ```powershell
-# 从服务端测试高并发 SSH 连接（需服务端安装 sshpass）
-plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'apt-get install -y sshpass > /dev/null 2>&1'
+# 并发测试：从压测机通过公网隧道端口发起 30 个 SSH 命令，建议错峰 200ms
+$count=30
+$jobs = foreach($i in 1..$count) {
+  Start-Sleep -Milliseconds 200
+  Start-Job -ScriptBlock {
+    param($i,$pw,$innerHostkey)
+    $remote="echo SESSION_$i; hostname; for n in 1 2 3; do sha256sum /etc/hosts >/dev/null; done; echo DONE_$i"
+    $out = & plink -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw $pw user@YOUR_SERVER $remote 2>&1
+    [pscustomobject]@{Id=$i; Code=$LASTEXITCODE; Text=($out -join ' | ')}
+  } -ArgumentList $i,"PASSWORD",$innerHostkey
+}
+Wait-Job $jobs | Out-Null
+$results=Receive-Job $jobs
+Remove-Job $jobs
+($results | Where-Object { $_.Code -eq 0 -and $_.Text -match 'DONE_' }).Count
 
-# 并发测试：同时启动 10 个 SSH 会话
-plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER @'
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  sshpass -p 'PASSWORD' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p TUNNEL_PORT user@127.0.0.1 "echo SESSION_$i; hostname" &
-done
-wait
-echo ALL_CONCURRENT_DONE
-'@
-
-# 数据传输测试（5MB 加密传输）
-plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER @'
-sshpass -p 'PASSWORD' ssh -o StrictHostKeyChecking=no -p TUNNEL_PORT user@127.0.0.1 "dd if=/dev/zero bs=1M count=5 2>/dev/null | md5sum; echo DATA_TRANSFER_OK"
-'@
+# 数据传输测试（建议 50MB + SHA256；若耗时偏高，做公网直连/内网直连对照）
+Get-FileHash -Algorithm SHA256 build/upload-50mb.bin
+pscp -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw "PASSWORD" build/upload-50mb.bin user@YOUR_SERVER:/tmp/upload-50mb.bin
+plink -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw "PASSWORD" user@YOUR_SERVER 'sha256sum /tmp/upload-50mb.bin'
 
 # 长时间连接测试：检查 Agent 日志确认心跳正常
 plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER "grep -c 'client reconnected' /root/goremote/server.log"
@@ -215,8 +222,8 @@ plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER "grep -c 'client 
 ```
 
 预期结果：
-- 10 并发 SSH ≥ 8 成功
-- 5MB 数据传输 md5 一致
+- 压测来源加入白名单后，30 并发 SSH 错峰 200ms 可达到 30/30
+- 50MB 数据传输 SHA256 一致
 - 服务端日志无持续连接断开重连记录
 
 ### 8b. 验证服务端重启后的设备恢复
@@ -255,8 +262,9 @@ $regen.Content
 | key 轮换 | `PUT /api/devices/:id/regen-key` | `status: key_regenerated` |
 | 断线重连 | kill agent → 重启 | `client reconnected` |
 | 状态持久化 | 检查 server-state.json | 设备、设置完整 |
-| 高并发 SSH | 10+ 并发 SSH 会话 | ≥ 8/10 成功 |
-| 大数据传输 | 5MB 数据通过隧道加密传输 | md5 一致 |
+| 高并发 SSH | 30 并发错峰 SSH 会话 | 压测源白名单后 30/30 成功 |
+| 大数据传输 | 50MB 数据通过隧道加密传输 | SHA256 一致 |
+| pending 长等待 | 临时 Agent pending 75s+ 后再查设备 | 同一 pending ID 不漂移 |
 | 服务端重启恢复 | fuser 重启 server | Agent 自动 reauth 重连 |
 | Android Agent | adb push + nohup 启动 | 注册审批后加密激活 |
 
@@ -267,14 +275,16 @@ $regen.Content
 | Agent 报 `unauthorized` | 设备被管理员删除 | 清空 `~/.goremote/identity` 重新注册 |
 | 隧道不通 | 本地端口未监听 | 确认本地服务运行，`ss -tlnp \| grep <port>` |
 | 审批后 Agent 无反应 | enc_key 传输失败 | 重新启动 Agent（携带已有 identity 自动重连获取密钥） |
-| Agent 不断注册新 pending ID | 审批未在 60 秒内完成，pending 连接超时；或服务端状态被重置 | 在 60 秒内审批；或先清空 Agent identity 文件再重新注册 |
+| Agent 不断注册新 pending ID | 未部署 pending 心跳修复；或未知旧 Agent 持续重连；或服务端状态被重置 | 部署新版 Agent/Server；清理或拉黑未知 pending 来源；必要时清空 Agent identity 后重新注册 |
+| 高并发 SSH 大量关闭 | 压测来源触发 `max_conn_per_min=10` 防扫描限流 | 将压测来源 IP 加入全局白名单后复测 |
 | agent.log 出现 `registration failed` | 服务端重启后旧设备消失 | 清空 `~/.goremote/identity` 重新注册，或在服务端重新审批 |
 | agent.log 出现 `non-fatal message error, continuing` | tunnel_data 解密失败或外部连接已关闭 | 正常行为（端口扫描器的短连接），不影响 Agent 连接 |
 | server-state.json 损坏 | 磁盘写异常 | 手工修复 JSON 或删除后重启（密钥和设备信息丢失） |
 | 服务端启动报端口占用 | 旧进程未清理 | `fuser -k 8080/tcp` 再启动 |
+
 ## 注意事项
 
 - **首次启动前必须清理旧状态**：旧版 `server-state.json` 的格式与新版不兼容，必须删除重新生成
 - **Agent 身份文件**：`~/.goremote/identity` 包含设备私钥，丢失后需管理员删除旧设备后重新注册
-- **端口扫描器**：公网服务器会持续收到扫端口的连接请求，会触发 `registration failed` 日志——这是正常行为，不影响稳定运行
+- **端口扫描器**：公网服务器会持续收到扫端口的连接请求，会触发 `registration failed` 或限流日志——这是正常行为，不影响稳定运行；压测前应白名单压测源
 - **密码安全性**：admin 密码首次启动后不再明文存储。如遗忘密码，删除 `server-state.json` 重新启动
