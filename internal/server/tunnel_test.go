@@ -139,6 +139,38 @@ func TestApproveDevice_ChangesStatus(t *testing.T) {
 	}
 }
 
+func TestApproveDeviceRequiresDHPubkey(t *testing.T) {
+	_, stateStore := newTestConfig(t)
+	cryptoMgr := common.NewCryptoManager()
+	dm := NewDeviceManager(stateStore, cryptoMgr)
+
+	deviceID, err := dm.RegisterNewClient(
+		"aabbccdd00112233445566778899aabb00112233445566778899aabbccdd0011",
+		"",
+		"test-host",
+		"linux",
+		"10.0.0.1",
+	)
+	if err != nil {
+		t.Fatalf("RegisterNewClient: %v", err)
+	}
+
+	if _, _, _, err := dm.ApproveDevice(deviceID); err == nil {
+		t.Fatal("expected approval to fail without device DH public key")
+	}
+
+	device := stateStore.GetDeviceByID(deviceID)
+	if device == nil {
+		t.Fatal("expected device to remain pending")
+	}
+	if device.Status != "pending" {
+		t.Fatalf("expected device to remain pending, got %s", device.Status)
+	}
+	if cryptoMgr.HasKey(deviceID) {
+		t.Fatal("did not expect encryption key for unapproved device")
+	}
+}
+
 func TestDenyDevice_RemovesFromStore(t *testing.T) {
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
@@ -255,8 +287,13 @@ func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
 		t.Fatalf("GenerateSignKeypair: %v", err)
 	}
 	pubHex := common.EncodePublicKey(pub)
+	_, dhPub, err := common.GenerateDHKeypair()
+	if err != nil {
+		t.Fatalf("GenerateDHKeypair: %v", err)
+	}
+	dhPubHex := common.EncodeBytes(dhPub[:])
 
-	deviceID, err := dm.RegisterNewClient(pubHex, "", "old-host", "linux", "10.0.0.6")
+	deviceID, err := dm.RegisterNewClient(pubHex, dhPubHex, "old-host", "linux", "10.0.0.6")
 	if err != nil {
 		t.Fatalf("RegisterNewClient: %v", err)
 	}
@@ -278,13 +315,14 @@ func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
 	handler := NewHandler(srv)
 
 	err = handler.handleReconnect(&Client{}, &common.RegisterPayload{
-		ReAuth:       true,
-		ClientID:     deviceID,
-		DevicePubkey: pubHex,
-		Timestamp:    timestamp,
-		Signature:    common.EncodeBytes(signature),
-		Hostname:     "new-host",
-		OS:           "android",
+		ReAuth:         true,
+		ClientID:       deviceID,
+		DevicePubkey:   pubHex,
+		DeviceDHPubkey: dhPubHex,
+		Timestamp:      timestamp,
+		Signature:      common.EncodeBytes(signature),
+		Hostname:       "new-host",
+		OS:             "android",
 	})
 	if err == nil {
 		t.Fatal("expected nil websocket client to fail only while sending register_ok")
@@ -299,6 +337,9 @@ func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
 	}
 	if device.OS != "android" {
 		t.Fatalf("expected OS to refresh, got %q", device.OS)
+	}
+	if device.DeviceDHPubkey != dhPubHex {
+		t.Fatal("expected device DH public key to refresh")
 	}
 }
 

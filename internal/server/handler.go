@@ -105,7 +105,7 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 		return h.handleNewRegistration(client, payload)
 	}
 
-	if payload.Hostname != "" || payload.OS != "" {
+	if payload.Hostname != "" || payload.OS != "" || payload.DeviceDHPubkey != "" {
 		h.server.stateStore.UpdateDevice(device.ID, func(d *DeviceState) {
 			if payload.Hostname != "" {
 				d.Hostname = payload.Hostname
@@ -113,6 +113,9 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 			}
 			if payload.OS != "" {
 				d.OS = payload.OS
+			}
+			if payload.DeviceDHPubkey != "" {
+				d.DeviceDHPubkey = payload.DeviceDHPubkey
 			}
 		})
 		if updated := h.server.stateStore.GetDeviceByID(device.ID); updated != nil {

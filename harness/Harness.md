@@ -217,6 +217,7 @@ go vet ./internal/...
 | 高并发 SSH 部分报 `Connection closed` | 先确认压测来源已加入全局白名单，再判断 SSHD `MaxStartups` 或公网入口瞬时超时 |
 | 大文件下载慢 | 先做公网服务端直连下载和内网 SSH 直连对照；若公网直连也慢，瓶颈不在隧道协议 |
 | pending 超时断开 | 新版已通过 pending heartbeat 修复；若复现，多半是旧二进制或未知旧 Agent 持续重连 |
+| SSH 隧道握手卡死且 Agent 报 `encryption key not found` | 检查 reauth 降级注册路径是否携带/刷新 `DeviceDHPubkey`，坏授权设备需删除后重新审批 |
 
 ## 测试注意
 

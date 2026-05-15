@@ -154,6 +154,10 @@ func (dm *DeviceManager) ApproveDevice(deviceID string) (*DeviceState, string, s
 		return nil, "", "", fmt.Errorf("device is not pending: %s", deviceID)
 	}
 
+	if device.DeviceDHPubkey == "" {
+		return nil, "", "", fmt.Errorf("device dh public key is required for encrypted approval")
+	}
+
 	encKey, err := common.GenerateEncKey()
 	if err != nil {
 		return nil, "", "", fmt.Errorf("generate enc_key: %w", err)

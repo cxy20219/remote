@@ -88,6 +88,33 @@ func TestBuildTLSConfig_ValidCAFile(t *testing.T) {
 	}
 }
 
+func TestBuildRegisterReauthPayloadIncludesDHPubkey(t *testing.T) {
+	dir := t.TempDir()
+	identity, err := CreateIdentity(dir, "example:8080")
+	if err != nil {
+		t.Fatalf("CreateIdentity: %v", err)
+	}
+
+	c := NewConnector("example:8080", false, "", false, identity)
+	payload, err := c.buildRegisterReauthPayload("client-test", time.Now().Unix(), "host", "linux")
+	if err != nil {
+		t.Fatalf("buildRegisterReauthPayload: %v", err)
+	}
+
+	if !payload.ReAuth {
+		t.Fatal("expected reauth payload")
+	}
+	if payload.DevicePubkey == "" {
+		t.Fatal("expected device signing public key")
+	}
+	if payload.DeviceDHPubkey == "" {
+		t.Fatal("expected device DH public key for encrypted approval fallback")
+	}
+	if payload.Signature == "" {
+		t.Fatal("expected reauth signature")
+	}
+}
+
 func generateTestCACertPEM(t *testing.T) []byte {
 	t.Helper()
 

@@ -237,6 +237,7 @@ go vet ./internal/...
 | 少量 SSH `Connection timed out` | 公网入口/SSHD 握手尖峰 | 200ms 错峰复测；必要时调整 SSHD `MaxStartups` |
 | 大文件下载慢但哈希一致 | 公网服务端出方向带宽不足 | 做公网直连下载对照，不先改隧道代码 |
 | pending ID 持续变化 | Agent pending 心跳失效或旧 Agent 重连 | 查 Agent 日志；确认 `handlePending` 心跳；清理未知旧 pending |
+| SSH 冒烟卡死且 Agent 日志出现 `encryption key not found` | reauth 失败降级注册时缺 `DeviceDHPubkey`，审批后未拿到 enc_key | 确认 Agent reauth payload 携带 DH 公钥，服务端 reauth 刷新 DH 公钥；必要时删除坏授权设备后重新注册审批 |
 | Android 注册后 OS 显示错误 | reauth 未刷新 hostname/os | 确认 Agent reauth payload 携带元信息，服务端更新设备状态 |
 | 二进制替换失败 | 旧进程仍占用或命令被 PowerShell 本地展开 | 使用 `.new` + 单引号远程命令 + `pidof` 精准停进程 |
 

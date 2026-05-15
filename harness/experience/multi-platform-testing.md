@@ -194,6 +194,7 @@ echo "test-data" | timeout 5 nc -w 3 127.0.0.1 TUNNEL_PORT
 | `agent/agent.go` / `cmd/agent/main.go` | identity 保存 | `--identity-dir` 未贯穿审批/更新路径 | 2026-05-15 | Android/临时身份目录稳定 |
 | `common/message.go` / `tunnel.go` | 隧道数据帧 | JSON+base64 数据帧开销高 | 2026-05-15 | 改 WebSocket Binary frame，保留 JSON 控制消息 |
 | `server/handler.go` / `agent/connector.go` | reauth 元信息 | 重连不刷新 hostname/os | 2026-05-15 | Android 设备 OS 正确显示为 android |
+| `agent/connector.go` / `server/handler.go` / `server/device_mgr.go` | reauth 降级注册 | reauth 失败转 pending 时未携带/刷新 `DeviceDHPubkey`，审批后无加密密钥 | 2026-05-15 | SSH 隧道不再因 `encryption key not found` 卡死 |
 
 ## 10. Agent 非致命 handler 错误不应断开整个连接
 
@@ -413,6 +414,7 @@ plink -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw "PASSWORD" user@YOUR_SERV
 - 完全同时发起 20/30 SSH 连接时，少量失败可能来自 SSHD `MaxStartups`、公网入口瞬时超时或压测机网络，不应仅凭单轮失败判定隧道不稳定。错峰 100-200ms 更适合衡量隧道承载能力。
 - 大文件吞吐必须做三组对照：隧道传输、公网服务端直连、内网服务直连。只有三者对比后，才能判断瓶颈在隧道协议、公网链路还是 SSH 服务。
 - Android 场景必须使用 `--identity-dir /data/local/tmp/...`，并确认 reauth 后设备 OS/hostname 被服务端刷新。
+- reauth 失败被服务端降级为新 pending 时，Agent 必须在 reauth payload 中携带 `DeviceDHPubkey`；服务端 reauth 成功时也要刷新保存的 DH 公钥，否则审批后可能出现设备在线但隧道数据 `decrypt failed: encryption key not found`。
 
 ### 应升级为固定流程
 

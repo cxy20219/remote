@@ -223,24 +223,9 @@ func (c *Connector) RegisterNew(hostname, osName string) error {
 }
 
 func (c *Connector) RegisterReauth(clientID string, timestamp int64, hostname, osName string) error {
-	privKey, err := c.identity.GetSignPrivKey()
+	payload, err := c.buildRegisterReauthPayload(clientID, timestamp, hostname, osName)
 	if err != nil {
-		return fmt.Errorf("get sign privkey: %w", err)
-	}
-
-	signature, err := common.SignTimestamp(privKey, clientID, timestamp)
-	if err != nil {
-		return fmt.Errorf("sign timestamp: %w", err)
-	}
-
-	payload := common.RegisterPayload{
-		ReAuth:       true,
-		ClientID:     clientID,
-		DevicePubkey: c.identity.DeviceSignPubkey,
-		Timestamp:    timestamp,
-		Signature:    common.EncodeBytes(signature),
-		Hostname:     hostname,
-		OS:           osName,
+		return err
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
@@ -248,6 +233,29 @@ func (c *Connector) RegisterReauth(clientID string, timestamp int64, hostname, o
 		Type:    "register",
 		Payload: payloadJSON,
 	})
+}
+
+func (c *Connector) buildRegisterReauthPayload(clientID string, timestamp int64, hostname, osName string) (common.RegisterPayload, error) {
+	privKey, err := c.identity.GetSignPrivKey()
+	if err != nil {
+		return common.RegisterPayload{}, fmt.Errorf("get sign privkey: %w", err)
+	}
+
+	signature, err := common.SignTimestamp(privKey, clientID, timestamp)
+	if err != nil {
+		return common.RegisterPayload{}, fmt.Errorf("sign timestamp: %w", err)
+	}
+
+	return common.RegisterPayload{
+		ReAuth:         true,
+		ClientID:       clientID,
+		DevicePubkey:   c.identity.DeviceSignPubkey,
+		DeviceDHPubkey: c.identity.DeviceDHPubkey,
+		Timestamp:      timestamp,
+		Signature:      common.EncodeBytes(signature),
+		Hostname:       hostname,
+		OS:             osName,
+	}, nil
 }
 
 func (c *Connector) SendPing() error {
