@@ -87,7 +87,7 @@ go vet ./internal/...
 | `internal/server/persist.go` | `StateStore` 异步原子写入 `server-state.json` |
 | `internal/server/device_mgr.go` | `DeviceManager` pending/authorized 审批状态机 |
 | `internal/server/tunnel.go` | 隧道管理，`bufPool` sync.Pool 复用 256KB chunk，支持 WebSocket Binary 隧道数据帧 |
-| `internal/server/client.go` | `ClientManager`+`DeviceQuerier` 接口，支持设备级 IP 白名单查询 |
+| `internal/server/client.go` | `ClientManager`+`DeviceQuerier` 接口，支持设备级 IP 白名单查询；`LastPing` 同时承载最近有效活动时间 |
 | `internal/agent/identity.go` | Agent 本地 `~/.goremote/identity` 管理，ECDH 解密 enc_key |
 | `internal/agent/agent.go` | Agent 主循环（pending 等待审批 → reauth 重连，含 pendingApproval 标志） |
 | `internal/agent/connector.go` | WebSocket 连接（128KB buffer），JSON 控制消息 + Binary 隧道数据帧收发 |
@@ -106,6 +106,7 @@ go vet ./internal/...
 | 多平台集成测试经验 | [experience/multi-platform-testing.md](experience/multi-platform-testing.md) | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) |
 | 代码安全与性能优化审查 | [experience/multi-platform-testing.md#9-已修正的代码问题列表](experience/multi-platform-testing.md#9-已修正的代码问题列表) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
 | 高并发 SSH 吞吐测试 | [workflow/stability-performance-completeness-verify.md#6-ssh-并发验证](workflow/stability-performance-completeness-verify.md#6-ssh-并发验证) | [experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果](experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果) |
+| Android ADB 5555 长连接 | [workflow/stability-performance-completeness-verify.md#android-adb-5555-长连接验证](workflow/stability-performance-completeness-verify.md#android-adb-5555-长连接验证) | [experience/multi-platform-testing.md#23-2026-05-16-android-adb-5555-隧道高吞吐误判离线](experience/multi-platform-testing.md#23-2026-05-16-android-adb-5555-隧道高吞吐误判离线) |
 | 服务端重启恢复流程 | [workflow/zero-config-deploy-verify.md#8b-验证服务端重启后的设备恢复](workflow/zero-config-deploy-verify.md) | [experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移](experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移) |
 | pending 连接超时排查 | [experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境已修复](experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境已修复) | [experience/zero-config-testing-lessons.md#6-pending-连接的生命周期](experience/zero-config-testing-lessons.md#6-pending-连接的生命周期) |
 | 隧道协议/二进制帧理解 | [references/tunnel-design.md#2-消息协议](references/tunnel-design.md#2-消息协议) | [experience/multi-platform-testing.md#16-2026-05-15-稳定性性能完整性优化复盘](experience/multi-platform-testing.md#16-2026-05-15-稳定性性能完整性优化复盘) |

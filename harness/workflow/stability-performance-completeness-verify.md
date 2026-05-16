@@ -106,6 +106,7 @@ Invoke-WebRequest -Uri 'http://YOUR_SERVER:8080/api/security/blacklist' -Method 
 |------|------|
 | SSH | `Linux Agent 127.0.0.1:22` |
 | Android echo | `Android Agent 127.0.0.1:12345` |
+| Android ADB | `Android Agent 127.0.0.1:5555`，仅在手机已启用 adb tcpip 或本机 5555 可用时创建 |
 
 ### 5. 配置压测白名单
 
@@ -195,6 +196,43 @@ Remove-Job $jobs
 
 最近验证结果：50/50 成功。
 
+#### Android ADB 5555 长连接验证
+
+当业务会通过公网端口远程操作手机 adb 时，必须额外创建 `Android Agent 127.0.0.1:5555` 隧道，并让测试命令明确指定公网映射 serial，避免误走 USB 设备：
+
+```powershell
+adb disconnect YOUR_SERVER:ADB_TUNNEL_PORT
+adb connect YOUR_SERVER:ADB_TUNNEL_PORT
+adb devices
+
+$serial='YOUR_SERVER:ADB_TUNNEL_PORT'
+$ok=0; $fail=0
+for($i=1; $i -le 150; $i++) {
+  $out = & adb -s $serial shell "echo ADB_LOOP_$i; getprop ro.product.model; date" 2>&1
+  if ($LASTEXITCODE -eq 0 -and (($out -join "`n") -match "ADB_LOOP_$i")) { $ok++ } else { $fail++ }
+  Start-Sleep -Seconds 1
+}
+[pscustomobject]@{Ok=$ok; Fail=$fail}
+```
+
+随后再做一轮大输出，确认不是只有短命令稳定：
+
+```powershell
+adb -s YOUR_SERVER:ADB_TUNNEL_PORT exec-out "yes ADB_STRESS_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 | head -c 5242880" > build/adb-stress.txt
+adb -s YOUR_SERVER:ADB_TUNNEL_PORT shell "echo ADB_AFTER_STRESS; date"
+```
+
+验证标准：
+
+- 循环时长必须超过服务端 `heartbeat_timeout`，默认至少 90 秒。
+- `adb devices` 中公网映射 serial 保持 `device`，不是 `offline`。
+- `/api/clients` 中 Android Agent 的 `last_ping` 或最近活动时间持续刷新。
+- `/api/tunnels` 中 ADB 5555 隧道保持 `active`。
+- 服务端日志无新的 `client heartbeat timeout`、`client disconnected`、`decrypt failed`、`encryption key not found`。
+- 若需要读取 Android Agent 日志，可临时使用 USB 只做日志观察；远程 adb 操作必须始终指定公网映射 serial。
+
+最近验证结果：远程 ADB 5555 映射在 150 次循环 shell、约 204 秒持续操作后 150/150 成功；随后 5MB 级大输出成功；Android Agent 与 ADB 隧道保持在线，服务端日志无新的 heartbeat timeout 或异常断线。
+
 ### 8. 大文件完整性与瓶颈定位
 
 先生成本地 50MB 随机文件并记录 SHA256：
@@ -250,7 +288,7 @@ go vet ./internal/...
 预期：
 
 - 只有目标授权设备在线；无无关 pending。
-- SSH 和 Android echo 隧道均 active。
+- SSH、Android echo 以及本轮需要的 Android ADB 5555 隧道均 active。
 - 服务端日志无 panic、持续 reconnect、持续 rate limited。
 - `server.log` 不应快速膨胀；磁盘空间保持充足。
 
@@ -264,6 +302,7 @@ go vet ./internal/...
 | pending ID 持续变化 | Agent pending 心跳失效或旧 Agent 重连 | 查 Agent 日志；确认 `handlePending` 心跳；清理未知旧 pending |
 | SSH 冒烟卡死且 Agent 日志出现 `encryption key not found` | reauth 失败降级注册时缺 `DeviceDHPubkey`，审批后未拿到 enc_key | 确认 Agent reauth payload 携带 DH 公钥，服务端 reauth 刷新 DH 公钥；必要时删除坏授权设备后重新注册审批 |
 | Android 注册后 OS 显示错误 | reauth 未刷新 hostname/os | 确认 Agent reauth payload 携带元信息，服务端更新设备状态 |
+| 远程 ADB 一段时间后 `offline` 且隧道全没 | 服务端只按 ping 刷新活动时间，ADB 二进制隧道流量未计入存活，触发心跳误判 | 确认服务端 `readLoop` 对所有合法消息刷新活动时间；重建 ADB 5555 隧道后跑超过 `heartbeat_timeout` 的远程 adb 循环 |
 | 二进制替换失败 | 旧进程仍占用或命令被 PowerShell 本地展开 | 使用 `.new` + 单引号远程命令 + `pidof` 精准停进程 |
 
 ## 常见误区

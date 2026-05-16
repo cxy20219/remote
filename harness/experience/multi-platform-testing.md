@@ -1,6 +1,6 @@
 # 多平台集成测试实战经验
 
-> 最后更新：2026-05-15 | 关联流程：[零配置部署验证](../workflow/zero-config-deploy-verify.md)、[稳定性性能完整性综合验证](../workflow/stability-performance-completeness-verify.md) | 关联参考：[隧道设计](../references/tunnel-design.md)
+> 最后更新：2026-05-16 | 关联流程：[零配置部署验证](../workflow/zero-config-deploy-verify.md)、[稳定性性能完整性综合验证](../workflow/stability-performance-completeness-verify.md) | 关联参考：[隧道设计](../references/tunnel-design.md)
 
 ## 适用场景
 
@@ -584,3 +584,43 @@ plink -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw "PASSWORD" user@YOUR_SERV
 ### 关联流程
 
 - 主流程见 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md)。
+
+## 23. 2026-05-16 Android ADB 5555 隧道高吞吐误判离线
+
+### 问题背景
+
+手机拔掉 USB 后，通过 GoRemote 将 Android Agent 的本机 `127.0.0.1:5555` 映射到公网端口，使用远程 adb 操作手机。初始命令正常，持续一段时间后 `adb devices` 中公网端点变为 `offline`，同时管理端里的该手机隧道全部消失。
+
+### 现象和触发条件
+
+- 服务端日志先出现 ADB 5555 隧道创建，随后出现 `client heartbeat timeout`，紧接着关闭该 Android client 下所有隧道并记录 `client disconnected`。
+- Android Agent 日志对应出现 `websocket: close 1006 (abnormal closure): unexpected EOF` 和 `tunnel manager cleaned up`。
+- 触发点不是 adb 5555 本身崩溃，而是服务端主动关闭了 Agent WebSocket；隧道消失是 `readLoop` 断线清理逻辑的预期结果。
+
+### 根因判断
+
+服务端 `Client.LastPing` 过去只在收到 `ping` 时刷新。ADB 5555 这类高吞吐/长连接隧道会产生大量 `tunnel_data_bin` 二进制数据帧，但这些有效业务流量没有计入存活活动。若 Agent 的 ping 被隧道写队列或 adb 流量挤压，服务端心跳检查会看到 `LastPing` 超过 `heartbeat_timeout`，从而误判 Android Agent 离线。
+
+### 可复用修复
+
+- 将服务端存活语义从“最近 ping”扩展为“最近有效活动”。
+- `internal/server/client.go` 保留 `UpdatePingIfMatch`，新增/复用 `UpdateActivityIfMatch`，并且只允许当前连接刷新，避免旧连接污染新连接。
+- `internal/server/server.go` 的授权 `readLoop` 在 `readWSMessage` 成功后、交给 handler 前刷新活动时间。这样 `ping`、控制消息、`tunnel_data_bin` 都能证明该 Agent 仍活着。
+- 断线时关闭该 client 下所有隧道仍然合理；需要修的是误判断线，而不是保留失去 Agent 的悬空隧道。
+
+### 验证方式
+
+- 本地回归：`go test ./internal/server`、`go test ./...`、`go vet ./internal/...`、`go build ./...`。
+- 线上部署：重编译并替换公网 Server；本次变更只在服务端，Agent 二进制无需重刷。
+- 真实链路：重建 `Android Agent 127.0.0.1:5555` 到公网端口的隧道，使用 `adb -s YOUR_SERVER:ADB_TUNNEL_PORT` 连续执行 150 次 shell 命令，持续时间超过 200 秒；再执行 5MB 级 `exec-out` 大输出。
+- 收尾检查：Android Agent 保持 online，ADB 隧道保持 active，公网 adb serial 保持 `device`，服务端日志无新的 `client heartbeat timeout`、`client disconnected`、`decrypt failed`、`encryption key not found`。
+
+### 适用边界
+
+- 这条经验适用于所有“Agent 正在持续发送合法业务数据，但 ping 可能被延迟”的场景，不限于 adb；例如长连接数据库、文件流、交互式 SSH 都应按“有效活动”刷新存活。
+- 如果服务端没有收到任何来自 Agent 的消息，仍应按 `heartbeat_timeout` 关闭连接；不要为了规避误判而无限延长超时。
+- 如果 `adb devices` 仍变为 `offline` 但服务端无心跳超时和隧道清理，应转向 adb daemon、手机省电策略、端口 5555 服务状态或公网入口限流排查。
+
+### 是否升级为固定流程
+
+已升级到 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md) 的 Android ADB 5555 长连接验证。以后涉及 `readLoop`、心跳、WebSocket 写队列、二进制隧道数据帧或 Android Agent 的改动，都应重复该验证。

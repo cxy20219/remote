@@ -96,7 +96,7 @@ func (m *ClientManager) List() []*Client {
 	return clients
 }
 
-func (m *ClientManager) UpdatePingIfMatch(clientID string, client *Client) bool {
+func (m *ClientManager) UpdateActivityIfMatch(clientID string, client *Client) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if current, ok := m.clients[clientID]; ok && current == client {
@@ -104,6 +104,10 @@ func (m *ClientManager) UpdatePingIfMatch(clientID string, client *Client) bool 
 		return true
 	}
 	return false
+}
+
+func (m *ClientManager) UpdatePingIfMatch(clientID string, client *Client) bool {
+	return m.UpdateActivityIfMatch(clientID, client)
 }
 
 func (m *ClientManager) IsIPWhitelisted(ip string) bool {

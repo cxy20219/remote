@@ -73,3 +73,31 @@ func TestClientManagerStalePingCannotRefreshReplacement(t *testing.T) {
 		t.Fatal("expected current client heartbeat to change")
 	}
 }
+
+func TestClientManagerActivityRefreshesCurrentClientOnly(t *testing.T) {
+	m := NewClientManager()
+	oldClient := &Client{ClientID: "client-test"}
+	newClient := &Client{ClientID: "client-test"}
+
+	m.Add(oldClient)
+	oldPing := oldClient.LastPing
+	m.Add(newClient)
+	newClient.LastPing = time.Unix(1, 0)
+	newPing := newClient.LastPing
+
+	if m.UpdateActivityIfMatch("client-test", oldClient) {
+		t.Fatal("stale client should not update replacement activity")
+	}
+	if !newClient.LastPing.Equal(newPing) {
+		t.Fatal("replacement activity should not change from stale client")
+	}
+	if oldClient.LastPing != oldPing {
+		t.Fatal("old client activity should not change after replacement")
+	}
+	if !m.UpdateActivityIfMatch("client-test", newClient) {
+		t.Fatal("current client should update activity")
+	}
+	if newClient.LastPing.Equal(newPing) {
+		t.Fatal("expected current client activity to change")
+	}
+}

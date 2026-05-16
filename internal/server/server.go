@@ -405,6 +405,8 @@ func (s *Server) readLoop(client *Client) {
 			return
 		}
 
+		s.clients.UpdateActivityIfMatch(client.ClientID, client)
+
 		if err := s.handler.Handle(client, msg); err != nil {
 			slog.Error("failed to handle message",
 				"client_id", client.ClientID,
