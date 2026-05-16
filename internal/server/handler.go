@@ -38,7 +38,7 @@ func (h *Handler) Handle(client *Client, msg *common.Message) error {
 
 func (h *Handler) handleRegister(client *Client, msg *common.Message) error {
 	var payload common.RegisterPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return h.sendRegisterFail(client, "invalid payload")
 	}
 
@@ -104,6 +104,9 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 	}
 
 	if payload.Hostname != "" || payload.OS != "" || payload.DeviceDHPubkey != "" {
+		if err := validateDHPubkeyHex(payload.DeviceDHPubkey); err != nil {
+			return fmt.Errorf("invalid reauth device dh pubkey: %w", err)
+		}
 		h.server.stateStore.UpdateDevice(device.ID, func(d *DeviceState) {
 			if payload.Hostname != "" {
 				d.Hostname = payload.Hostname
@@ -125,6 +128,14 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 	client.Hostname = device.Hostname
 	client.OS = device.OS
 
+	okPayload, err := h.registerOKPayloadForDevice(device)
+	if err != nil {
+		slog.Warn("failed to prepare register_ok",
+			"client_id", device.ID,
+			"error", err)
+		return h.sendRegisterFail(client, err.Error())
+	}
+
 	h.server.clients.Add(client)
 	h.server.deviceMgr.RemovePendingConn(client.ClientID)
 
@@ -132,35 +143,59 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 		"client_id", device.ID,
 		"hostname", device.Hostname)
 
-	var encKeyEncrypted, serverDHPubkey string
-	if device.EncEnabled && device.DeviceDHPubkey != "" {
-		key, err := hex.DecodeString(device.EncKey)
-		if err == nil {
-			agentDHPubkey, dhErr := hex.DecodeString(device.DeviceDHPubkey)
-			if dhErr == nil {
-				var agentDHPub [32]byte
-				copy(agentDHPub[:], agentDHPubkey)
-				serverDHPriv, serverDHPub, dhErr := common.GenerateDHKeypair()
-				if dhErr == nil {
-					sharedSecret, _ := common.DHSharedSecret(serverDHPriv, &agentDHPub)
-					encKeyEncrypted, _ = common.EncryptKeyWithSharedSecret(key, sharedSecret)
-					serverDHPubkey = common.EncodeBytes(serverDHPub[:])
-				}
-			}
-		}
-	}
-
-	okPayload := common.RegisterOKPayload{
-		ClientID:        device.ID,
-		EncKeyEncrypted: encKeyEncrypted,
-		ServerDHPubkey:  serverDHPubkey,
-		EncEnabled:      device.EncEnabled,
-	}
 	payloadJSON, _ := json.Marshal(okPayload)
 	return client.WriteJSON(common.Message{
 		Type:    "register_ok",
 		Payload: payloadJSON,
 	})
+}
+
+func (h *Handler) registerOKPayloadForDevice(device *DeviceState) (common.RegisterOKPayload, error) {
+	if device == nil {
+		return common.RegisterOKPayload{}, fmt.Errorf("device is nil")
+	}
+
+	var encKeyEncrypted, serverDHPubkey string
+	if device.EncEnabled && device.DeviceDHPubkey != "" {
+		key, err := hex.DecodeString(device.EncKey)
+		if err != nil {
+			return common.RegisterOKPayload{}, fmt.Errorf("invalid stored enc_key: %w", err)
+		}
+		if len(key) != 32 {
+			return common.RegisterOKPayload{}, fmt.Errorf("invalid stored enc_key size: %d", len(key))
+		}
+
+		agentDHPubkey, err := hex.DecodeString(device.DeviceDHPubkey)
+		if err != nil {
+			return common.RegisterOKPayload{}, fmt.Errorf("invalid stored device dh pubkey: %w", err)
+		}
+		if len(agentDHPubkey) != 32 {
+			return common.RegisterOKPayload{}, fmt.Errorf("invalid stored device dh pubkey size: %d", len(agentDHPubkey))
+		}
+
+		var agentDHPub [32]byte
+		copy(agentDHPub[:], agentDHPubkey)
+		serverDHPriv, serverDHPub, err := common.GenerateDHKeypair()
+		if err != nil {
+			return common.RegisterOKPayload{}, fmt.Errorf("generate server dh keypair: %w", err)
+		}
+		sharedSecret, err := common.DHSharedSecret(serverDHPriv, &agentDHPub)
+		if err != nil {
+			return common.RegisterOKPayload{}, fmt.Errorf("compute shared secret: %w", err)
+		}
+		encKeyEncrypted, err = common.EncryptKeyWithSharedSecret(key, sharedSecret)
+		if err != nil {
+			return common.RegisterOKPayload{}, fmt.Errorf("encrypt enc_key: %w", err)
+		}
+		serverDHPubkey = common.EncodeBytes(serverDHPub[:])
+	}
+
+	return common.RegisterOKPayload{
+		ClientID:        device.ID,
+		EncKeyEncrypted: encKeyEncrypted,
+		ServerDHPubkey:  serverDHPubkey,
+		EncEnabled:      device.EncEnabled,
+	}, nil
 }
 
 func (h *Handler) handlePing(client *Client, msg *common.Message) error {
@@ -182,7 +217,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 	}
 
 	var payload common.TunnelOpenPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 
@@ -255,7 +290,7 @@ func (h *Handler) handleTunnelClose(client *Client, msg *common.Message) error {
 	}
 
 	var payload common.TunnelClosePayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 
@@ -305,7 +340,7 @@ func (h *Handler) handleTunnelError(client *Client, msg *common.Message) error {
 	}
 
 	var payload common.TunnelErrorPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 

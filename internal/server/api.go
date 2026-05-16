@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strings"
@@ -18,8 +19,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 	var req struct {
 		Password string `json:"password"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+	if !decodeStrictJSON(c, &req) {
 		return
 	}
 
@@ -48,7 +48,7 @@ func (s *Server) handleLogout(c *gin.Context) {
 
 func (s *Server) setAdminCookie(c *gin.Context, token string, maxAge int) {
 	c.SetSameSite(http.SameSiteStrictMode)
-	secure := s.tlsEnabled || c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	secure := s.tlsEnabled || c.Request.TLS != nil
 	c.SetCookie("go_remote_token", token, maxAge, "/", "", secure, true)
 }
 
@@ -136,6 +136,30 @@ func normalizeTunnelTarget(localAddr string, localPort int, protocol string, def
 	return localAddr, protocol, nil
 }
 
+func decodeStrictJSON(c *gin.Context, dst interface{}) bool {
+	contentType := c.GetHeader("Content-Type")
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "Content-Type must be application/json"})
+		return false
+	}
+
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+		return false
+	}
+
+	var extra struct{}
+	if err := decoder.Decode(&extra); err != io.EOF {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON: multiple JSON values"})
+		return false
+	}
+
+	return true
+}
+
 func (s *Server) handleAPIClients(c *gin.Context) {
 	type clientInfo struct {
 		ClientID string    `json:"client_id"`
@@ -205,14 +229,7 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	}
 
 	var req TunnelRequest
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return
-	}
-
-	if err := json.Unmarshal(body, &req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+	if !decodeStrictJSON(c, &req) {
 		return
 	}
 
@@ -387,14 +404,7 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 		Protocol   string `json:"protocol"`
 	}
 
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return
-	}
-
-	if err := json.Unmarshal(body, &req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+	if !decodeStrictJSON(c, &req) {
 		return
 	}
 
@@ -441,14 +451,7 @@ func (s *Server) handleAPIUpdateWhitelist(c *gin.Context) {
 	var req struct {
 		IPs []string `json:"ips"`
 	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return
-	}
-
-	if err := json.Unmarshal(body, &req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+	if !decodeStrictJSON(c, &req) {
 		return
 	}
 
@@ -474,14 +477,7 @@ func (s *Server) handleAPIUpdateGlobalWhitelist(c *gin.Context) {
 	var req struct {
 		IPs []string `json:"ips"`
 	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return
-	}
-
-	if err := json.Unmarshal(body, &req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+	if !decodeStrictJSON(c, &req) {
 		return
 	}
 
@@ -508,14 +504,7 @@ func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 		Reason   string `json:"reason"`
 		Duration int    `json:"duration_minutes"`
 	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return
-	}
-
-	if err := json.Unmarshal(body, &req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+	if !decodeStrictJSON(c, &req) {
 		return
 	}
 
@@ -569,14 +558,7 @@ func (s *Server) handleAPIUpdateBlacklistThreshold(c *gin.Context) {
 	var req struct {
 		Threshold int `json:"threshold"`
 	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return
-	}
-
-	if err := json.Unmarshal(body, &req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+	if !decodeStrictJSON(c, &req) {
 		return
 	}
 
@@ -586,6 +568,9 @@ func (s *Server) handleAPIUpdateBlacklistThreshold(c *gin.Context) {
 	}
 
 	s.blacklist.SetThreshold(req.Threshold)
+	s.UpdateSettings(func(st *ServerSettings) {
+		st.BlacklistThreshold = req.Threshold
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"threshold": s.blacklist.GetThreshold(),
@@ -763,14 +748,7 @@ func (s *Server) handleAPIUpdateDeviceConfig(c *gin.Context) {
 		EncEnabled  *bool    `json:"enc_enabled"`
 		IPWhitelist []string `json:"ip_whitelist"`
 	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return
-	}
-
-	if err := json.Unmarshal(body, &req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+	if !decodeStrictJSON(c, &req) {
 		return
 	}
 
@@ -834,14 +812,7 @@ func (s *Server) handleAPIGetSettings(c *gin.Context) {
 
 func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 	var req settingsUpdateRequest
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return
-	}
-
-	if err := json.Unmarshal(body, &req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+	if !decodeStrictJSON(c, &req) {
 		return
 	}
 

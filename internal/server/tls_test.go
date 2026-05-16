@@ -115,6 +115,40 @@ func TestNewServer_TLSDisabled(t *testing.T) {
 	}
 }
 
+func TestNewHTTPServerHardeningDefaults(t *testing.T) {
+	config, _ := newTestConfig(t)
+	srv := NewServer(config, embed.FS{})
+
+	httpSrv := srv.newHTTPServer()
+	if httpSrv.ReadHeaderTimeout != httpReadHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v", httpSrv.ReadHeaderTimeout, httpReadHeaderTimeout)
+	}
+	if httpSrv.ReadTimeout != httpReadTimeout {
+		t.Fatalf("ReadTimeout = %v, want %v", httpSrv.ReadTimeout, httpReadTimeout)
+	}
+	if httpSrv.WriteTimeout != httpWriteTimeout {
+		t.Fatalf("WriteTimeout = %v, want %v", httpSrv.WriteTimeout, httpWriteTimeout)
+	}
+	if httpSrv.IdleTimeout != httpIdleTimeout {
+		t.Fatalf("IdleTimeout = %v, want %v", httpSrv.IdleTimeout, httpIdleTimeout)
+	}
+	if httpSrv.MaxHeaderBytes != httpMaxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", httpSrv.MaxHeaderBytes, httpMaxHeaderBytes)
+	}
+	if httpSrv.TLSConfig != nil {
+		t.Fatal("TLSConfig should be nil when TLS is disabled")
+	}
+
+	srv.tlsEnabled = true
+	httpSrv = srv.newHTTPServer()
+	if httpSrv.TLSConfig == nil {
+		t.Fatal("expected TLSConfig when TLS is enabled")
+	}
+	if httpSrv.TLSConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("TLS MinVersion = %x, want TLS 1.3", httpSrv.TLSConfig.MinVersion)
+	}
+}
+
 func TestBuildOriginCheckerRejectsBrowserOriginByDefault(t *testing.T) {
 	srv := &Server{}
 	check := srv.buildOriginChecker(nil)

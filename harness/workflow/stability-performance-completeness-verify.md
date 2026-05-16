@@ -1,6 +1,6 @@
 # 稳定性、性能、完整性综合验证流程
 
-> 最近验证：2026-05-15 | 适用场景：隧道核心改动后回归、生产部署前压测、SSH/Android 映射稳定性验收
+> 最近验证：2026-05-16 | 适用场景：隧道核心改动后回归、生产部署前压测、SSH/Android 映射稳定性验收
 
 ## 适用场景
 
@@ -124,6 +124,24 @@ Invoke-WebRequest -Uri 'http://YOUR_SERVER:8080/api/security/global-whitelist' -
 plink -batch -P SSH_TUNNEL_PORT -hostkey $INNER_HOSTKEY -pw "PASSWORD" user@YOUR_SERVER 'hostname; whoami; echo SSH_OK'
 ```
 
+如需使用 Windows OpenSSH 而不是 plink，密码认证不能直接把密码写到命令行。使用临时 `SSH_ASKPASS` helper 从环境变量读取密码，helper 文件内不保存密码：
+
+```powershell
+$askpass = Join-Path $env:TEMP ('goremote-askpass-' + [guid]::NewGuid() + '.cmd')
+Set-Content -LiteralPath $askpass -Value @('@echo off','echo %SSHPASS_VALUE%') -Encoding ASCII
+$env:SSH_ASKPASS=$askpass
+$env:SSH_ASKPASS_REQUIRE='force'
+$env:DISPLAY='1'
+$env:SSHPASS_VALUE='PASSWORD'
+ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 `
+  -o StrictHostKeyChecking=accept-new -p SSH_TUNNEL_PORT user@YOUR_SERVER `
+  'hostname; whoami; echo SSH_OK'
+Remove-Item -LiteralPath $askpass -Force
+Remove-Item Env:\SSHPASS_VALUE,Env:\SSH_ASKPASS,Env:\SSH_ASKPASS_REQUIRE,Env:\DISPLAY -ErrorAction SilentlyContinue
+```
+
+注意：PowerShell `Start-Job` 的错误对象可能把脚本行序列化进输出，压测脚本不要把真实密码直接写在 ScriptBlock 里；应通过环境变量/临时 askpass 传入，并只汇总 exit code、耗时和首行错误。
+
 30 并发建议错峰 200ms，避免把 SSH 握手尖峰和隧道吞吐混在一起：
 
 ```powershell
@@ -143,7 +161,10 @@ Remove-Job $jobs
 ($results | Where-Object { $_.Code -eq 0 -and $_.Text -match 'DONE_' }).Count
 ```
 
-最近验证结果：30 并发、200ms 错峰，30/30 成功。完全同时发起时少量 `Connection timed out` 更可能是公网入口或 SSH 握手尖峰，不直接归因于隧道层。
+最近验证结果：
+
+- plink：30 并发、200ms 错峰，30/30 成功。
+- OpenSSH：公网客户端经公网隧道端口发起 30 并发时出现少量 TCP `Connection timed out`；公网服务器本机对 `127.0.0.1:SSH_TUNNEL_PORT` 发起同等 30 并发为 30/30 成功，说明应优先把少量 timeout 归因到公网入口链路或连接尖峰，再判断隧道内部。
 
 ### 7. Android echo 并发验证
 
@@ -191,6 +212,8 @@ Get-FileHash -Algorithm SHA256 $path
 
 - 本机 ↔ 公网服务端直连 pscp，判断公网出/入方向带宽。
 - 本机 ↔ 内网 SSH 直连 pscp，判断内网 SSH 服务和本地网络上限。
+- 使用 OpenSSH 时用 `scp -P SSH_TUNNEL_PORT` 走同一隧道；同样必须记录上传、下载耗时和三端 SHA256。
+- OpenSSH `scp` 大文件传输时不要默认叠加过短的 `ServerAliveInterval/ServerAliveCountMax`。高吞吐低带宽链路上 keepalive 可能被数据流拥塞误伤，表现为 `server not responding` 和 `Broken pipe`；去掉 keepalive 后再复测，若仍失败再归因到隧道层。
 
 最近验证结论：
 
@@ -198,6 +221,8 @@ Get-FileHash -Algorithm SHA256 $path
 |------|------|
 | 隧道 50MB 下载 | SHA256 一致，约 129s |
 | 隧道 50MB 上传 | SHA256 一致，约 133s |
+| OpenSSH scp 50MB 上传/下载 | SHA256 一致，上传约 132s，下载约 131s |
+| 最新破兼容硬化代码三端部署后 OpenSSH scp 50MB | SHA256 一致，上传约 130s，下载约 129s；带过短 keepalive 的首次上传在约 42MB 处误断，去掉 keepalive 后通过 |
 | 公网服务端直连下载到本机 | 约 0.38MB/s，说明下载瓶颈主要在公网出方向链路 |
 | 内网直连上传/下载 | 约 5-7s，内网 SSH 本身不是瓶颈 |
 

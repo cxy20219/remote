@@ -39,11 +39,12 @@
 
 | 组件 | 职责 |
 |------|------|
-| WebSocket Server | 监听端口，接收客户端连接 |
+| WebSocket Server | 监听端口，接收客户端连接；TLS 启用时要求 TLS 1.3，HTTP Server 显式设置读头、读写、空闲超时和 32KB 请求头上限 |
 | Client Manager | 维护客户端在线状态，client_id ↔ 连接映射，IP 白名单存储 |
 | Tunnel Manager | 管理端口映射隧道，含端口防扫描限流（portLimiter） |
 | Handler | 消息路由，分发给对应处理函数 |
-| Security | 安全中间件：响应头、CSP、动态 Body 限大、登录限流、WS 限流（connLimiter）、IP 白名单检查；公网直连默认不信任代理头 |
+| Security | 安全中间件：响应头、CSP、动态 Body 限大、浏览器写请求 Origin/Referer 校验、HTTP 管理写接口与 WebSocket 控制消息严格 JSON 解码、登录限流、WS 限流（connLimiter）、IP 白名单检查；公网直连默认不信任代理头和 `X-Forwarded-Proto` |
+| AdminAuth | 管理员密码校验和会话管理；token 为 256-bit 随机值，24 小时过期，最多保留 64 个会话 |
 | Logger | 日志记录 |
 
 ## 3. 数据结构

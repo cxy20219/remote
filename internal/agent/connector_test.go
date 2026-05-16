@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -26,6 +27,9 @@ func TestBuildTLSConfig_NoCA(t *testing.T) {
 	if cfg.RootCAs != nil {
 		t.Fatal("expected nil RootCAs when no custom CA is configured")
 	}
+	if cfg.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("expected TLS 1.3 minimum, got %x", cfg.MinVersion)
+	}
 }
 
 func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
@@ -40,6 +44,9 @@ func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
 	}
 	if !cfg.InsecureSkipVerify {
 		t.Fatal("expected InsecureSkipVerify to be true")
+	}
+	if cfg.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("expected TLS 1.3 minimum, got %x", cfg.MinVersion)
 	}
 }
 
@@ -85,6 +92,9 @@ func TestBuildTLSConfig_ValidCAFile(t *testing.T) {
 	}
 	if cfg.RootCAs == nil {
 		t.Fatal("expected RootCAs to be populated")
+	}
+	if cfg.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("expected TLS 1.3 minimum, got %x", cfg.MinVersion)
 	}
 }
 

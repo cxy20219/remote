@@ -1,6 +1,13 @@
 package server
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+)
 
 func TestAdvertisedTunnelHost(t *testing.T) {
 	tests := []struct {
@@ -118,5 +125,72 @@ func TestNormalizeTunnelTarget(t *testing.T) {
 				t.Fatalf("got addr/proto %q/%q, want %q/%q", addr, proto, tc.wantAddr, tc.wantProto)
 			}
 		})
+	}
+}
+
+func TestUpdateBlacklistThresholdPersistsSettings(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := NewStateStoreWithSettings(defaultSettings())
+	srv := &Server{
+		stateStore: store,
+		blacklist:  NewBlacklistManager(100),
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/security/blacklist-threshold", strings.NewReader(`{"threshold":7}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	srv.handleAPIUpdateBlacklistThreshold(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := srv.blacklist.GetThreshold(); got != 7 {
+		t.Fatalf("blacklist threshold = %d, want 7", got)
+	}
+	if got := store.GetSettings().BlacklistThreshold; got != 7 {
+		t.Fatalf("stored blacklist threshold = %d, want 7", got)
+	}
+}
+
+func TestDecodeStrictJSONRejectsUnknownFieldsAndWrongContentType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var req struct {
+		Name string `json:"name"`
+	}
+
+	wrongType := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(wrongType)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/test", strings.NewReader(`{"name":"ok"}`))
+	if decodeStrictJSON(ctx, &req) {
+		t.Fatal("expected non-json content type to be rejected")
+	}
+	if wrongType.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want %d", wrongType.Code, http.StatusUnsupportedMediaType)
+	}
+
+	unknown := httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(unknown)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/test", strings.NewReader(`{"name":"ok","extra":true}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	if decodeStrictJSON(ctx, &req) {
+		t.Fatal("expected unknown field to be rejected")
+	}
+	if unknown.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", unknown.Code, http.StatusBadRequest)
+	}
+
+	multiple := httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(multiple)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/test", strings.NewReader(`{"name":"ok"}{"name":"again"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	if decodeStrictJSON(ctx, &req) {
+		t.Fatal("expected multiple JSON documents to be rejected")
+	}
+	if multiple.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", multiple.Code, http.StatusBadRequest)
 	}
 }

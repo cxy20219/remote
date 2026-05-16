@@ -124,13 +124,18 @@ go vet ./internal/...
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 隧道数据加密 | `common/crypto.go` | AES-256-GCM，每设备密钥，ECDH 安全传输 |
-| 隧道数据帧 | `common/message.go` / `server/tunnel.go` / `agent/tunnel.go` | WebSocket Binary frame 传输 nonce+ciphertext；旧 JSON/base64 `tunnel_data` 路径已移除 |
+| 隧道数据帧 | `common/message.go` / `server/tunnel.go` / `agent/tunnel.go` | WebSocket Binary frame 传输 nonce+ciphertext；仅允许已定义 flags，并分段校验 tunnel_id/conn_id/data 长度；旧 JSON/base64 `tunnel_data` 路径已移除 |
+| WS 控制消息 | `common/message.go` / `server/server.go` / `agent/connector.go` | TextMessage 使用严格 JSON 解码，拒绝未知字段和尾随多个 JSON 文档 |
 | 设备身份认证 | `common/identity.go` | ed25519 签名 `client_id:timestamp`，5 分钟窗口防重放 |
-| X25519 密钥交换 | `common/identity.go` | 审批时 ECDH + HKDF-SHA256 派生密钥，加密传输 enc_key |
+| X25519 密钥交换 | `common/identity.go` / `server/device_mgr.go` | 审批时 ECDH + HKDF-SHA256 派生密钥，加密传输 enc_key；设备 DH 公钥必须是 32 字节 hex |
 | 审批制注册 | `server/device_mgr.go` | 新设备需管理员批准才能接入，pending → authorized |
 | 密钥轮换 | `server/device_mgr.go` | Web UI 一键重新生成密钥，Agent 通过 `register_update` 自动接收 |
+| 管理员会话 | `server/admin_auth.go` | 256-bit 随机 token，HttpOnly Cookie，24 小时过期，最多保留 64 个会话并清理过期会话 |
 | CheckOrigin | `server/server.go` | `allowed_origins` 白名单；空配置只允许无 Origin 的 Agent 请求，拒绝浏览器 Origin |
+| 管理 API 写保护 | `server/security.go` / `server/api.go` | 已认证 POST/PUT/DELETE 会校验浏览器 Origin/Referer；写接口严格 JSON 解码，拒绝未知字段和多 JSON 文档；CLI/脚本无 Origin 请求仍可用 |
 | 真实客户端 IP | `server/server.go` | 默认 `SetTrustedProxies(nil)`，公网直连时限流/黑名单只信任 TCP RemoteAddr，避免伪造 `X-Forwarded-For` |
+| HTTPS 判定 | `server/api.go` / `server/security.go` | Cookie Secure 和同源判断只信任真实 TLS，不信任 `X-Forwarded-Proto` |
+| HTTP 服务硬化 | `server/server.go` | 显式设置 ReadHeaderTimeout、ReadTimeout、WriteTimeout、IdleTimeout 和 32KB MaxHeaderBytes，降低慢连接和超大请求头风险 |
 | 安全响应头 | `server/security.go` | X-Content-Type-Options、X-Frame-Options 等 |
 | Body 大小限制 | `server/security.go` | `max_body_size_mb`，默认 10MB；运行时修改立即生效，0 表示禁用限制 |
 | 登录速率限制 | `server/security.go` | `login_rate_limit`，默认 5/min/IP |
@@ -138,7 +143,7 @@ go vet ./internal/...
 | 隧道端口防扫描 | `server/tunnel.go` | 同上，黑名单联动 |
 | IP 白名单绕过限流 | `server/security.go` | 设备级 + 全局白名单，支持 CIDR |
 | 自动黑名单 | `server/security.go` | 累计限流违规达阈值自动拉黑 |
-| TLS 传输加密 | `server/server.go` / `agent/connector.go` | `--tls-cert/--tls-key` 启用 |
+| TLS 传输加密 | `server/server.go` / `agent/connector.go` | `--tls-cert/--tls-key` 启用；服务端和 Agent 默认要求 TLS 1.3 |
 
 ## 构建部署
 

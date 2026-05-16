@@ -4,13 +4,15 @@
 
 GoRemote 支持通过 TLS 加密 Server 与 Agent 之间的 WebSocket 通信，并可选择性验证服务端证书以防止中间人攻击。
 
+当前实现按破兼容安全基线收紧：Server 与 Agent 的 TLS 配置默认要求 TLS 1.3。老旧 TLS 1.2 客户端或代理不能再作为中间层直接接入。
+
 ## 安全等级
 
 | 模式 | 配置 | 安全性 | 说明 |
 |------|------|--------|------|
 | 无 TLS | `ws://` | ❌ 不安全 | 明文传输，易被窃听 |
-| TLS 无验证 | `wss://` + `insecure_skip_verify: true` | ⚠️ 仅加密 | 防窃听但无法验证服务器身份 |
-| TLS 带 CA | `wss://` + `ca: "server.crt"` | ✅ 安全 | 加密 + 验证服务器证书 |
+| TLS 无验证 | `wss://` + `insecure_skip_verify: true` | ⚠️ 仅加密 | TLS 1.3 防窃听但无法验证服务器身份，仅用于临时测试 |
+| TLS 带 CA | `wss://` + `ca: "server.crt"` | ✅ 安全 | TLS 1.3 加密 + 验证服务器证书 |
 
 ## 生成自签名证书
 

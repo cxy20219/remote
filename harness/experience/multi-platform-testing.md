@@ -444,3 +444,143 @@ plink -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw "PASSWORD" user@YOUR_SERV
 
 - 代码改动后仍按 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md) 做三端回归。
 - 配置和安全边界说明见 [配置参考](../references/config-reference.md) 与 [Harness 开发指南](../Harness.md)。
+
+## 18. 2026-05-16 第三轮管理面与密钥完整性优化
+
+### 背景
+
+继续追求极致安全和稳定时，除了隧道吞吐，还要检查管理面写接口、会话生命周期、后台 goroutine 和密钥材料边界。公网部署中，管理 Cookie、Origin/Referer、黑名单阈值持久化和 DH 公钥格式都属于容易被忽略但长期风险较高的区域。
+
+### 可复用判断
+
+- 管理 API 使用 Cookie 认证后，`SameSite=Strict` 不是唯一防线。已认证的 POST/PUT/DELETE 需要额外校验浏览器 `Origin`/`Referer`；CLI/PowerShell/curl 通常不带这些头，应继续放行，避免破坏运维脚本。
+- 管理员 session 不能无限增长。token 保持 256-bit 随机值，同时应设置 TTL 和最大会话数；当前为 24 小时过期、最多 64 个会话，新登录会清理过期会话并淘汰最旧会话。
+- `blacklist_threshold` 单独 API 更新必须同时写入 `server-state.json`，否则 UI 显示和运行时生效但重启后回退。
+- RateLimiter、BlacklistManager、HeartbeatChecker 这类后台 ticker 应在 `Server.Stop()` 时退出；否则测试或嵌入式反复创建服务时会积累后台 goroutine。
+- 设备 `DeviceDHPubkey` 必须严格校验为 32 字节 hex。只解 hex 不校验长度会导致短值被拷贝进 `[32]byte` 并隐式补零，破坏 ECDH 安全边界。
+- reauth 准备 `register_ok` 前应先确认服务端保存的 `enc_key` 和 DH 公钥都有效；如果密钥材料损坏，不应先把连接加入在线表。
+
+### 验证
+
+- 新增/补充测试覆盖：管理员 session 清理和上限、浏览器跨站写请求拒绝、黑名单阈值持久化、RateLimiter/BlacklistManager Stop 幂等、无效 DH 公钥拒绝、损坏 DH 公钥下 reauth 不进入在线表。
+- 已通过 `go test ./...`、`go vet ./internal/...`、`go build ./...`、`git diff --check`。
+
+### 关联流程
+
+- 管理 API、安全中间件、设备身份、密钥轮换相关改动，代码验证后仍需按 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md) 做三端真实部署回归。
+
+## 19. 2026-05-16 第四轮破兼容安全与性能收紧
+
+### 背景
+
+继续按“可以不兼容旧行为”的标准审查管理面和请求路径。重点是清除对可伪造代理头的隐式信任、收紧 JSON API 契约，并减少热路径对持久状态锁的依赖。
+
+### 可复用判断
+
+- 在默认 `SetTrustedProxies(nil)` 的公网直连模型下，不应再用 `X-Forwarded-Proto` 判断请求是否 HTTPS。Cookie `Secure` 和管理写请求同源判断只信任真实 TLS；如果未来要支持反向代理，应增加显式可信代理配置，而不是默认信任头。
+- 管理写接口应使用严格 JSON 解码：要求 `Content-Type: application/json`，拒绝未知字段和尾随多个 JSON 文档。这样能尽早暴露错误调用方，降低配置漂移和“字段写了但服务端忽略”的隐患。
+- `io.ReadAll` + `json.Unmarshal` 会一次性读完整 body，也默认接受未知字段。写接口改用 streaming decoder 后，继续由动态 body limit 控制上限，但减少不必要的大对象分配。
+- `max_body_size_mb` 是热路径配置；每个请求都读 `StateStore` 会产生锁和拷贝。当前改为原子字节数缓存，运行时设置更新时刷新，普通请求只读 atomic。
+
+### 验证
+
+- 新增/补充测试覆盖：严格 JSON Content-Type、未知字段、多 JSON 文档拒绝，以及伪造 `X-Forwarded-Proto` 不影响同源判断。
+- 已通过 `go test ./...`、`go vet ./internal/...`、`go build ./...`。
+
+## 20. 2026-05-16 第五轮传输层与协议面破兼容硬化
+
+### 背景
+
+继续按“极致安全、极致稳定”的标准审查公网暴露面。重点从管理 API 下沉到传输层和协议入口：HTTP Server 超时、TLS 协议版本、WebSocket 控制消息、二进制帧长度解析。
+
+### 可复用判断
+
+- HTTP Server 不能依赖 Go 默认零值超时。公网入口应显式设置 `ReadHeaderTimeout`、`ReadTimeout`、`WriteTimeout`、`IdleTimeout` 和较小的 `MaxHeaderBytes`，降低慢请求、超大请求头和异常客户端拖住连接的风险。
+- 如果目标是破兼容安全基线，TLS 应明确要求 TLS 1.3。Agent 的 `insecure_skip_verify` 只表示跳过证书身份验证，不应降低 TLS 版本下限。
+- WebSocket TextMessage 属于控制面，不应继续使用宽松 `json.Unmarshal`。先严格解码 `common.Message`，再按具体 payload 严格解码，可拒绝未知字段和尾随多个 JSON 文档，避免协议漂移。
+- 二进制隧道帧解析长度时应分段扣减剩余字节，而不是只做一次总长度相加判断。这样对畸形长度更稳，也避免不同架构上的整数边界隐患。
+
+### 验证
+
+- 新增/补充测试覆盖：HTTP Server 硬化默认值、TLS 1.3 下限、严格 JSON helper、二进制帧畸形长度拒绝。
+- 已通过定向测试：`go test ./internal/common`、`go test ./internal/agent -run "TestBuildTLSConfig|TestConnectorConnectTLS"`、`go test ./internal/server -run "TestNewHTTPServerHardeningDefaults|TestServerTLS|TestBuildOriginChecker"`。
+
+### 关联流程
+
+- 传输层、WebSocket 协议、隧道二进制帧相关改动，仍需按 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md) 做真实三端回归。
+
+## 21. 2026-05-16 OpenSSH 多端实测经验
+
+### 背景
+
+在已有 GoRemote Server、Linux Agent 和 Android Agent 在线的环境中，按用户要求改用系统 OpenSSH 客户端做多端验证。目标是确认公网直连 SSH、经公网隧道访问内网 SSH、OpenSSH scp 大文件完整性、Android echo 隧道，以及测试完成后的服务健康状态。
+
+### 可复用判断
+
+- Windows OpenSSH 没有 `sshpass` 参数。非交互密码认证可用临时 `SSH_ASKPASS` helper，从环境变量读取密码；helper 文件只包含 `echo %SSHPASS_VALUE%`，测试后立即删除。`Set-Content` 必须写成多行数组，不能用单引号字符串里的反引号伪造换行，否则 askpass 会输出空密码。
+- PowerShell `Start-Job` 捕获 native command 错误时，错误对象可能带出完整脚本行。压测脚本不要把真实密码写死在 ScriptBlock 里；输出应只汇总 `Id/Code/Ms/Done/FirstLine` 等脱敏字段。
+- 公网客户端经映射端口发起 30 路 OpenSSH 并发时，少量 `connect timed out` 可能发生在 TCP 连接阶段，服务端日志没有 rate limit、decrypt、panic 等对应错误时，应先按公网入口链路或连接尖峰归因。
+- 为拆分公网入口和隧道内部能力，可在公网服务器本机用 OpenSSH 连接 `127.0.0.1:SSH_TUNNEL_PORT`。本轮同等 30 并发在该路径 30/30 成功，说明 Server→Agent→内网 SSH 链路稳定。
+- Android 端通常不是 SSH 服务，不能强行归入 OpenSSH 测试；应使用 TCP echo 隧道和 adb 只读检查进程/日志，作为多端链路验证的一部分。
+
+### 本轮结果摘要
+
+| 项目 | 结果 |
+|------|------|
+| 公网服务器 OpenSSH 直连 | 成功 |
+| 本机 → 公网隧道端口 → 内网 SSH，30 并发 200ms 错峰 | 29/30 成功，1 个 TCP connect timeout |
+| 本机 → 公网隧道端口 → 内网 SSH，30 并发 500ms 错峰 | 28/30 成功，2 个 TCP connect timeout |
+| 公网服务器本机 → `127.0.0.1:SSH_TUNNEL_PORT` → 内网 SSH，30 并发 200ms 错峰 | 30/30 成功，平均约 597ms |
+| OpenSSH scp 50MB 上传 | 成功，约 132s，SHA256 一致 |
+| OpenSSH scp 50MB 下载 | 成功，约 131s，SHA256 一致 |
+| Android echo 隧道 50 并发 | 50/50 成功 |
+| 收尾健康检查 | `/health` 正常；SSH/Android 隧道监听仍在；最近日志未见 panic、rate limited、decrypt failed、encryption key not found |
+
+### 适用边界
+
+- 本轮测试使用的是已部署远端二进制，并未重新滚动部署当前工作区未提交的破兼容硬化代码。
+- 对公网客户端高并发 SSH 的结论要和白名单状态、云厂商安全组、入口链路质量一起看。若必须证明公网入口 30/30，需要在同一压测源稳定白名单生效后，多轮错峰复测并采集服务端 `ss`、日志和云监控。
+
+### 关联流程
+
+- 固化到 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md) 的 SSH 并发与大文件完整性章节。
+
+## 22. 2026-05-16 最新破兼容硬化代码三端部署回归
+
+### 背景
+
+将本地最新破兼容硬化代码重新交叉编译并部署到公网 Server、内网 Linux Agent、Android Agent。部署后重新创建 SSH 和 Android echo 隧道，并按稳定性、性能、完整性流程做完整回归。
+
+### 可复用做法
+
+- 内网 Linux Agent 依赖当前 GoRemote SSH 隧道访问时，应先上传 `agent.new`，再在远端调度一个 `nohup` 自替换脚本。脚本先备份旧二进制、`mv -f agent.new agent`，再杀旧进程并启动新进程；不要在同一个前台 SSH 会话里杀 Agent 后再继续执行后续命令，否则隧道断开会中断部署。
+- Android `adb shell` 启动后台 Agent 时，若命令超时，不要立即重复替换；先用 `pidof goremote-agent`、`ls -l` 和日志确认。常见情况是进程已启动，只是 shell 没完全脱离。
+- 公网 Server 重启后运行时隧道会消失，应等待两个授权 Agent 重新在线，再用管理 API 重建 SSH/Android 隧道。不要误以为设备在线就代表旧隧道仍可用。
+- 部署后用本地构建产物 SHA256 对比三端线上二进制。公网 Server 和 Linux Agent 可用 `sha256sum`，Android 可用 `adb shell sha256sum`。
+- 生产安全基线应确认 `max_body_size_mb` 不是历史测试遗留的 `0`。本轮部署后恢复为 `10`，压测源白名单只临时添加，测试结束后撤回。
+- OpenSSH `scp` 大文件传输不要叠加过短 keepalive。本轮首次上传带 `ServerAliveInterval=5`、`ServerAliveCountMax=2`，约 42MB 后被 OpenSSH 判定 `server not responding` 并断开；去掉 keepalive 后同一文件上传/下载均通过且 SHA256 一致。
+
+### 本轮结果摘要
+
+| 项目 | 结果 |
+|------|------|
+| 本地门禁 | `go test ./...`、`go vet ./internal/...`、`go build ./...` 通过 |
+| 三端部署 | Server、Linux Agent、Android Agent 线上 SHA256 均与本地构建产物一致 |
+| Agent 在线 | Linux 与 Android 两台授权设备均 online |
+| 隧道重建 | SSH 隧道映射内网 `127.0.0.1:22`，Android echo 隧道映射 `127.0.0.1:12345`，均 active |
+| OpenSSH 基础连通 | 公网 SSH、隧道 SSH、Android echo 均成功 |
+| OpenSSH 30 并发（本机经公网入口） | 30/30 成功，平均约 996ms |
+| OpenSSH 30 并发（公网服务器本机到 `127.0.0.1:SSH_TUNNEL_PORT`） | 30/30 成功，平均约 562ms |
+| OpenSSH scp 50MB 上传/下载 | 去掉过短 keepalive 后成功，SHA256 一致；上传约 130s，下载约 129s |
+| Android echo 50 并发 | 50/50 成功 |
+| pending 长等待 | 临时 Agent 80 秒后仍保持同一个 pending ID，清理后 pending 为 0 |
+| 收尾健康 | `/health` 正常；两个隧道 active；最近日志未见 panic、rate limited、decrypt failed、encryption key not found |
+
+### 适用边界
+
+- 这些结果说明最新硬化代码在本轮三端环境下通过完整回归；公网大文件吞吐仍受链路带宽影响，不应仅凭 50MB 耗时判断隧道协议瓶颈。
+- 若下一轮调整 HTTP Server 超时、WebSocket 读写、隧道 chunk 或 SSH keepalive 策略，必须重复 OpenSSH scp 大文件与 30 并发组合测试。
+
+### 关联流程
+
+- 主流程见 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md)。

@@ -92,11 +92,13 @@ func (c *Connector) resetConnectionState(conn *websocket.Conn) {
 }
 
 func (c *Connector) buildTLSConfig() (*tls.Config, error) {
+	cfg := common.SecureTLSConfig()
 	if c.tlsCA == "" && c.insecureSkipVerify {
-		return &tls.Config{InsecureSkipVerify: true}, nil
+		cfg.InsecureSkipVerify = true
+		return cfg, nil
 	}
 	if c.tlsCA == "" {
-		return &tls.Config{}, nil
+		return cfg, nil
 	}
 
 	caCertPEM, err := os.ReadFile(c.tlsCA)
@@ -113,9 +115,8 @@ func (c *Connector) buildTLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("failed to parse TLS CA certificate %q", c.tlsCA)
 	}
 
-	return &tls.Config{
-		RootCAs: rootCAs,
-	}, nil
+	cfg.RootCAs = rootCAs
+	return cfg, nil
 }
 
 func (c *Connector) Close() error {
@@ -186,7 +187,7 @@ func (c *Connector) Receive() (*common.Message, error) {
 	switch messageType {
 	case websocket.TextMessage:
 		msg := &common.Message{}
-		if err := json.Unmarshal(data, msg); err != nil {
+		if err := common.DecodeStrictJSON(data, msg); err != nil {
 			return nil, err
 		}
 		return msg, nil

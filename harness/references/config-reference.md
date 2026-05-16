@@ -8,7 +8,7 @@
 |------|------|--------|------|
 | `host` | string | `0.0.0.0` | 监听地址 |
 | `port` | int | `8080` | 监听端口 |
-| `tls.enabled` | bool | `false` | 是否启用 TLS |
+| `tls.enabled` | bool | `false` | 是否启用 TLS；启用后默认要求 TLS 1.3 |
 | `tls.cert` | string | - | TLS 证书文件路径 |
 | `tls.key` | string | - | TLS 私钥文件路径 |
 
@@ -75,9 +75,9 @@
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `address` | string | `localhost:8080` | 服务端 WebSocket 地址 |
-| `tls.enabled` | bool | `false` | 是否启用 TLS |
+| `tls.enabled` | bool | `false` | 是否启用 TLS；启用后默认要求 TLS 1.3 |
 | `tls.ca` | string | - | CA 证书路径（用于验证服务端证书） |
-| `tls.insecure_skip_verify` | bool | `false` | 跳过服务端证书验证（仅测试用） |
+| `tls.insecure_skip_verify` | bool | `false` | 跳过服务端证书验证（仅测试用；仍要求 TLS 1.3） |
 
 ### auth
 

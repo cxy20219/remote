@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -11,6 +10,8 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,14 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"goremote/internal/common"
+)
+
+const (
+	httpReadHeaderTimeout = 5 * time.Second
+	httpReadTimeout       = 15 * time.Second
+	httpWriteTimeout      = 30 * time.Second
+	httpIdleTimeout       = 2 * time.Minute
+	httpMaxHeaderBytes    = 32 * 1024
 )
 
 type Server struct {
@@ -47,6 +56,10 @@ type Server struct {
 	upgrader websocket.Upgrader
 	engine   *gin.Engine
 	httpSrv  *http.Server
+	stopCh   chan struct{}
+	stopOnce sync.Once
+
+	maxBodyBytes atomic.Int64
 }
 
 func NewServer(config *Config, staticFS embed.FS) *Server {
@@ -93,6 +106,7 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 		loginLimiter: NewRateLimiter(settings.LoginRateLimit, time.Minute),
 		connLimiter:  NewRateLimiter(settings.MaxConnPerMin, time.Minute),
 		portLimiter:  NewRateLimiter(settings.MaxConnPerMin, time.Minute),
+		stopCh:       make(chan struct{}),
 	}
 
 	s.clients.SetStore(stateStore)
@@ -101,6 +115,7 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	if config.Tunnel.Enabled {
 		s.tunnelManager = NewTunnelManager(s, settings.PortRangeStart, settings.PortRangeEnd)
 	}
+	s.maxBodyBytes.Store(maxBodySizeBytes(settings.MaxBodySizeMB))
 
 	s.upgrader = websocket.Upgrader{
 		CheckOrigin:     s.buildOriginChecker(config.Security.AllowedOrigins),
@@ -125,7 +140,7 @@ func (s *Server) Start() error {
 	s.engine.Use(gin.Recovery())
 	s.engine.Use(SecurityHeadersMiddleware())
 	s.engine.Use(DynamicBodySizeLimitMiddleware(func() int64 {
-		return maxBodySizeBytes(stateStore.GetSettings().MaxBodySizeMB)
+		return s.maxBodyBytes.Load()
 	}))
 
 	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s), s.handleConn)
@@ -142,6 +157,7 @@ func (s *Server) Start() error {
 
 	protected := s.engine.Group("/")
 	protected.Use(s.authMiddleware())
+	protected.Use(BrowserOriginGuardMiddleware())
 	{
 		protected.GET("/api/clients", s.handleAPIClients)
 		protected.GET("/api/clients/:id", s.handleAPIClientDetail)
@@ -184,10 +200,7 @@ func (s *Server) Start() error {
 
 	go s.startHeartbeatChecker()
 
-	s.httpSrv = &http.Server{
-		Addr:    s.Addr,
-		Handler: s.engine,
-	}
+	s.httpSrv = s.newHTTPServer()
 
 	if s.tlsEnabled {
 		slog.Info("server starting with TLS", "cert", s.tlsCert)
@@ -197,11 +210,44 @@ func (s *Server) Start() error {
 	return s.httpSrv.ListenAndServe()
 }
 
+func (s *Server) newHTTPServer() *http.Server {
+	srv := &http.Server{
+		Addr:              s.Addr,
+		Handler:           s.engine,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
+	}
+	if s.tlsEnabled {
+		srv.TLSConfig = common.SecureTLSConfig()
+	}
+	return srv
+}
+
 func (s *Server) Stop() error {
 	slog.Info("server stopping")
+	s.stopOnce.Do(func() {
+		if s.stopCh != nil {
+			close(s.stopCh)
+		}
+	})
 	s.stateStore.Stop()
 	if s.tunnelManager != nil {
 		s.tunnelManager.CloseAll()
+	}
+	if s.loginLimiter != nil {
+		s.loginLimiter.Stop()
+	}
+	if s.connLimiter != nil {
+		s.connLimiter.Stop()
+	}
+	if s.portLimiter != nil {
+		s.portLimiter.Stop()
+	}
+	if s.blacklist != nil {
+		s.blacklist.Stop()
 	}
 	if s.httpSrv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -274,7 +320,7 @@ func (s *Server) handleConn(c *gin.Context) {
 }
 
 func jsonUnmarshal(data []byte, v interface{}) error {
-	return json.Unmarshal(data, v)
+	return common.DecodeStrictJSON(data, v)
 }
 
 func (s *Server) pendingLoop(client *Client) {
@@ -377,7 +423,7 @@ func readWSMessage(conn *websocket.Conn) (*common.Message, error) {
 	switch messageType {
 	case websocket.TextMessage:
 		var msg common.Message
-		if err := json.Unmarshal(data, &msg); err != nil {
+		if err := common.DecodeStrictJSON(data, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
@@ -411,8 +457,13 @@ func (s *Server) startHeartbeatChecker() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.checkClientsTimeout(timeout)
+	for {
+		select {
+		case <-ticker.C:
+			s.checkClientsTimeout(timeout)
+		case <-s.stopCh:
+			return
+		}
 	}
 }
 
@@ -470,6 +521,7 @@ func (s *Server) applyRuntimeSettings(settings ServerSettings) {
 	if s.blacklist != nil {
 		s.blacklist.SetThreshold(settings.BlacklistThreshold)
 	}
+	s.maxBodyBytes.Store(maxBodySizeBytes(settings.MaxBodySizeMB))
 }
 
 func (s *Server) IsGloballyWhitelisted(ip string) bool {

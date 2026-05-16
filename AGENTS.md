@@ -4,11 +4,11 @@
 
 - [Harness 开发指南](harness/Harness.md)：技术栈、目录结构、常用命令、开发规范、环境配置、构建部署、常见问题和关键资源路由
 - [零配置部署验证流程](harness/workflow/zero-config-deploy-verify.md)：零配置架构从零部署到功能验证的直通流程，含交叉编译、服务端启动、Agent 注册审批、Android 部署、隧道验证、密钥轮换和失败回退
-- [稳定性性能完整性综合验证流程](harness/workflow/stability-performance-completeness-verify.md)：隧道核心改动后的稳定性、性能、完整性验收，含三端部署、高并发 SSH、Android echo、50MB 完整性、pending 长等待和瓶颈定位
+- [稳定性性能完整性综合验证流程](harness/workflow/stability-performance-completeness-verify.md)：隧道核心改动后的稳定性、性能、完整性验收，含三端部署、OpenSSH/plink 高并发 SSH、Android echo、50MB 完整性、pending 长等待和瓶颈定位
 - [加密隧道部署与验证流程](harness/workflow/encrypted-tunnel-deploy-verify.md)：旧版共享 auth.key 加密隧道部署验证流程，适用于兼容旧架构和历史问题复盘
 - [SSH 隧道直通内网服务流程](harness/workflow/ssh-tunnel-direct-access.md)：公网端口直通内网 SSH/HTTP 服务的创建、访问、管理和排查流程
 - [Gitee Release 发布流程](harness/workflow/gitee-release-publish.md)：交叉编译全平台二进制、创建 Gitee Release、上传附件和失败回退流程
-- [多平台集成测试实战经验](harness/experience/multi-platform-testing.md)：Linux/Windows/Android 多端测试经验，含 pending 心跳、二进制隧道帧、高并发 SSH、Android 部署、限流归因、吞吐瓶颈和第二轮安全/稳定优化判断
+- [多平台集成测试实战经验](harness/experience/multi-platform-testing.md)：Linux/Windows/Android 多端测试经验，含 pending 心跳、二进制隧道帧、OpenSSH/plink 高并发 SSH、Android 部署、限流归因、吞吐瓶颈、多轮安全/稳定优化和 TLS/HTTP/WS 协议硬化判断
 - [零配置测试与调试经验](harness/experience/zero-config-testing-lessons.md)：零配置调试经验，含 PowerShell 远程命令转义、Web UI Cookie、pending 生命周期、ECDH 链路和日志字段映射
 - [GoRemote 调试开发经验](harness/experience/go-remote-debugging.md)：综合调试排查手册，覆盖 TLS、Agent 启动、配置管理、隧道调试、磁盘管理、安全功能和 Android 部署
 - [加密隧道开发实战经验](harness/experience/encrypted-tunnel-lessons.md)：加密功能开发中的踩坑记录，含 hkdf、磁盘满、swag、PowerShell curl、plink 主机密钥等经验

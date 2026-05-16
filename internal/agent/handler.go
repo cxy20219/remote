@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -46,7 +45,7 @@ func (h *Handler) Handle(msg *common.Message) error {
 
 func (h *Handler) handleRegisterOK(msg *common.Message) error {
 	var payload common.RegisterOKPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 
@@ -58,7 +57,7 @@ func (h *Handler) handleRegisterOK(msg *common.Message) error {
 
 func (h *Handler) handleRegisterFail(msg *common.Message) error {
 	var payload common.RegisterFailPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 
@@ -68,7 +67,7 @@ func (h *Handler) handleRegisterFail(msg *common.Message) error {
 
 func (h *Handler) handleRegisterUpdate(msg *common.Message) error {
 	var payload common.RegisterUpdatePayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 
@@ -116,7 +115,7 @@ func (h *Handler) handleDeviceDeleted(msg *common.Message) error {
 
 func (h *Handler) handleTunnelOpen(msg *common.Message) error {
 	var payload common.TunnelOpenPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 
@@ -139,7 +138,7 @@ func (h *Handler) handleTunnelOpen(msg *common.Message) error {
 
 func (h *Handler) handleTunnelOpenAck(msg *common.Message) error {
 	var payload common.TunnelOpenAckPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 
@@ -165,7 +164,7 @@ func (h *Handler) handleTunnelOpenAck(msg *common.Message) error {
 
 func (h *Handler) handleTunnelClose(msg *common.Message) error {
 	var payload common.TunnelClosePayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 
@@ -216,7 +215,7 @@ func (h *Handler) handleTunnelDataBinary(msg *common.Message) error {
 
 func (h *Handler) handleTunnelError(msg *common.Message) error {
 	var payload common.TunnelErrorPayload
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 		return err
 	}
 

@@ -51,6 +51,20 @@ func NewDeviceManager(store *StateStore, cryptoMgr *common.CryptoManager) *Devic
 	return dm
 }
 
+func validateDHPubkeyHex(deviceDHPubkey string) error {
+	if deviceDHPubkey == "" {
+		return nil
+	}
+	keyBytes, err := hex.DecodeString(deviceDHPubkey)
+	if err != nil {
+		return fmt.Errorf("invalid device dh pubkey: %w", err)
+	}
+	if len(keyBytes) != 32 {
+		return fmt.Errorf("invalid device dh pubkey size: %d", len(keyBytes))
+	}
+	return nil
+}
+
 func (dm *DeviceManager) RegisterNewClient(deviceSignPubkey, deviceDHPubkey, hostname, osName, remoteIP string) (deviceID string, err error) {
 	pubKeyBytes, err := hex.DecodeString(deviceSignPubkey)
 	if err != nil {
@@ -58,6 +72,9 @@ func (dm *DeviceManager) RegisterNewClient(deviceSignPubkey, deviceDHPubkey, hos
 	}
 	if len(pubKeyBytes) != ed25519.PublicKeySize {
 		return "", fmt.Errorf("invalid device_sign_pubkey size: %d", len(pubKeyBytes))
+	}
+	if err := validateDHPubkeyHex(deviceDHPubkey); err != nil {
+		return "", err
 	}
 
 	dm.mu.Lock()
@@ -171,6 +188,9 @@ func (dm *DeviceManager) ApproveDevice(deviceID string) (*DeviceState, string, s
 		if err != nil {
 			return nil, "", "", fmt.Errorf("invalid device dh pubkey: %w", err)
 		}
+		if len(agentDHPubkey) != 32 {
+			return nil, "", "", fmt.Errorf("invalid device dh pubkey size: %d", len(agentDHPubkey))
+		}
 		var agentDHPub [32]byte
 		copy(agentDHPub[:], agentDHPubkey)
 
@@ -249,6 +269,9 @@ func (dm *DeviceManager) RegenerateEncKey(deviceID string) (*DeviceState, string
 		agentDHPubkey, err := hex.DecodeString(device.DeviceDHPubkey)
 		if err != nil {
 			return nil, "", "", fmt.Errorf("invalid device dh pubkey: %w", err)
+		}
+		if len(agentDHPubkey) != 32 {
+			return nil, "", "", fmt.Errorf("invalid device dh pubkey size: %d", len(agentDHPubkey))
 		}
 		var agentDHPub [32]byte
 		copy(agentDHPub[:], agentDHPubkey)

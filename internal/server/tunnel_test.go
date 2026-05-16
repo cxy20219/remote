@@ -11,6 +11,11 @@ type fakePendingConn struct {
 	closed bool
 }
 
+const (
+	testSignPubkeyHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testDHPubkeyHex   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
 func (f *fakePendingConn) Close() error {
 	f.closed = true
 	return nil
@@ -105,7 +110,7 @@ func TestApproveDevice_ChangesStatus(t *testing.T) {
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
 
-	deviceID, err := dm.RegisterNewClient("aabbccdd00112233445566778899aabb00112233445566778899aabbccdd0011", "00112233445566778899aabbccdd00112233445566778899aabbccdd0011", "test-host", "linux", "10.0.0.1")
+	deviceID, err := dm.RegisterNewClient(testSignPubkeyHex, testDHPubkeyHex, "test-host", "linux", "10.0.0.1")
 	if err != nil {
 		t.Fatalf("RegisterNewClient: %v", err)
 	}
@@ -145,7 +150,7 @@ func TestApproveDeviceRequiresDHPubkey(t *testing.T) {
 	dm := NewDeviceManager(stateStore, cryptoMgr)
 
 	deviceID, err := dm.RegisterNewClient(
-		"aabbccdd00112233445566778899aabb00112233445566778899aabbccdd0011",
+		testSignPubkeyHex,
 		"",
 		"test-host",
 		"linux",
@@ -171,12 +176,29 @@ func TestApproveDeviceRequiresDHPubkey(t *testing.T) {
 	}
 }
 
+func TestRegisterNewClientRejectsInvalidDHPubkeySize(t *testing.T) {
+	_, stateStore := newTestConfig(t)
+	cryptoMgr := common.NewCryptoManager()
+	dm := NewDeviceManager(stateStore, cryptoMgr)
+
+	_, err := dm.RegisterNewClient(
+		"aabbccdd00112233445566778899aabb00112233445566778899aabbccdd0011",
+		"001122",
+		"test-host",
+		"linux",
+		"10.0.0.1",
+	)
+	if err == nil {
+		t.Fatal("expected invalid DH public key size to be rejected")
+	}
+}
+
 func TestDenyDevice_RemovesFromStore(t *testing.T) {
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
 
-	deviceID, _ := dm.RegisterNewClient("aabbccdd00112233445566778899aabb00112233445566778899aabbccdd0011", "00112233445566778899aabbccdd00112233445566778899aabbccdd0011", "test", "linux", "10.0.0.2")
+	deviceID, _ := dm.RegisterNewClient(testSignPubkeyHex, testDHPubkeyHex, "test", "linux", "10.0.0.2")
 	fakeConn := &fakePendingConn{}
 	dm.pendingConns[deviceID] = &PendingConnInfo{
 		Client: &Client{ClientID: deviceID},
@@ -343,12 +365,68 @@ func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
 	}
 }
 
+func TestHandleReconnectRejectsInvalidStoredDHPubkey(t *testing.T) {
+	_, stateStore := newTestConfig(t)
+	cryptoMgr := common.NewCryptoManager()
+	dm := NewDeviceManager(stateStore, cryptoMgr)
+
+	pub, priv, err := common.GenerateSignKeypair()
+	if err != nil {
+		t.Fatalf("GenerateSignKeypair: %v", err)
+	}
+	pubHex := common.EncodePublicKey(pub)
+	_, dhPub, err := common.GenerateDHKeypair()
+	if err != nil {
+		t.Fatalf("GenerateDHKeypair: %v", err)
+	}
+
+	deviceID, err := dm.RegisterNewClient(pubHex, common.EncodeBytes(dhPub[:]), "test-host", "linux", "10.0.0.6")
+	if err != nil {
+		t.Fatalf("RegisterNewClient: %v", err)
+	}
+	if _, _, _, err := dm.ApproveDevice(deviceID); err != nil {
+		t.Fatalf("ApproveDevice: %v", err)
+	}
+	stateStore.UpdateDevice(deviceID, func(d *DeviceState) {
+		d.DeviceDHPubkey = "001122"
+	})
+
+	timestamp := time.Now().Unix()
+	signature, err := common.SignTimestamp(priv, deviceID, timestamp)
+	if err != nil {
+		t.Fatalf("SignTimestamp: %v", err)
+	}
+
+	srv := &Server{
+		stateStore: stateStore,
+		deviceMgr:  dm,
+		clients:    NewClientManager(),
+	}
+	handler := NewHandler(srv)
+
+	err = handler.handleReconnect(&Client{}, &common.RegisterPayload{
+		ReAuth:       true,
+		ClientID:     deviceID,
+		DevicePubkey: pubHex,
+		Timestamp:    timestamp,
+		Signature:    common.EncodeBytes(signature),
+		Hostname:     "test-host",
+		OS:           "linux",
+	})
+	if err == nil {
+		t.Fatal("expected reconnect to fail when stored DH pubkey is invalid")
+	}
+	if _, ok := srv.clients.Get(deviceID); ok {
+		t.Fatal("client should not be added when register_ok cannot be prepared securely")
+	}
+}
+
 func TestDeleteDevice_RemovesCryptoKey(t *testing.T) {
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
 
-	deviceID, _ := dm.RegisterNewClient("deadbeef00112233445566778899aabb00112233445566778899aabbccdd0011", "cafe0000112233445566778899aabb00112233445566778899aabbccdd0011", "test", "linux", "10.0.0.3")
+	deviceID, _ := dm.RegisterNewClient(testSignPubkeyHex, testDHPubkeyHex, "test", "linux", "10.0.0.3")
 	dm.ApproveDevice(deviceID)
 
 	if !cryptoMgr.HasKey(deviceID) {

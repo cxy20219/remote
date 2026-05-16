@@ -80,10 +80,11 @@ Agent:    自动进入工作状态 → 可在 Web UI 创建隧道、管理配置
       "id": "client-uuid",
       "name": "my-server",              // 管理员可重命名的别名
       "device_pubkey": "agent_ed25519_pubkey",
+      "device_dh_pubkey": "agent_x25519_pubkey_hex",
       "hostname": "my-server",
       "os": "linux",
       "status": "authorized",            // pending | authorized
-      "enc_key": "AES-256-GCM_key_hex",  // 空=加密未启用
+      "enc_key": "AES-256-GCM_key_hex",  // 32 字节 hex，空=加密未启用
       "first_seen": "2026-05-14T10:00:00Z",
       "approved_at": "2026-05-14T10:05:00Z"
     }

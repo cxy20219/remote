@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -162,7 +161,7 @@ func (a *Agent) connect() error {
 		switch msg.Type {
 		case "register_ok":
 			var payload common.RegisterOKPayload
-			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 				a.connector.Close()
 				return err
 			}
@@ -173,7 +172,7 @@ func (a *Agent) connect() error {
 
 		case "register_pending":
 			var payload common.RegisterPendingPayload
-			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 				a.connector.Close()
 				return err
 			}
@@ -188,7 +187,10 @@ func (a *Agent) connect() error {
 
 		case "register_fail":
 			var payload common.RegisterFailPayload
-			json.Unmarshal(msg.Payload, &payload)
+			if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
+				a.connector.Close()
+				return err
+			}
 
 			if a.identity != nil && a.identity.ClientID != "" {
 				slog.Warn("reauth failed, clearing identity for re-registration", "reason", payload.Reason)
@@ -285,7 +287,7 @@ func (a *Agent) handlePending() error {
 		switch msg.Type {
 		case "register_ok":
 			var payload common.RegisterOKPayload
-			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 				return err
 			}
 			a.SetClientID(payload.ClientID)
@@ -299,7 +301,10 @@ func (a *Agent) handlePending() error {
 
 		case "register_fail":
 			var payload common.RegisterFailPayload
-			json.Unmarshal(msg.Payload, &payload)
+			if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
+				a.connector.Close()
+				return err
+			}
 
 			if a.identity != nil {
 				a.identity.ClientID = ""

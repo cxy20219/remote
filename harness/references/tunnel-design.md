@@ -86,11 +86,11 @@ type TunnelErrorPayload struct {
 | 10+N | M | conn_id | UTF-8 字符串 |
 | ... | K | data | AES-GCM nonce+ciphertext 原始字节 |
 
-`flags` 当前只允许 bit0。收到未知 bit 必须拒绝该帧，避免畸形帧或未来协议扩展被旧逻辑静默接受。
+`flags` 当前只允许 bit0。收到未知 bit 必须拒绝该帧，避免畸形帧或未来协议扩展被旧逻辑静默接受。解析长度时必须按 tunnel_id、conn_id、data 三段逐步扣减剩余字节，不用 `10 + N + M + K` 直接相加作为唯一判断，避免畸形长度在不同架构上触发整数边界问题。
 
 服务端和 Agent 的 `ReadMessage()` 会按 frame type 分流：
 
-- TextMessage → `common.Message` JSON 控制消息。
+- TextMessage → `common.Message` JSON 控制消息，使用严格 JSON 解码，拒绝未知字段和尾随多个 JSON 文档。
 - BinaryMessage → `DecodeBinaryTunnelDataFrame`，包装为内部消息类型 `tunnel_data_bin`。
 
 旧 `tunnel_data` JSON/base64 路径已移除；旧 Agent/Server 必须升级后才能互通。

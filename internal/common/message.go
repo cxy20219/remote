@@ -1,9 +1,11 @@
 package common
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 )
 
 const (
@@ -16,6 +18,25 @@ type Message struct {
 	Type       string            `json:"type"`
 	Payload    json.RawMessage   `json:"payload,omitempty"`
 	BinaryData *BinaryTunnelData `json:"-"`
+}
+
+func DecodeStrictJSON(data []byte, dst interface{}) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+
+	var extra struct{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("invalid JSON: multiple values")
+		}
+		return err
+	}
+
+	return nil
 }
 
 type BinaryTunnelData struct {
@@ -118,10 +139,19 @@ func DecodeBinaryTunnelDataFrame(frame []byte) (*BinaryTunnelData, error) {
 
 	tunnelIDLen := int(binary.BigEndian.Uint16(frame[2:4]))
 	connIDLen := int(binary.BigEndian.Uint16(frame[4:6]))
-	dataLen := int(binary.BigEndian.Uint32(frame[6:10]))
-	expected := 10 + tunnelIDLen + connIDLen + dataLen
-	if expected != len(frame) {
-		return nil, fmt.Errorf("invalid binary tunnel frame length: got %d, expected %d", len(frame), expected)
+	dataLen := binary.BigEndian.Uint32(frame[6:10])
+
+	remaining := len(frame) - 10
+	if tunnelIDLen > remaining {
+		return nil, fmt.Errorf("invalid binary tunnel frame tunnel_id length: %d", tunnelIDLen)
+	}
+	remaining -= tunnelIDLen
+	if connIDLen > remaining {
+		return nil, fmt.Errorf("invalid binary tunnel frame conn_id length: %d", connIDLen)
+	}
+	remaining -= connIDLen
+	if uint64(dataLen) != uint64(remaining) {
+		return nil, fmt.Errorf("invalid binary tunnel frame data length: got %d, expected %d", dataLen, remaining)
 	}
 
 	offset := 10
@@ -129,7 +159,7 @@ func DecodeBinaryTunnelDataFrame(frame []byte) (*BinaryTunnelData, error) {
 	offset += tunnelIDLen
 	connID := string(frame[offset : offset+connIDLen])
 	offset += connIDLen
-	data := frame[offset : offset+dataLen]
+	data := frame[offset:]
 
 	return &BinaryTunnelData{
 		TunnelID: tunnelID,

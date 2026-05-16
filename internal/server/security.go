@@ -59,6 +59,8 @@ type BlacklistManager struct {
 	entries   map[string]*BlacklistEntry
 	violation map[string]int
 	threshold int
+	stopCh    chan struct{}
+	stopOnce  sync.Once
 }
 
 // NewBlacklistManager creates a new BlacklistManager with the given auto-blacklist threshold.
@@ -67,6 +69,7 @@ func NewBlacklistManager(threshold int) *BlacklistManager {
 		entries:   make(map[string]*BlacklistEntry),
 		violation: make(map[string]int),
 		threshold: threshold,
+		stopCh:    make(chan struct{}),
 	}
 	go bm.cleanupLoop()
 	return bm
@@ -192,22 +195,41 @@ func (bm *BlacklistManager) cleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		bm.mu.Lock()
-		now := time.Now()
-		for ip, entry := range bm.entries {
-			if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-				delete(bm.entries, ip)
-				delete(bm.violation, ip)
-			}
+	for {
+		select {
+		case <-ticker.C:
+			bm.cleanupExpired()
+		case <-bm.stopCh:
+			return
 		}
-		for ip := range bm.violation {
-			if _, exists := bm.entries[ip]; !exists {
-				delete(bm.violation, ip)
-			}
-		}
-		bm.mu.Unlock()
 	}
+}
+
+func (bm *BlacklistManager) cleanupExpired() {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+
+	now := time.Now()
+	for ip, entry := range bm.entries {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			delete(bm.entries, ip)
+			delete(bm.violation, ip)
+		}
+	}
+	for ip := range bm.violation {
+		if _, exists := bm.entries[ip]; !exists {
+			delete(bm.violation, ip)
+		}
+	}
+}
+
+func (bm *BlacklistManager) Stop() {
+	if bm == nil {
+		return
+	}
+	bm.stopOnce.Do(func() {
+		close(bm.stopCh)
+	})
 }
 
 // SecurityHeadersMiddleware adds common security headers to all responses.
@@ -247,6 +269,62 @@ func DynamicBodySizeLimitMiddleware(getMaxBytes func() int64) gin.HandlerFunc {
 	}
 }
 
+// BrowserOriginGuardMiddleware rejects cross-site browser writes while still allowing CLI/API clients.
+func BrowserOriginGuardMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if isSafeHTTPMethod(c.Request.Method) {
+			c.Next()
+			return
+		}
+
+		origin := c.GetHeader("Origin")
+		if origin != "" {
+			if !sameRequestOrigin(c.Request, origin) {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin write rejected"})
+				return
+			}
+			c.Next()
+			return
+		}
+
+		referer := c.GetHeader("Referer")
+		if referer != "" && !sameRequestOrigin(c.Request, referer) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin write rejected"})
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func isSafeHTTPMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
+}
+
+func sameRequestOrigin(r *http.Request, rawOrigin string) bool {
+	origin, ok := normalizeOrigin(rawOrigin)
+	if !ok {
+		return false
+	}
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+
+	expected, ok := normalizeOrigin(scheme + "://" + r.Host)
+	if !ok {
+		return false
+	}
+
+	return origin == expected
+}
+
 func maxBodySizeBytes(maxBodySizeMB int) int64 {
 	if maxBodySizeMB <= 0 {
 		return 0
@@ -260,6 +338,8 @@ type RateLimiter struct {
 	requests map[string]*rateLimitEntry
 	limit    int
 	window   time.Duration
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 type rateLimitEntry struct {
@@ -269,10 +349,15 @@ type rateLimitEntry struct {
 
 // NewRateLimiter creates a rate limiter with the given request limit per time window.
 func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
+	if window <= 0 {
+		window = time.Minute
+	}
+
 	rl := &RateLimiter{
 		requests: make(map[string]*rateLimitEntry),
 		limit:    limit,
 		window:   window,
+		stopCh:   make(chan struct{}),
 	}
 	go rl.cleanupLoop()
 	return rl
@@ -323,16 +408,35 @@ func (rl *RateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(rl.window)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for key, entry := range rl.requests {
-			if now.After(entry.resetAt) {
-				delete(rl.requests, key)
-			}
+	for {
+		select {
+		case <-ticker.C:
+			rl.cleanupExpired()
+		case <-rl.stopCh:
+			return
 		}
-		rl.mu.Unlock()
 	}
+}
+
+func (rl *RateLimiter) cleanupExpired() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	for key, entry := range rl.requests {
+		if now.After(entry.resetAt) {
+			delete(rl.requests, key)
+		}
+	}
+}
+
+func (rl *RateLimiter) Stop() {
+	if rl == nil {
+		return
+	}
+	rl.stopOnce.Do(func() {
+		close(rl.stopCh)
+	})
 }
 
 // LoginRateLimitMiddleware returns a Gin middleware that rate-limits login attempts.

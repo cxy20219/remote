@@ -72,14 +72,13 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 
 ---
 
-## 4. `ShouldBindJSON` 需要正确的 Content-Type
+## 4. 写接口严格 JSON 解码
 
 ### 问题
 ```go
 func (s *Server) handleLogin(c *gin.Context) {
     var req struct { Password string `json:"password"` }
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+    if !decodeStrictJSON(c, &req) {
         return
     }
 }
@@ -88,7 +87,9 @@ func (s *Server) handleLogin(c *gin.Context) {
 `curl -X POST -d '{"password":"ADMIN_PASSWORD"}'` 返回 `invalid request`。
 
 ### 原因
-`ShouldBindJSON` 要求 `Content-Type: application/json` 头。
+新版写接口使用 `decodeStrictJSON`，要求 `Content-Type: application/json`，拒绝未知字段和尾随多个 JSON 文档，避免 API 调用方悄悄依赖未声明字段。
+
+同一原则也适用于 WebSocket 控制消息：TextMessage 会先严格解码为 `common.Message`，具体 payload 再按消息类型严格解码。协议扩展需要显式新增字段和测试，不能依赖旧版 `json.Unmarshal` 静默忽略未知字段。
 
 ### 正确调用
 ```bash
@@ -105,7 +106,7 @@ curl -X POST -H 'Content-Type: application/json' -d @file.json
 
 ### `SetCookie` 参数
 ```go
-secure := s.tlsEnabled || c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+secure := s.tlsEnabled || c.Request.TLS != nil
 c.SetSameSite(http.SameSiteStrictMode)
 c.SetCookie("go_remote_token", token, 86400, "/", "", secure, true)
 //                  name      value   maxAge path domain secure httpOnly
@@ -114,9 +115,10 @@ c.SetCookie("go_remote_token", token, 86400, "/", "", secure, true)
 - `maxAge`: 秒，`86400` = 24h
 - `path`: `"/"` 使 cookie 对整个站点生效
 - `domain`: 空字符串 = 当前请求域名
-- `secure`: TLS 或反向代理 HTTPS 场景下为 `true`
+- `secure`: 服务端 TLS 或请求本身为 TLS 时为 `true`；默认不信任 `X-Forwarded-Proto`
 - `httpOnly`: `true`（JS 不可读，防 XSS）
 - `SameSite=Strict`: 降低跨站请求携带管理 Cookie 的风险
+- 写操作仍需要服务端校验浏览器 `Origin`/`Referer`；`SameSite=Strict` 是第一层保护，不应作为唯一 CSRF 防线
 
 ### 清除 Cookie（登出）
 ```go

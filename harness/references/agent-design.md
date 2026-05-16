@@ -33,7 +33,7 @@
 
 | 组件 | 职责 |
 |------|------|
-| Connector | WebSocket 连接管理，断线重连 |
+| Connector | WebSocket 连接管理，断线重连；TLS 启用时要求 TLS 1.3，TextMessage 使用严格 JSON 解码 |
 | Agent | 主控逻辑，协调各组件 |
 | Handler | 消息解析和路由 |
 | TunnelManager | 隧道管理（内网穿透） |

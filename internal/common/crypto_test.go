@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
@@ -134,6 +135,41 @@ func TestBinaryTunnelDataFrameRejectsUnknownFlags(t *testing.T) {
 	frame[1] = 0b10
 	if _, err := DecodeBinaryTunnelDataFrame(frame); err == nil {
 		t.Fatal("expected unknown flags to be rejected")
+	}
+}
+
+func TestBinaryTunnelDataFrameRejectsInvalidLengths(t *testing.T) {
+	frame := []byte{1, 0, 0, 8, 0, 0, 0, 0, 0, 0}
+	if _, err := DecodeBinaryTunnelDataFrame(frame); err == nil {
+		t.Fatal("expected invalid tunnel_id length to be rejected")
+	}
+
+	frame, err := EncodeBinaryTunnelDataFrame("tun-1", "conn-2", []byte("data"), false)
+	if err != nil {
+		t.Fatalf("EncodeBinaryTunnelDataFrame failed: %v", err)
+	}
+	binary.BigEndian.PutUint32(frame[6:10], 999)
+	if _, err := DecodeBinaryTunnelDataFrame(frame); err == nil {
+		t.Fatal("expected invalid data length to be rejected")
+	}
+}
+
+func TestDecodeStrictJSONRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
+	type payload struct {
+		Name string `json:"name"`
+	}
+
+	var p payload
+	if err := DecodeStrictJSON([]byte(`{"name":"agent"}`), &p); err != nil {
+		t.Fatalf("DecodeStrictJSON valid payload failed: %v", err)
+	}
+
+	if err := DecodeStrictJSON([]byte(`{"name":"agent","extra":true}`), &p); err == nil {
+		t.Fatal("expected unknown field to be rejected")
+	}
+
+	if err := DecodeStrictJSON([]byte(`{"name":"agent"}{"name":"again"}`), &p); err == nil {
+		t.Fatal("expected trailing JSON value to be rejected")
 	}
 }
 
