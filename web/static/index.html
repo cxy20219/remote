@@ -10,9 +10,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .container{max-width:1140px;margin:0 auto;padding:28px 20px}
 
 .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px;flex-wrap:wrap;gap:12px}
+.topbar-left{display:flex;align-items:center;gap:10px}
+.topbar-right{display:flex;align-items:center;gap:8px}
 .logo{display:flex;align-items:center;gap:10px}
 .logo-icon{width:36px;height:36px;background:linear-gradient(135deg,#3b82f6,#6366f1);border-radius:10px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:700}
 .logo h1{font-size:20px;font-weight:700;color:#1e293b;letter-spacing:-.2px}
+.drawer-btn{padding:7px 14px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;color:#64748b;cursor:pointer;font-size:16px;transition:all .2s;box-shadow:0 1px 2px rgba(0,0,0,.04);line-height:1}
+.drawer-btn:hover{color:#3b82f6;border-color:#bfdbfe;background:#eff6ff}
 .logout-btn{padding:7px 16px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;color:#64748b;cursor:pointer;font-size:13px;transition:all .2s;box-shadow:0 1px 2px rgba(0,0,0,.04)}
 .logout-btn:hover{color:#ef4444;border-color:#fecaca;background:#fef2f2}
 
@@ -54,8 +58,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .btn-danger:hover{background:#fee2e2}
 .btn-ghost{background:#f8fafc;color:#64748b;border:1px solid #e2e8f0;font-size:12px;padding:5px 12px}
 .btn-ghost:hover{background:#f1f5f9;color:#334155}
-.btn-warn{background:#fffbeb;color:#f59e0b;border:1px solid #fde68a;font-size:12px;padding:5px 12px}
-.btn-warn:hover{background:#fef3c7}
 
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead th{text-align:left;padding:10px 14px;color:#94a3b8;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;border-bottom:2px solid #f1f5f9;background:#fafbfc}
@@ -76,7 +78,35 @@ code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;b
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
 
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:100;backdrop-filter:blur(4px)}
+.toast{position:fixed;top:20px;right:20px;z-index:300;display:flex;flex-direction:column;gap:8px}
+.toast-item{padding:12px 20px;border-radius:12px;font-size:13px;font-weight:500;animation:slideIn .3s;max-width:380px;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.toast-item.success{background:#22c55e;color:#fff}
+.toast-item.error{background:#ef4444;color:#fff}
+@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+
+.refresh-dot{font-size:10px;color:#cbd5e1;margin-left:6px;animation:spin 10s linear infinite;display:inline-block}
+
+.port-bar{display:flex;background:#fff;border-radius:14px;padding:14px 20px;margin-bottom:18px;align-items:center;gap:0;box-shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04)}
+.port-bar-item{display:flex;align-items:center;gap:12px;flex:1;min-width:0;padding:4px 0}
+.port-bar-icon{font-size:20px;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:#f8fafc;flex-shrink:0}
+.port-bar-label{font-size:11px;color:#94a3b8;font-weight:500}
+.port-bar-value{font-size:16px;font-weight:700;color:#0f172a;margin-top:1px}
+.port-bar-divider{width:1px;height:32px;background:#f1f5f9;flex-shrink:0;margin:0 8px}
+@media(max-width:640px){.port-bar{flex-wrap:wrap;gap:8px}.port-bar-divider{display:none}.port-bar-item{flex:1 1 100%}}
+@keyframes spin{0%{transform:rotate(0)}25%{transform:rotate(90deg)}50%{transform:rotate(180deg)}75%{transform:rotate(270deg)}100%{transform:rotate(360deg)}}
+
+/* Drawer */
+.drawer-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.3);z-index:150;backdrop-filter:blur(2px)}
+.drawer-overlay.show{display:block}
+.drawer{position:fixed;top:0;right:-480px;width:480px;max-width:92vw;height:100vh;background:#fff;z-index:151;box-shadow:-8px 0 30px rgba(0,0,0,.1);transition:right .25s cubic-bezier(.4,0,.2,1);overflow-y:auto;padding:24px}
+.drawer.open{right:0}
+.drawer-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;padding-bottom:16px;border-bottom:2px solid #f1f5f9}
+.drawer-header h2{font-size:17px;font-weight:700;color:#0f172a;display:flex;align-items:center;gap:8px}
+.drawer-close{width:32px;height:32px;border:none;border-radius:8px;background:#f1f5f9;color:#64748b;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;transition:all .15s}
+.drawer-close:hover{background:#e2e8f0;color:#334155}
+
+/* Modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:200;backdrop-filter:blur(4px)}
 .modal-overlay.show{display:flex;align-items:center;justify-content:center}
 .modal{background:#fff;border-radius:18px;padding:28px;width:440px;max-width:92%;box-shadow:0 25px 50px rgba(0,0,0,.15);animation:slideUp .2s}
 @keyframes slideUp{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
@@ -86,14 +116,12 @@ code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;b
 .modal-actions{display:flex;gap:10px;margin-top:20px;justify-content:flex-end}
 .modal .btn-ghost{padding:9px 18px;font-size:13px}
 
-.toast{position:fixed;top:20px;right:20px;z-index:200;display:flex;flex-direction:column;gap:8px}
-.toast-item{padding:12px 20px;border-radius:12px;font-size:13px;font-weight:500;animation:slideIn .3s;max-width:380px;box-shadow:0 4px 12px rgba(0,0,0,.15)}
-.toast-item.success{background:#22c55e;color:#fff}
-.toast-item.error{background:#ef4444;color:#fff}
-@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
-
-.refresh-dot{font-size:10px;color:#cbd5e1;margin-left:6px;animation:spin 10s linear infinite;display:inline-block}
-@keyframes spin{0%{transform:rotate(0)}25%{transform:rotate(90deg)}50%{transform:rotate(180deg)}75%{transform:rotate(270deg)}100%{transform:rotate(360deg)}}
+.toggle-switch{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0}
+.toggle-switch input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;cursor:pointer;inset:0;background:#cbd5e1;border-radius:24px;transition:.2s}
+.toggle-slider::before{content:'';position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+.toggle-switch input:checked+.toggle-slider{background:#22c55e}
+.toggle-switch input:checked+.toggle-slider::before{transform:translateX(20px)}
 
 .wl-tag{display:inline-flex;align-items:center;gap:4px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:4px 10px;font-size:12px;color:#3b82f6;font-family:'SF Mono','Cascadia Code','Consolas',monospace}
 .wl-tag .wl-remove{cursor:pointer;color:#94a3b8;font-size:14px;line-height:1;transition:color .15s}
@@ -125,17 +153,23 @@ code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;b
 table{font-size:11px}
 th,td{padding:8px 8px}
 .settings-grid{grid-template-columns:1fr}
+.drawer{width:100vw;max-width:100vw;right:-100vw}
 }
 </style>
 </head>
 <body>
 <div class="container">
   <div class="topbar">
-    <div class="logo">
-      <div class="logo-icon">G</div>
-      <h1>GoRemote</h1>
+    <div class="topbar-left">
+      <div class="logo">
+        <div class="logo-icon">G</div>
+        <h1>GoRemote</h1>
+      </div>
     </div>
-    <button class="logout-btn" onclick="logout()">退出登录</button>
+    <div class="topbar-right">
+      <button class="drawer-btn" onclick="toggleDrawer()" title="安全与系统设置">&#9881;</button>
+      <button class="logout-btn" onclick="logout()">退出登录</button>
+    </div>
   </div>
 
   <div class="stats">
@@ -158,6 +192,24 @@ th,td{padding:8px 8px}
     <div class="stat-card">
       <div class="stat-icon green">&#9733;</div>
       <div class="stat-info"><div class="stat-value" id="stat-ports">-</div><div class="stat-label">可用端口</div></div>
+    </div>
+  </div>
+
+  <!-- Port Status Bar -->
+  <div class="port-bar" id="port-bar" style="display:none">
+    <div class="port-bar-item">
+      <span class="port-bar-icon">&#128200;</span>
+      <div><div class="port-bar-label">端口范围</div><div class="port-bar-value" id="ps-range">-</div></div>
+    </div>
+    <div class="port-bar-divider"></div>
+    <div class="port-bar-item">
+      <span class="port-bar-icon">&#128202;</span>
+      <div><div class="port-bar-label">已分配 / 可用</div><div class="port-bar-value" id="ps-summary">-</div></div>
+    </div>
+    <div class="port-bar-divider"></div>
+    <div class="port-bar-item">
+      <span class="port-bar-icon" id="ps-blocked-icon">&#9888;</span>
+      <div><div class="port-bar-label">被系统占用</div><div class="port-bar-value" id="ps-blocked">0</div></div>
     </div>
   </div>
 
@@ -191,59 +243,22 @@ th,td{padding:8px 8px}
     <div id="tunnels" style="margin-top:4px"><div class="empty">加载中...</div></div>
   </div>
 
-  <!-- Port Status -->
-  <div class="card" id="port-status-card" style="display:none">
-    <div class="card-header"><h2>端口范围状态</h2></div>
-    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px">
-      <div style="flex:1;min-width:180px"><div style="font-size:12px;color:#94a3b8;margin-bottom:4px">端口范围</div><div style="font-size:15px;font-weight:600;color:#1e293b" id="ps-range">-</div></div>
-      <div style="flex:1;min-width:180px"><div style="font-size:12px;color:#94a3b8;margin-bottom:4px">总计 / 已分配 / 可用 / 被占用</div><div style="font-size:15px;font-weight:600" id="ps-summary">-</div></div>
-    </div>
-    <div id="ps-unavailable" style="display:none">
-      <div style="font-size:12px;color:#ef4444;font-weight:600;margin-bottom:6px">被系统占用的端口：</div>
-      <div id="ps-unavailable-ports" style="font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px;color:#64748b;line-height:1.8"></div>
-    </div>
+</div>
+
+<!-- Drawer: Security + Settings -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-header">
+    <h2>&#9881; 安全与系统设置</h2>
+    <button class="drawer-close" onclick="closeDrawer()">&times;</button>
   </div>
 
-  <!-- Security -->
-  <div class="card">
-    <div class="card-header"><h2>&#128737; 安全设置</h2></div>
-    <div class="sec-tabs">
-      <div class="sec-tab active" onclick="switchSecTab('gwl')">全局白名单</div>
-      <div class="sec-tab" onclick="switchSecTab('bl')">黑名单管理</div>
-    </div>
-    <div class="sec-panel active" id="sec-gwl">
-      <p style="font-size:12px;color:#94a3b8;margin-bottom:14px">全局白名单中的 IP 绕过所有限流检查（登录、WebSocket 连接、端口扫描防护），支持 CIDR</p>
-      <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap" id="gwl-tags"></div>
-      <div class="form-row" style="margin-bottom:0">
-        <div class="form-group" style="flex:1"><label>添加 IP / CIDR</label><input type="text" id="gwl-new-ip" placeholder="如 10.0.0.1 或 192.168.1.0/24" onkeydown="if(event.key==='Enter')addGlobalWLIP()"></div>
-        <button class="btn btn-primary" style="align-self:end" onclick="addGlobalWLIP()">添加</button>
-      </div>
-    </div>
-    <div class="sec-panel" id="sec-bl">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-        <p style="font-size:12px;color:#94a3b8;margin:0">IP 累计触发限流达阈值后自动拉黑，也可手动添加</p>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span style="font-size:12px;color:#64748b">自动拉黑阈值：</span>
-          <input type="number" id="bl-threshold" style="width:60px;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;text-align:center" min="0">
-          <button class="btn btn-ghost" onclick="updateBLThreshold()" style="padding:4px 10px;font-size:11px">保存</button>
-        </div>
-      </div>
-      <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
-        <div class="form-group" style="flex:1"><label style="font-size:12px">IP 地址</label><input type="text" id="bl-new-ip" placeholder="如 1.2.3.4" onkeydown="if(event.key==='Enter')addBlacklistIP()"></div>
-        <div class="form-group" style="flex:1"><label style="font-size:12px">原因</label><input type="text" id="bl-new-reason" placeholder="手动拉黑"></div>
-        <div class="form-group" style="width:100px"><label style="font-size:12px">封禁时长(分)</label><input type="number" id="bl-new-duration" placeholder="0=永久" min="0"></div>
-        <button class="btn btn-danger" style="align-self:end;padding:8px 14px" onclick="addBlacklistIP()">拉黑</button>
-      </div>
-      <div id="bl-list"></div>
-    </div>
-  </div>
-
-  <!-- Settings -->
-  <div class="card">
-    <div class="card-header"><h2>&#9881; 服务端设置</h2></div>
-    <div class="settings-grid" id="settings-grid">
+  <div class="card" style="margin-bottom:16px;padding:20px">
+    <div class="card-header" style="margin-bottom:12px"><h2>&#9881; 服务端设置</h2></div>
+    <div class="settings-grid">
       <div class="sg-item"><label>端口范围起始</label><input type="number" id="set-port-start"></div>
       <div class="sg-item"><label>端口范围结束</label><input type="number" id="set-port-end"></div>
+      <div class="sg-item" style="grid-column:1/-1"><label>被系统占用的端口</label><div id="set-unavailable-ports" style="font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px;color:#94a3b8;min-height:20px;line-height:1.6">加载中...</div></div>
       <div class="sg-item"><label>每设备最大隧道数</label><input type="number" id="set-max-tunnels"></div>
       <div class="sg-item"><label>默认内网地址</label><input type="text" id="set-local-addr"></div>
       <div class="sg-item"><label>连接限流(/分)</label><input type="number" id="set-conn-limit"></div>
@@ -255,6 +270,39 @@ th,td{padding:8px 8px}
       <button class="btn btn-primary" onclick="saveSettings()">保存设置</button>
     </div>
   </div>
+
+  <div class="card" style="margin-bottom:0;padding:20px">
+    <div class="card-header" style="margin-bottom:12px"><h2>&#128737; 安全设置</h2></div>
+    <div class="sec-tabs">
+      <div class="sec-tab active" onclick="switchSecTab('gwl')">全局白名单</div>
+      <div class="sec-tab" onclick="switchSecTab('bl')">黑名单管理</div>
+    </div>
+    <div class="sec-panel active" id="sec-gwl">
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:14px">白名单内的 IP 绕过所有限流检查（登录、WebSocket、端口扫描），支持 CIDR</p>
+      <div class="form-row" style="margin-bottom:14px">
+        <div class="form-group" style="flex:1"><label>添加 IP / CIDR</label><input type="text" id="gwl-new-ip" placeholder="如 10.0.0.1 或 192.168.1.0/24" onkeydown="if(event.key==='Enter')addGlobalWLIP()"></div>
+        <button class="btn btn-primary" style="align-self:end" onclick="addGlobalWLIP()">添加</button>
+      </div>
+      <div id="gwl-list"></div>
+    </div>
+    <div class="sec-panel" id="sec-bl">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <p style="font-size:12px;color:#94a3b8;margin:0">IP 累计触发限流达阈值后自动拉黑，也可手动添加</p>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:12px;color:#64748b">阈值：</span>
+          <input type="number" id="bl-threshold" style="width:60px;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;text-align:center" min="0">
+          <button class="btn btn-ghost" onclick="updateBLThreshold()" style="padding:4px 10px;font-size:11px">保存</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+        <div class="form-group" style="flex:1"><label style="font-size:12px">IP 地址</label><input type="text" id="bl-new-ip" placeholder="如 1.2.3.4" onkeydown="if(event.key==='Enter')addBlacklistIP()"></div>
+        <div class="form-group" style="flex:1"><label style="font-size:12px">原因</label><input type="text" id="bl-new-reason" placeholder="手动拉黑"></div>
+        <div class="form-group" style="width:100px"><label style="font-size:12px">封禁(分)</label><input type="number" id="bl-new-duration" placeholder="0=永久" min="0"></div>
+        <button class="btn btn-danger" style="align-self:end;padding:8px 14px" onclick="addBlacklistIP()">拉黑</button>
+      </div>
+      <div id="bl-list"></div>
+    </div>
+  </div>
 </div>
 
 <!-- Device Config Modal -->
@@ -263,13 +311,21 @@ th,td{padding:8px 8px}
     <h3 id="device-modal-title">设备配置</h3>
     <input type="hidden" id="device-modal-id">
     <div class="form-group"><label>设备别名</label><input type="text" id="device-modal-name" placeholder="如 my-server"></div>
-    <div class="form-group" style="margin-bottom:6px">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="device-modal-enc" style="width:auto">
-        隧道数据加密 (AES-256-GCM)
-      </label>
+    <div class="form-group" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div style="font-size:13px;color:#1e293b;font-weight:600">隧道数据加密</div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:2px">关闭后隧道数据将以明文传输</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:12px;color:#64748b;font-weight:500" id="enc-status-label">已启用</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="device-modal-enc">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
     </div>
-    <div style="font-size:12px;color:#94a3b8;margin-bottom:14px">关闭加密后隧道数据将以明文传输</div>
     <div class="form-group"><label>IP 白名单 (每行一个，支持 CIDR)</label><textarea id="device-modal-wl" rows="3" style="width:100%;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;font-size:13px;font-family:'SF Mono','Cascadia Code','Consolas',monospace;resize:vertical" placeholder="10.0.0.0/8&#10;192.168.1.0/24"></textarea></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeDeviceModal()">取消</button>
@@ -298,6 +354,9 @@ th,td{padding:8px 8px}
 <div class="toast" id="toast"></div>
 
 <script>
+let drawerLoaded = false;
+let deviceList = [];
+
 async function checkAuth(){try{const r=await fetch('/api/check-auth');if(!(await r.json()).authenticated)window.location.href='/login.html'}catch(e){window.location.href='/login.html'}}
 
 function toast(msg,type='success'){
@@ -317,6 +376,21 @@ async function checkHealth(){
     document.getElementById('stat-health').textContent='离线';
     document.getElementById('stat-health').style.color='#ef4444';
   }
+}
+
+// --- Drawer ---
+function toggleDrawer(){
+  if(document.getElementById('drawer').classList.contains('open')){closeDrawer();return}
+  openDrawer()
+}
+function openDrawer(){
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('drawer-overlay').classList.add('show');
+  if(!drawerLoaded){drawerLoaded=true;loadSettings();loadGlobalWhitelist()}
+}
+function closeDrawer(){
+  document.getElementById('drawer').classList.remove('open');
+  document.getElementById('drawer-overlay').classList.remove('show')
 }
 
 // --- Settings ---
@@ -352,16 +426,13 @@ async function saveSettings(){
 }
 
 // --- Devices ---
-let deviceList=[];
-
 async function loadDevices(){
   try{
     const r=await fetch('/api/devices');const d=await r.json();
     deviceList=d.devices||[];
     const online=d.devices.filter(x=>x.online).length;
     document.getElementById('stat-online').textContent=online;
-    
-    // Update client select for tunnel creation
+
     const sel=document.getElementById('client-select');
     const oldVal=sel.value;
     sel.innerHTML='<option value="">请选择...</option>';
@@ -449,9 +520,11 @@ function openDeviceModal(id){
   document.getElementById('device-modal-id').value=id;
   document.getElementById('device-modal-name').value=d.name||'';
   document.getElementById('device-modal-enc').checked=d.enc_enabled;
+  document.getElementById('enc-status-label').textContent=d.enc_enabled?'已启用':'已关闭';
   document.getElementById('device-modal-wl').value=(d.ip_whitelist||[]).join('\n');
   document.getElementById('device-modal-title').textContent='设备配置 - '+(d.name||d.hostname||id.substring(0,12));
   document.getElementById('device-modal').classList.add('show');
+  document.getElementById('device-modal-enc').onchange=function(){document.getElementById('enc-status-label').textContent=this.checked?'已启用':'已关闭'}
 }
 function closeDeviceModal(){document.getElementById('device-modal').classList.remove('show')}
 
@@ -479,6 +552,7 @@ async function regenDeviceKey(){
 // --- Tunnels ---
 async function loadTunnels(){
   try{
+    if(deviceList.length===0){await loadDevices()}
     const r=await fetch('/api/tunnels');const d=await r.json();
     document.getElementById('stat-tunnels').textContent=d.total;
     if(!d.tunnels.length){document.getElementById('tunnels').innerHTML='<div class="empty">暂无隧道</div>';return}
@@ -536,15 +610,20 @@ async function saveTunnelEdit(){
 async function loadPortStatus(){
   try{
     const r=await fetch('/api/port-status');if(!r.ok)return;const d=await r.json();
-    document.getElementById('port-status-card').style.display='';
+    document.getElementById('port-bar').style.display='flex';
     document.getElementById('ps-range').textContent=d.range_start+' - '+d.range_end;
     const avail=Math.max(0,d.available_count);
     document.getElementById('stat-ports').textContent=avail;
     document.getElementById('stat-ports').style.color=avail===0?'#ef4444':avail<50?'#f59e0b':'#22c55e';
-    document.getElementById('ps-summary').innerHTML='<span style="color:#334155">'+d.total_ports+'</span> / <span style="color:#3b82f6">'+d.allocated+'</span> / <span style="color:#22c55e">'+avail+'</span> / <span style="color:#ef4444">'+d.unavailable.length+'</span>';
-    const unavailDiv=document.getElementById('ps-unavailable');
-    const unavailPorts=document.getElementById('ps-unavailable-ports');
-    if(d.unavailable&&d.unavailable.length>0){unavailDiv.style.display='';const show=d.unavailable.slice(0,50);unavailPorts.textContent=show.join(', ')+(d.unavailable.length>50?' ...等共 '+d.unavailable.length+' 个':'')}else{unavailDiv.style.display='none'}
+    document.getElementById('ps-summary').innerHTML='<span style="color:#3b82f6">'+d.allocated+'</span> / <span style="color:#22c55e">'+avail+'</span>';
+    const blocked = d.unavailable ? d.unavailable.length : 0;
+    document.getElementById('ps-blocked').textContent=blocked;
+    document.getElementById('ps-blocked').style.color=blocked>0?'#ef4444':'#22c55e';
+    document.getElementById('ps-blocked-icon').style.color=blocked>0?'#ef4444':'#94a3b8';
+    // Update drawer unavailable ports
+    const uaEl=document.getElementById('set-unavailable-ports');
+    if(uaEl && d.unavailable && d.unavailable.length>0){uaEl.textContent=d.unavailable.join(', ')+(d.unavailable.length>50?' ...等共 '+d.unavailable.length+' 个':'')}
+    else if(uaEl){uaEl.textContent='无'}
   }catch(e){}
 }
 
@@ -556,9 +635,12 @@ async function loadGlobalWhitelist(){
 }
 
 function renderGWLTags(){
-  const container=document.getElementById('gwl-tags');
-  if(!gwlIPs.length){container.innerHTML='<span style="color:#94a3b8;font-size:12px">暂无全局白名单 IP</span>';return}
-  container.innerHTML=gwlIPs.map((ip,i)=>`<span class="wl-tag">${ip}<span class="wl-remove" onclick="removeGWLIP(${i})">&times;</span></span>`).join('')
+  const container=document.getElementById('gwl-list');
+  if(!gwlIPs.length){container.innerHTML='<div class="empty" style="padding:20px 0">暂无全局白名单 IP</div>';return}
+  let h='<table><thead><tr><th>IP / CIDR</th><th>操作</th></tr></thead><tbody>';
+  gwlIPs.forEach((ip,i)=>{h+=`<tr><td><code>${ip}</code></td><td><button class="btn btn-ghost" onclick="removeGWLIP(${i})">移除</button></td></tr>`});
+  h+='</tbody></table>';
+  container.innerHTML=h
 }
 
 async function saveGlobalWhitelist(){
@@ -605,12 +687,12 @@ async function addBlacklistIP(){
 
 async function removeBlacklistIP(ip){try{const r=await fetch('/api/security/blacklist/'+encodeURIComponent(ip),{method:'DELETE'});if(r.ok){toast('已解除拉黑');loadBlacklist()}else{const d=await r.json();toast(d.error||'解除失败','error')}}catch(e){toast('网络错误','error')}}
 
-async function updateBLThreshold(){const threshold=parseInt(document.getElementById('bl-threshold').value)||0;try{const r=await fetch('/api/security/blacklist-threshold',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold})});if(r.ok)toast('阈值已更新为 '+threshold);else toast('更新失败','error')}catch(e){toast('网络错误','error')}}
+async function updateBLThreshold(){const threshold=parseInt(document.getElementById('bl-threshold').value)||0;try{const r=await fetch('/api/security/blacklist-threshold',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold})});if(r.ok)toast('阈值已更新');else toast('更新失败','error')}catch(e){toast('网络错误','error')}}
 
 async function logout(){await fetch('/api/logout',{method:'POST'});window.location.href='/login.html'}
 
 // --- Init ---
-checkAuth();checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadPortStatus();loadGlobalWhitelist();loadSettings();
+checkAuth();checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadPortStatus();
 setInterval(()=>{checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadPortStatus()},10000);
 </script>
 </body>
