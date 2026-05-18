@@ -4,7 +4,7 @@
 # 关联流程: ../workflow/zero-config-deploy-verify.md
 # 依赖: plink (PuTTY), pscp
 # 输入: build/agent-linux-amd64
-# 输出: 远端 /opt/goremote/agent + /opt/goremote/agent.log
+# 输出: 远端 /opt/goremote/agent + 程序内轮转 /opt/goremote/agent.log*
 #
 # 零配置架构：Agent 只需服务器地址，无需任何配置文件。
 
@@ -14,6 +14,8 @@ AGENT_IP="${1:?Usage: $0 <agent_ip> <ssh_user> <ssh_password> <server_address>}"
 SSH_USER="${2:?}"
 SSH_PASS="${3:?}"
 SERVER_ADDR="${4:?}"
+LOG_MAX_SIZE_MB="${LOG_MAX_SIZE_MB:-50}"
+LOG_MAX_BACKUPS="${LOG_MAX_BACKUPS:-5}"
 BINARY_PATH="build/agent-linux-amd64"
 REMOTE_DIR="/opt/goremote"
 
@@ -37,7 +39,7 @@ plink -batch -pw "$SSH_PASS" -P 22 "${SSH_USER}@${AGENT_IP}" "
     chmod +x agent
     killall agent 2>/dev/null || true
     sleep 1
-    nohup ./agent --server ${SERVER_ADDR} > agent.log 2>&1 &
+    nohup ./agent --server ${SERVER_ADDR} --log-file ${REMOTE_DIR}/agent.log --log-max-size-mb ${LOG_MAX_SIZE_MB} --log-max-backups ${LOG_MAX_BACKUPS} > /dev/null 2>&1 < /dev/null &
     sleep 2
 "
 

@@ -3,7 +3,7 @@
 # 关联流程: ../workflow/zero-config-deploy-verify.md
 # 依赖: plink.exe, pscp.exe (PuTTY 工具链)
 # 输入: build/server-linux-amd64
-# 输出: 远端 /root/goremote/server + /root/goremote/server.log
+# 输出: 远端 /root/goremote/server + 程序内轮转 /root/goremote/server.log*
 
 param(
     [Parameter(Mandatory=$true)]
@@ -21,7 +21,11 @@ param(
 
     [string]$LocalBinary = "build/server-linux-amd64",
 
-    [int]$ServerPort = 8080
+    [int]$ServerPort = 8080,
+
+    [int]$LogMaxSizeMB = 50,
+
+    [int]$LogMaxBackups = 5
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,7 +55,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Failed to upload binary" }
 
 Write-Host "[4/5] Starting server..."
 Remote-Command "chmod +x $RemoteBinary" | Out-Null
-$null = & plink.exe -batch -pw $SshPassword -P $SshPort "$SshUser@$ServerIp" "cd $RemoteDir && nohup ./server --data $RemoteDir/data > $RemoteDir/server.log 2>&1 &" 2>&1 | Out-Null
+$startCmd = "cd $RemoteDir && nohup ./server --data $RemoteDir/data --log-file $RemoteDir/server.log --log-max-size-mb $LogMaxSizeMB --log-max-backups $LogMaxBackups > /dev/null 2>&1 < /dev/null &"
+$null = & plink.exe -batch -pw $SshPassword -P $SshPort "$SshUser@$ServerIp" $startCmd 2>&1 | Out-Null
 
 Start-Sleep -Seconds 2
 

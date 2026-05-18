@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+	"goremote/internal/common"
 )
 
 type Config struct {
@@ -44,8 +45,10 @@ type ReconnectConfig struct {
 }
 
 type LogConfig struct {
-	Level string `yaml:"level"`
-	File  string `yaml:"file"`
+	Level      string `yaml:"level"`
+	File       string `yaml:"file"`
+	MaxSizeMB  int    `yaml:"max_size_mb"`
+	MaxBackups int    `yaml:"max_backups"`
 }
 
 type TunnelConfig struct {
@@ -66,7 +69,9 @@ func DefaultConfig() *Config {
 			MaxInterval: 60,
 		},
 		Log: LogConfig{
-			Level: "info",
+			Level:      "info",
+			MaxSizeMB:  common.DefaultLogMaxSizeMB,
+			MaxBackups: common.DefaultLogBackups,
 		},
 	}
 }
@@ -96,6 +101,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Log.Level == "" {
 		config.Log.Level = "info"
+	}
+	if config.Log.MaxSizeMB <= 0 {
+		config.Log.MaxSizeMB = common.DefaultLogMaxSizeMB
+	}
+	if config.Log.MaxBackups <= 0 {
+		config.Log.MaxBackups = common.DefaultLogBackups
 	}
 
 	return &config, nil

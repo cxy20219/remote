@@ -315,9 +315,27 @@ ls -lh /path/to/server.log # 日志文件常见 1GB+
 ```
 
 **预防**：
-- 日志配置 `log.file: ""` 输出到 stdout，由 systemd/journald 轮转
-- 部署脚本中清理旧二进制备份
+- 新版服务端和 Agent 支持程序内日志轮转；生产部署应显式使用 `--log-file`、`--log-max-size-mb`、`--log-max-backups`
+- `nohup ./server > server.log 2>&1 &` 会无限追加，除非外层还有 logrotate，不要作为长期生产启动方式
+- 默认建议：服务端/Linux Agent `50MB * 5`，Android Agent `20MB * 3`
+- 部署脚本中清理旧二进制备份和大文件压测产物
 - 定期检查 `/tmp` 残留
+
+示例：
+
+```bash
+nohup ./server --data /root/goremote/data \
+  --log-file /root/goremote/server.log \
+  --log-max-size-mb 50 \
+  --log-max-backups 5 \
+  > /dev/null 2>&1 < /dev/null &
+
+nohup ./agent --server YOUR_SERVER:8080 \
+  --log-file /opt/goremote/agent.log \
+  --log-max-size-mb 50 \
+  --log-max-backups 5 \
+  > /dev/null 2>&1 < /dev/null &
+```
 
 ## 8. 常见错误速查
 

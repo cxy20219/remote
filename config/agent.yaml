@@ -13,6 +13,8 @@ reconnect:
 
 log:
   level: "info"
+  max_size_mb: 50
+  max_backups: 5
 
 tunnel:
   enabled: true

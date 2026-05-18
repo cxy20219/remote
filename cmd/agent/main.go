@@ -19,6 +19,10 @@ func main() {
 	insecureSkipVerify := flag.Bool("tls-insecure", false, "skip TLS certificate verification")
 	configPath := flag.String("config", "", "config file path (optional, CLI flags take precedence)")
 	identityDir := flag.String("identity-dir", "", "identity storage directory (default: $HOME/.goremote)")
+	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error")
+	logFile := flag.String("log-file", "", "log file path (empty writes JSON logs to stdout)")
+	logMaxSizeMB := flag.Int("log-max-size-mb", 0, "max size in MB before rotating log file")
+	logMaxBackups := flag.Int("log-max-backups", 0, "number of rotated log files to keep")
 	flag.Parse()
 
 	agentCfg := agent.DefaultConfig()
@@ -44,6 +48,18 @@ func main() {
 	if *insecureSkipVerify {
 		agentCfg.Server.TLS.InsecureSkipVerify = true
 	}
+	if *logLevel != "" {
+		agentCfg.Log.Level = *logLevel
+	}
+	if *logFile != "" {
+		agentCfg.Log.File = *logFile
+	}
+	if *logMaxSizeMB > 0 {
+		agentCfg.Log.MaxSizeMB = *logMaxSizeMB
+	}
+	if *logMaxBackups > 0 {
+		agentCfg.Log.MaxBackups = *logMaxBackups
+	}
 
 	if agentCfg.Server.Address == "" {
 		fmt.Println("Usage: agent <server_address>")
@@ -54,7 +70,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	agent.InitLogger(agentCfg.Log.Level, agentCfg.Log.File)
+	agent.InitLogger(agentCfg.Log.Level, agentCfg.Log.File, agentCfg.Log.MaxSizeMB, agentCfg.Log.MaxBackups)
 
 	identityDirVal := *identityDir
 	agentCfg.IdentityDir = identityDirVal

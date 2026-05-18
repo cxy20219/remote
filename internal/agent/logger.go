@@ -3,10 +3,12 @@ package agent
 import (
 	"log/slog"
 	"os"
+
+	"goremote/internal/common"
 )
 
 // InitLogger initializes the slog logger
-func InitLogger(level, file string) {
+func InitLogger(level, file string, maxSizeMB, maxBackups int) {
 	var handler slog.Handler
 
 	opts := &slog.HandlerOptions{
@@ -16,12 +18,12 @@ func InitLogger(level, file string) {
 	if file == "" {
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	} else {
-		f, err := os.OpenFile(file, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		w, err := common.NewRotatingFileWriter(file, maxSizeMB, maxBackups)
 		if err != nil {
 			slog.Warn("failed to open log file, using stdout", "error", err)
 			handler = slog.NewJSONHandler(os.Stdout, opts)
 		} else {
-			handler = slog.NewJSONHandler(f, opts)
+			handler = slog.NewJSONHandler(w, opts)
 		}
 	}
 

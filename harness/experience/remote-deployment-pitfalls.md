@@ -98,8 +98,10 @@ nohup ./server > server.log 2>&1 &
 
 或更彻底：
 ```bash
-nohup ./server </dev/null > server.log 2>&1 &
+nohup ./server --log-file /root/goremote/server.log --log-max-size-mb 50 --log-max-backups 5 </dev/null > /dev/null 2>&1 &
 ```
+
+新版服务端和 Agent 支持程序内日志轮转；生产部署不要再只依赖 `nohup > server.log 2>&1` 这种无限追加方式。
 
 ### 验证
 ```bash

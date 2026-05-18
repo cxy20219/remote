@@ -21,7 +21,7 @@ func init() {
 func main() {
 	config := server.ParseConfig()
 
-	server.InitLogger("info", "")
+	server.InitLogger(config.Log.Level, config.Log.File, config.Log.MaxSizeMB, config.Log.MaxBackups)
 
 	srv := server.NewServer(config, web.StaticFS)
 

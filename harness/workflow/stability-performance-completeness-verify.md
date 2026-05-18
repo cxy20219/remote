@@ -68,7 +68,7 @@ pidof server > /tmp/goremote_server_pids 2>/dev/null || true
 if [ -s /tmp/goremote_server_pids ]; then kill $(cat /tmp/goremote_server_pids) || true; sleep 1; fi
 if [ -f server ]; then cp server server.prev.$(date +%Y%m%d%H%M%S); fi
 mv -f server.new server
-nohup ./server --data /root/goremote/data > server.log 2>&1 < /dev/null &
+nohup ./server --data /root/goremote/data --log-file /root/goremote/server.log --log-max-size-mb 50 --log-max-backups 5 > /dev/null 2>&1 < /dev/null &
 sleep 2
 curl -s http://127.0.0.1:8080/health
 '
@@ -78,7 +78,7 @@ Linux Agent 和 Android Agent 同样使用 `.new` 替换。Android 必须指定�
 
 ```powershell
 adb push build/agent-android-arm64 /data/local/tmp/goremote-agent.new
-adb shell 'cd /data/local/tmp; chmod 755 goremote-agent.new; pidof goremote-agent > /data/local/tmp/goremote-agent.pids 2>/dev/null || true; if [ -s /data/local/tmp/goremote-agent.pids ]; then kill $(cat /data/local/tmp/goremote-agent.pids) || true; sleep 1; fi; mv -f goremote-agent.new goremote-agent; nohup ./goremote-agent --server YOUR_SERVER:8080 --identity-dir /data/local/tmp/goremote-android-id > /data/local/tmp/goremote-agent.log 2>&1 < /dev/null &'
+adb shell 'cd /data/local/tmp; chmod 755 goremote-agent.new; pidof goremote-agent > /data/local/tmp/goremote-agent.pids 2>/dev/null || true; if [ -s /data/local/tmp/goremote-agent.pids ]; then kill $(cat /data/local/tmp/goremote-agent.pids) || true; sleep 1; fi; mv -f goremote-agent.new goremote-agent; nohup ./goremote-agent --server YOUR_SERVER:8080 --identity-dir /data/local/tmp/goremote-android-id --log-file /data/local/tmp/goremote-agent.log --log-max-size-mb 20 --log-max-backups 3 > /dev/null 2>&1 < /dev/null &'
 ```
 
 ### 4. 清理状态并重建隧道

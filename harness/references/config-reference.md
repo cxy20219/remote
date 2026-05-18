@@ -48,6 +48,8 @@
 |------|------|--------|------|
 | `level` | string | `info` | 日志级别：debug/info/warn/error |
 | `file` | string | - | 日志文件路径（空=stdout） |
+| `max_size_mb` | int | `50` | 单个日志文件最大大小，仅 `file` 非空时生效 |
+| `max_backups` | int | `5` | 保留的历史日志文件数量，仅 `file` 非空时生效 |
 
 ### tunnel
 
@@ -112,6 +114,8 @@
 |------|------|--------|------|
 | `level` | string | `info` | 日志级别 |
 | `file` | string | - | 日志文件路径（空=stdout） |
+| `max_size_mb` | int | `50` | 单个日志文件最大大小，仅 `file` 非空时生效 |
+| `max_backups` | int | `5` | 保留的历史日志文件数量，仅 `file` 非空时生效 |
 
 ---
 
@@ -179,6 +183,8 @@ heartbeat:
 
 log:
   level: "info"
+  max_size_mb: 50
+  max_backups: 5
 
 tunnel:
   enabled: true
@@ -215,4 +221,6 @@ reconnect:
 
 log:
   level: "info"
+  max_size_mb: 50
+  max_backups: 5
 ```

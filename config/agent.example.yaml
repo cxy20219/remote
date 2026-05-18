@@ -26,6 +26,8 @@ reconnect:
 log:
   level: "info"          # 日志级别：debug / info / warn / error
   # file: "/var/log/goremote/agent.log"  # 日志文件路径（空=stdout）
+  max_size_mb: 50        # 单个日志文件最大大小，超过后轮转
+  max_backups: 5         # 保留的历史日志文件数量
 
 tunnel:
   enabled: true          # 是否启用隧道功能

@@ -56,7 +56,7 @@ chmod +x agent-linux-amd64
 ./agent-linux-amd64 --server YOUR_SERVER:8080
 
 # 如需后台运行
-nohup ./agent-linux-amd64 --server YOUR_SERVER:8080 > agent.log 2>&1 &
+nohup ./agent-linux-amd64 --server YOUR_SERVER:8080 --log-file agent.log --log-max-size-mb 50 --log-max-backups 5 > /dev/null 2>&1 < /dev/null &
 ```
 
 ## 编译

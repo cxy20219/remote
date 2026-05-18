@@ -73,7 +73,7 @@ plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'kill -9 $(pgrep 
 pscp -P 22 -pw "PASSWORD" "E:\AI-work\go-remote\harness\assets\bin\server-linux-amd64" root@YOUR_SERVER:/root/goremote/server
 
 # 启动（零配置，无需任何 yaml）
-plink -batch -pw "PASSWORD" root@YOUR_SERVER 'chmod +x /root/goremote/server; cd /root/goremote && nohup ./server --data /root/goremote/data > server.log 2>&1 & sleep 2; curl -s http://localhost:8080/health'
+plink -batch -pw "PASSWORD" root@YOUR_SERVER 'chmod +x /root/goremote/server; cd /root/goremote && nohup ./server --data /root/goremote/data --log-file /root/goremote/server.log --log-max-size-mb 50 --log-max-backups 5 > /dev/null 2>&1 < /dev/null & sleep 2; curl -s http://localhost:8080/health'
 ```
 
 预期输出：`{"status":"ok"}`
@@ -133,7 +133,7 @@ adb shell "nohup /data/local/tmp/agent --server YOUR_SERVER:8080 --identity-dir 
 # 交叉编译 Linux amd64 后上传，启动
 chmod +x ~/agent
 rm -rf ~/.goremote  # 可选：清理旧身份进行全新注册
-nohup ./agent --server YOUR_SERVER:8080 > agent.log 2>&1 &
+nohup ./agent --server YOUR_SERVER:8080 --log-file /opt/goremote/agent.log --log-max-size-mb 50 --log-max-backups 5 > /dev/null 2>&1 < /dev/null &
 tail -5 agent.log
 ```
 
@@ -230,7 +230,7 @@ plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER "grep -c 'client 
 
 ```powershell
 # 模拟服务端重启
-plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'fuser -k 8080/tcp 2>/dev/null; cd /root/goremote && nohup ./server --data /root/goremote/data > server.log 2>&1 & sleep 2'
+plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'fuser -k 8080/tcp 2>/dev/null; cd /root/goremote && nohup ./server --data /root/goremote/data --log-file /root/goremote/server.log --log-max-size-mb 50 --log-max-backups 5 > /dev/null 2>&1 < /dev/null & sleep 2'
 
 # 检查 Agent 是否自动重连成功（已有 identity 应触发 reauth）
 plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'grep -E "reconnect|register_ok" /root/goremote/server.log | tail -3'

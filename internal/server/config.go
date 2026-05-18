@@ -3,6 +3,8 @@ package server
 import (
 	"flag"
 	"fmt"
+
+	"goremote/internal/common"
 )
 
 type Config struct {
@@ -11,6 +13,7 @@ type Config struct {
 	Security SecurityConfig
 	Tunnel   TunnelConfig
 	Swagger  SwaggerConfig
+	Log      LogConfig
 	dataDir  string
 }
 
@@ -55,6 +58,13 @@ type SwaggerConfig struct {
 	Enabled bool
 }
 
+type LogConfig struct {
+	Level      string
+	File       string
+	MaxSizeMB  int
+	MaxBackups int
+}
+
 func ParseConfig() *Config {
 	cfg := &Config{}
 
@@ -72,6 +82,11 @@ func ParseConfig() *Config {
 	flag.StringVar(&cfg.Tunnel.PublicHost, "public-host", "", "public host for tunnel addresses")
 
 	flag.BoolVar(&cfg.Swagger.Enabled, "swagger", true, "enable swagger UI")
+
+	flag.StringVar(&cfg.Log.Level, "log-level", "info", "log level: debug, info, warn, error")
+	flag.StringVar(&cfg.Log.File, "log-file", "", "log file path (empty writes JSON logs to stdout)")
+	flag.IntVar(&cfg.Log.MaxSizeMB, "log-max-size-mb", common.DefaultLogMaxSizeMB, "max size in MB before rotating log file")
+	flag.IntVar(&cfg.Log.MaxBackups, "log-max-backups", common.DefaultLogBackups, "number of rotated log files to keep")
 
 	flag.Parse()
 
