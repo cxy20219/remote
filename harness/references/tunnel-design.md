@@ -8,6 +8,7 @@
 
 - 暴露内网 SSH 端口，让外部能通过服务端端口访问内网 SSH
 - 暴露内网 HTTP 服务，让外部能访问内网 Web 服务
+- 支持服务端本机代理模式，仅监听 `127.0.0.1`，不向公网暴露入口
 - 提供 HTTP API 让用户动态创建/删除端口映射
 
 ### 1.2 架构模式
@@ -17,12 +18,16 @@
 ```
 外部用户  ──▶  [服务端:公网端口]  ──▶  [WebSocket隧道]  ──▶  [Agent:本地端口]
                 (端口映射)          (数据透传)          (内网服务)
+
+服务端本机用户 ─▶ [服务端:127.0.0.1端口] ─▶ [WebSocket隧道] ─▶ [Agent:本地端口]
+                  (本机代理，不对公网监听)
 ```
 
 **特点**：
 - 利用现有 WebSocket 连接传输隧道数据，无需额外端口
 - Agent 在内网，防火墙友好
 - 支持 SSH、HTTP 等任意 TCP 协议
+- 通过 `exposure` 区分公网映射和服务端本机代理：`public` 监听公网入口，`server_local` 仅监听服务端 `127.0.0.1`
 
 ---
 
@@ -194,10 +199,13 @@ func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 
 **创建隧道（含端口占用检测）**：
 1. Agent 发送 `tunnel_open`（包含 localAddr:localPort）
-2. Server `AllocatePort()` 遍历端口范围，对每个候选端口 `net.Listen` 试探：
-   - 绑定成功 → 关闭监听，标记为已分配
+2. Server 根据 `exposure` 选择监听地址：
+   - `public` → 监听公网入口（默认等价于 `0.0.0.0`）
+   - `server_local` → 仅监听 `127.0.0.1`
+3. Server `AllocatePortForExposure()` 遍历端口范围，对每个候选端口直接 `net.Listen` 实绑：
+   - 绑定成功 → 保留 listener，标记为已分配
    - 绑定失败 → 记录到 `unavailablePorts`，跳过
-3. Server 调用 `Listen()` 启动正式监听，返回 `tunnel_open_ack`
+4. Server 调用 `AcceptOnListener()` 启动 accept 循环，返回 `tunnel_open_ack`
 
 **端口释放（联动清理）**：
 - `ReleasePort()` 清除 `publicPorts` 和 `unavailablePorts` 中的标记
@@ -314,11 +322,14 @@ type TunnelManager struct {
 ```json
 {
   "client_id": "client-xxx",
+  "exposure": "public",
   "local_addr": "127.0.0.1",
   "local_port": 22,
   "protocol": "tcp"
 }
 ```
+
+`exposure` 可选，默认 `public`。设为 `server_local` 时，服务端只监听 `127.0.0.1:<public_port>`，外部公网无法直接访问。
 
 响应：
 ```json
@@ -326,6 +337,21 @@ type TunnelManager struct {
   "tunnel_id": "tunnel-xxx",
   "public_port": 15001,
   "public_addr": "server.example.com:15001",
+  "access_addr": "server.example.com:15001",
+  "exposure": "public",
+  "local_addr": "127.0.0.1",
+  "status": "active"
+}
+```
+
+服务端本机代理响应示例：
+```json
+{
+  "tunnel_id": "tunnel-xxx",
+  "public_port": 15001,
+  "public_addr": "127.0.0.1:15001",
+  "access_addr": "127.0.0.1:15001",
+  "exposure": "server_local",
   "local_addr": "127.0.0.1",
   "status": "active"
 }

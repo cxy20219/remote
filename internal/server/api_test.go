@@ -90,6 +90,29 @@ func TestTunnelPublicAddr(t *testing.T) {
 	}
 }
 
+func TestTunnelAccessAddr(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		port     int
+		exposure string
+		want     string
+	}{
+		{name: "public uses advertised host", host: "server.example.com", port: 15001, exposure: TunnelExposurePublic, want: "server.example.com:15001"},
+		{name: "server local uses loopback", host: "server.example.com", port: 15001, exposure: TunnelExposureServerLocal, want: "127.0.0.1:15001"},
+		{name: "empty exposure defaults public", host: "server.example.com", port: 15001, exposure: "", want: "server.example.com:15001"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tunnelAccessAddr(tc.host, tc.port, tc.exposure)
+			if got != tc.want {
+				t.Fatalf("tunnelAccessAddr(%q, %d, %q) = %q, want %q", tc.host, tc.port, tc.exposure, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeTunnelTarget(t *testing.T) {
 	tests := []struct {
 		name      string

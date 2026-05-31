@@ -243,6 +243,7 @@ func (h *Handler) handleTunnelOpen(client *Client, msg *common.Message) error {
 		payload.LocalAddr,
 		payload.LocalPort,
 		publicPort,
+		TunnelExposurePublic,
 	); err != nil {
 		ln.Close()
 		h.server.tunnelManager.ReleasePort(publicPort)

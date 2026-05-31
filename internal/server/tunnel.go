@@ -17,6 +17,14 @@ import (
 	"goremote/internal/common"
 )
 
+const (
+	TunnelExposurePublic      = "public"
+	TunnelExposureServerLocal = "server_local"
+
+	TunnelBindAll         = "0.0.0.0"
+	TunnelBindServerLocal = "127.0.0.1"
+)
+
 var bufPool = sync.Pool{
 	New: func() interface{} {
 		b := make([]byte, common.TunnelChunkSize)
@@ -30,7 +38,9 @@ type Tunnel struct {
 	ClientID   string
 	Client     *Client `json:"-"` // WebSocket 连接 (not serialized)
 	Protocol   string
-	PublicPort int    // 监听的公网端口
+	PublicPort int    // 服务端监听端口（公网映射或服务端本机代理）
+	Exposure   string // "public" / "server_local"
+	BindAddr   string // 监听地址，public 默认为 0.0.0.0，server_local 为 127.0.0.1
 	LocalAddr  string // 客户端本地地址
 	LocalPort  int
 	CreatedAt  time.Time
@@ -48,7 +58,7 @@ type ExternalConn struct {
 type TunnelManager struct {
 	mu               sync.RWMutex
 	tunnels          map[string]*Tunnel       // tunnelID -> Tunnel
-	publicPorts      map[int]string           // publicPort -> tunnelID
+	publicPorts      map[int]string           // listenPort -> tunnelID
 	extConns         map[string]*ExternalConn // connID -> ExternalConn
 	unavailablePorts map[int]struct{}         // 系统占用的端口（惰性检测）
 	portStart        int
@@ -71,8 +81,45 @@ func NewTunnelManager(server *Server, portStart, portEnd int) *TunnelManager {
 	}
 }
 
+func normalizeTunnelExposure(exposure string) (string, string, error) {
+	exposure = strings.ToLower(strings.TrimSpace(exposure))
+	if exposure == "" {
+		exposure = TunnelExposurePublic
+	}
+
+	switch exposure {
+	case TunnelExposurePublic:
+		return TunnelExposurePublic, TunnelBindAll, nil
+	case TunnelExposureServerLocal:
+		return TunnelExposureServerLocal, TunnelBindServerLocal, nil
+	default:
+		return "", "", fmt.Errorf("unsupported exposure %q: use public or server_local", exposure)
+	}
+}
+
+func listenAddrForBind(bindAddr string, port int) string {
+	bindAddr = strings.TrimSpace(bindAddr)
+	if bindAddr == "" || bindAddr == TunnelBindAll {
+		return fmt.Sprintf(":%d", port)
+	}
+	return net.JoinHostPort(bindAddr, fmt.Sprintf("%d", port))
+}
+
 // AllocatePort 分配一个可用端口并创建监听器（原子操作，避免 TOCTOU 竞态）
 func (tm *TunnelManager) AllocatePort() (int, net.Listener, error) {
+	return tm.AllocatePortForExposure(TunnelExposurePublic)
+}
+
+// AllocatePortForExposure 按入口类型分配端口并创建监听器。
+func (tm *TunnelManager) AllocatePortForExposure(exposure string) (int, net.Listener, error) {
+	_, bindAddr, err := normalizeTunnelExposure(exposure)
+	if err != nil {
+		return 0, nil, err
+	}
+	return tm.allocatePortForBind(bindAddr)
+}
+
+func (tm *TunnelManager) allocatePortForBind(bindAddr string) (int, net.Listener, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -83,10 +130,10 @@ func (tm *TunnelManager) AllocatePort() (int, net.Listener, error) {
 		if _, unavailable := tm.unavailablePorts[port]; unavailable {
 			continue
 		}
-		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		ln, err := net.Listen("tcp", listenAddrForBind(bindAddr, port))
 		if err != nil {
 			tm.unavailablePorts[port] = struct{}{}
-			slog.Warn("port occupied by system, skipping", "port", port, "error", err)
+			slog.Warn("port occupied by system, skipping", "port", port, "bind_addr", bindAddr, "error", err)
 			continue
 		}
 		tm.publicPorts[port] = "" // 标记为已用
@@ -104,9 +151,14 @@ func (tm *TunnelManager) ReleasePort(port int) {
 }
 
 // CreateTunnel 创建隧道
-func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client, protocol, localAddr string, localPort, publicPort int) error {
+func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client, protocol, localAddr string, localPort, publicPort int, exposure string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+
+	normalizedExposure, bindAddr, err := normalizeTunnelExposure(exposure)
+	if err != nil {
+		return err
+	}
 
 	// 检查客户端隧道数量限制
 	if tm.server.config.Tunnel.MaxTunnelsPerClient > 0 {
@@ -127,6 +179,8 @@ func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client,
 		Client:     client,
 		Protocol:   protocol,
 		PublicPort: publicPort,
+		Exposure:   normalizedExposure,
+		BindAddr:   bindAddr,
 		LocalAddr:  localAddr,
 		LocalPort:  localPort,
 		CreatedAt:  time.Now(),
@@ -140,6 +194,8 @@ func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client,
 		"tunnel_id", tunnelID,
 		"client_id", clientID,
 		"public_port", publicPort,
+		"exposure", normalizedExposure,
+		"bind_addr", bindAddr,
 		"local_addr", localAddr,
 		"local_port", localPort)
 
@@ -244,7 +300,7 @@ func (tm *TunnelManager) CloseAll() {
 	slog.Info("all tunnels closed")
 }
 
-func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPort int, newPublicPort int, protocol string) (*Tunnel, error) {
+func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPort int, newPublicPort int, protocol string, exposure string) (*Tunnel, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -257,39 +313,85 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 		return nil, fmt.Errorf("tunnel is not active, current status: %s", tunnel.Status)
 	}
 
+	if tunnel.Exposure == "" {
+		tunnel.Exposure = TunnelExposurePublic
+	}
+	if tunnel.BindAddr == "" {
+		tunnel.BindAddr = TunnelBindAll
+	}
+	if strings.TrimSpace(exposure) == "" {
+		exposure = tunnel.Exposure
+	}
+	normalizedExposure, bindAddr, err := normalizeTunnelExposure(exposure)
+	if err != nil {
+		return nil, err
+	}
 	portChanged := newPublicPort > 0 && newPublicPort != tunnel.PublicPort
-	if portChanged {
-		if newPublicPort < tm.portStart || newPublicPort > tm.portEnd {
-			return nil, fmt.Errorf("public port %d out of range [%d, %d]", newPublicPort, tm.portStart, tm.portEnd)
+	bindChanged := bindAddr != tunnel.BindAddr
+
+	if portChanged || bindChanged {
+		targetPort := tunnel.PublicPort
+		if newPublicPort > 0 {
+			targetPort = newPublicPort
 		}
-		if existingID, used := tm.publicPorts[newPublicPort]; used && existingID != "" && existingID != tunnelID {
-			return nil, fmt.Errorf("public port %d already in use", newPublicPort)
+		if targetPort < tm.portStart || targetPort > tm.portEnd {
+			return nil, fmt.Errorf("public port %d out of range [%d, %d]", targetPort, tm.portStart, tm.portEnd)
+		}
+		if existingID, used := tm.publicPorts[targetPort]; used && existingID != "" && existingID != tunnelID {
+			return nil, fmt.Errorf("public port %d already in use", targetPort)
 		}
 
-		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", newPublicPort))
+		var ln net.Listener
+		if targetPort == tunnel.PublicPort && bindChanged {
+			if oldListener, ok := tm.listeners[tunnel.PublicPort]; ok {
+				delete(tm.listeners, tunnel.PublicPort)
+				oldListener.Close()
+			}
+			ln, err = net.Listen("tcp", listenAddrForBind(bindAddr, targetPort))
+			if err != nil {
+				if rollback, rollbackErr := net.Listen("tcp", listenAddrForBind(tunnel.BindAddr, tunnel.PublicPort)); rollbackErr == nil {
+					tm.listeners[tunnel.PublicPort] = rollback
+					go tm.acceptLoop(tunnel.PublicPort, tunnelID)
+				}
+				return nil, fmt.Errorf("failed to bind port %d on %s: %w", targetPort, bindAddr, err)
+			}
+		} else {
+			ln, err = net.Listen("tcp", listenAddrForBind(bindAddr, targetPort))
+		}
 		if err != nil {
-			return nil, fmt.Errorf("failed to bind new port %d: %w", newPublicPort, err)
+			return nil, fmt.Errorf("failed to bind port %d on %s: %w", targetPort, bindAddr, err)
 		}
 
 		tm.closeTunnelConnections(tunnelID)
-		if oldListener, ok := tm.listeners[tunnel.PublicPort]; ok {
+		if oldListener, ok := tm.listeners[tunnel.PublicPort]; ok && targetPort != tunnel.PublicPort {
 			oldListener.Close()
 			delete(tm.listeners, tunnel.PublicPort)
 		}
 
 		oldPort := tunnel.PublicPort
+		oldExposure := tunnel.Exposure
+		oldBindAddr := tunnel.BindAddr
 		delete(tm.publicPorts, oldPort)
-		tm.publicPorts[newPublicPort] = tunnelID
-		tunnel.PublicPort = newPublicPort
-		tm.listeners[newPublicPort] = ln
+		tm.publicPorts[targetPort] = tunnelID
+		tunnel.PublicPort = targetPort
+		tunnel.Exposure = normalizedExposure
+		tunnel.BindAddr = bindAddr
+		tm.listeners[targetPort] = ln
 
-		slog.Info("tunnel public port changed", "tunnel_id", tunnelID, "old_port", oldPort, "new_port", newPublicPort)
+		slog.Info("tunnel listener changed",
+			"tunnel_id", tunnelID,
+			"old_port", oldPort,
+			"new_port", targetPort,
+			"old_exposure", oldExposure,
+			"new_exposure", normalizedExposure,
+			"old_bind_addr", oldBindAddr,
+			"new_bind_addr", bindAddr)
 
-		go tm.acceptLoop(newPublicPort, tunnelID)
+		go tm.acceptLoop(targetPort, tunnelID)
 	}
 
 	// 通知 Agent 更新目标地址
-	targetChanged := localAddr != tunnel.LocalAddr || localPort != tunnel.LocalPort || protocol != tunnel.Protocol || portChanged
+	targetChanged := localAddr != tunnel.LocalAddr || localPort != tunnel.LocalPort || protocol != tunnel.Protocol
 	if targetChanged {
 		payloadJSON, _ := json.Marshal(common.TunnelClosePayload{TunnelID: tunnelID})
 		tunnel.Client.WriteJSON(common.Message{
@@ -301,20 +403,24 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 	tunnel.LocalAddr = localAddr
 	tunnel.LocalPort = localPort
 	tunnel.Protocol = protocol
+	tunnel.Exposure = normalizedExposure
+	tunnel.BindAddr = bindAddr
 
-	openPayload := common.TunnelOpenPayload{
-		TunnelID:  tunnelID,
-		LocalAddr: localAddr,
-		LocalPort: localPort,
-		Protocol:  protocol,
+	if targetChanged {
+		openPayload := common.TunnelOpenPayload{
+			TunnelID:  tunnelID,
+			LocalAddr: localAddr,
+			LocalPort: localPort,
+			Protocol:  protocol,
+		}
+		payloadJSON, _ := json.Marshal(openPayload)
+		tunnel.Client.WriteJSON(common.Message{
+			Type:    "tunnel_open",
+			Payload: payloadJSON,
+		})
 	}
-	payloadJSON, _ := json.Marshal(openPayload)
-	tunnel.Client.WriteJSON(common.Message{
-		Type:    "tunnel_open",
-		Payload: payloadJSON,
-	})
 
-	slog.Info("tunnel updated", "tunnel_id", tunnelID, "public_port", tunnel.PublicPort, "local_addr", localAddr, "local_port", localPort, "protocol", protocol)
+	slog.Info("tunnel updated", "tunnel_id", tunnelID, "public_port", tunnel.PublicPort, "exposure", tunnel.Exposure, "bind_addr", tunnel.BindAddr, "local_addr", localAddr, "local_port", localPort, "protocol", protocol)
 	return tunnel, nil
 }
 
@@ -361,11 +467,15 @@ func (tm *TunnelManager) RemoveExternalConn(connID string) {
 	}
 }
 
-// Listen 开始监听公网端口（创建新 listener，外部调用）
+// Listen 开始监听服务端端口（创建新 listener，外部调用）
 func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	return tm.startListener(publicPort, tunnelID)
+	tunnel, ok := tm.tunnels[tunnelID]
+	if !ok {
+		return fmt.Errorf("tunnel not found: %s", tunnelID)
+	}
+	return tm.startListener(publicPort, tunnelID, tunnel.BindAddr)
 }
 
 // AcceptOnListener 使用已分配的 listener 开始监听（避免 TOCTOU 竞态）
@@ -374,22 +484,22 @@ func (tm *TunnelManager) AcceptOnListener(publicPort int, tunnelID string, ln ne
 	tm.listeners[publicPort] = ln
 	tm.mu.Unlock()
 
-	slog.Info("tunnel listener started", "public_port", publicPort, "tunnel_id", tunnelID)
+	slog.Info("tunnel listener started", "public_port", publicPort, "tunnel_id", tunnelID, "listen_addr", ln.Addr().String())
 
 	go tm.acceptLoop(publicPort, tunnelID)
 	return nil
 }
 
 // startListener 启动监听器（不加锁，由调用方保证线程安全）
-func (tm *TunnelManager) startListener(publicPort int, tunnelID string) error {
-	addr := fmt.Sprintf(":%d", publicPort)
+func (tm *TunnelManager) startListener(publicPort int, tunnelID string, bindAddr string) error {
+	addr := listenAddrForBind(bindAddr, publicPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on port %d: %w", publicPort, err)
 	}
 
 	tm.listeners[publicPort] = listener
-	slog.Info("tunnel listener started", "public_port", publicPort, "tunnel_id", tunnelID)
+	slog.Info("tunnel listener started", "public_port", publicPort, "tunnel_id", tunnelID, "listen_addr", listener.Addr().String())
 
 	go tm.acceptLoop(publicPort, tunnelID)
 	return nil
@@ -414,9 +524,9 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 		if err != nil {
 			// 检查监听器是否已关闭
 			tm.mu.RLock()
-			_, stillOk := tm.listeners[publicPort]
+			currentListener, stillOk := tm.listeners[publicPort]
 			tm.mu.RUnlock()
-			if !stillOk {
+			if !stillOk || currentListener != listener {
 				return
 			}
 			slog.Warn("accept error", "public_port", publicPort, "error", err)

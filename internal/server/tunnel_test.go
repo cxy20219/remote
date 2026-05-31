@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +103,78 @@ func TestSetPortRange_TracksAllocatedCount(t *testing.T) {
 	status = tm.GetPortStatus()
 	if status.Allocated != 0 {
 		t.Fatalf("expected 0 allocated after release, got %d", status.Allocated)
+	}
+}
+
+func TestNormalizeTunnelExposure(t *testing.T) {
+	tests := []struct {
+		name      string
+		exposure  string
+		wantMode  string
+		wantBind  string
+		wantError bool
+	}{
+		{name: "empty defaults public", exposure: "", wantMode: TunnelExposurePublic, wantBind: TunnelBindAll},
+		{name: "public", exposure: "public", wantMode: TunnelExposurePublic, wantBind: TunnelBindAll},
+		{name: "server local", exposure: "server_local", wantMode: TunnelExposureServerLocal, wantBind: TunnelBindServerLocal},
+		{name: "reject unknown", exposure: "private", wantError: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotMode, gotBind, err := normalizeTunnelExposure(tc.exposure)
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gotMode != tc.wantMode || gotBind != tc.wantBind {
+				t.Fatalf("got %q/%q, want %q/%q", gotMode, gotBind, tc.wantMode, tc.wantBind)
+			}
+		})
+	}
+}
+
+func TestAllocatePortForExposure_ServerLocalBindsLoopback(t *testing.T) {
+	tm := NewTunnelManager(nil, 30000, 30100)
+
+	port, ln, err := tm.AllocatePortForExposure(TunnelExposureServerLocal)
+	if err != nil {
+		t.Fatalf("AllocatePortForExposure: %v", err)
+	}
+	defer tm.ReleasePort(port)
+	defer ln.Close()
+
+	if !strings.HasPrefix(ln.Addr().String(), "127.0.0.1:") {
+		t.Fatalf("server_local listener = %q, want loopback bind", ln.Addr().String())
+	}
+}
+
+func TestUpdateTunnel_EmptyExposurePreservesCurrentMode(t *testing.T) {
+	tm := NewTunnelManager(nil, 30000, 30100)
+	tm.tunnels["t1"] = &Tunnel{
+		TunnelID:   "t1",
+		ClientID:   "client-1",
+		Protocol:   "tcp",
+		PublicPort: 30000,
+		Exposure:   TunnelExposureServerLocal,
+		BindAddr:   TunnelBindServerLocal,
+		LocalAddr:  "127.0.0.1",
+		LocalPort:  22,
+		Status:     "active",
+	}
+	tm.publicPorts[30000] = "t1"
+
+	tunnel, err := tm.UpdateTunnel("t1", "127.0.0.1", 22, 0, "tcp", "")
+	if err != nil {
+		t.Fatalf("UpdateTunnel: %v", err)
+	}
+	if tunnel.Exposure != TunnelExposureServerLocal || tunnel.BindAddr != TunnelBindServerLocal {
+		t.Fatalf("exposure changed to %q/%q", tunnel.Exposure, tunnel.BindAddr)
 	}
 }
 

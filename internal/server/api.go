@@ -89,6 +89,7 @@ type TunnelRequest struct {
 	LocalAddr string `json:"local_addr"`
 	LocalPort int    `json:"local_port"`
 	Protocol  string `json:"protocol"`
+	Exposure  string `json:"exposure"`
 }
 
 type settingsUpdateRequest struct {
@@ -253,7 +254,13 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		return
 	}
 
-	publicPort, ln, err := s.tunnelManager.AllocatePort()
+	exposure, _, err := normalizeTunnelExposure(req.Exposure)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	publicPort, ln, err := s.tunnelManager.AllocatePortForExposure(exposure)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available ports"})
 		return
@@ -269,6 +276,7 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		req.LocalAddr,
 		req.LocalPort,
 		publicPort,
+		exposure,
 	); err != nil {
 		ln.Close()
 		s.tunnelManager.ReleasePort(publicPort)
@@ -301,7 +309,10 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"tunnel_id":   tunnelID,
 		"public_port": publicPort,
-		"public_addr": tunnelPublicAddr(s.advertisedTunnelHost(c.Request.Host), publicPort),
+		"public_addr": tunnelAccessAddr(s.advertisedTunnelHost(c.Request.Host), publicPort, exposure),
+		"access_addr": tunnelAccessAddr(s.advertisedTunnelHost(c.Request.Host), publicPort, exposure),
+		"exposure":    exposure,
+		"bind_addr":   ln.Addr().String(),
 		"local_addr":  req.LocalAddr,
 		"status":      "active",
 	})
@@ -330,6 +341,13 @@ func (s *Server) advertisedTunnelHost(reqHost string) string {
 
 func tunnelPublicAddr(host string, port int) string {
 	return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+}
+
+func tunnelAccessAddr(host string, port int, exposure string) string {
+	if exposure == TunnelExposureServerLocal {
+		return tunnelPublicAddr(TunnelBindServerLocal, port)
+	}
+	return tunnelPublicAddr(host, port)
 }
 
 func (s *Server) handleAPIListTunnels(c *gin.Context) {
@@ -402,6 +420,7 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 		LocalPort  int    `json:"local_port"`
 		PublicPort int    `json:"public_port"`
 		Protocol   string `json:"protocol"`
+		Exposure   string `json:"exposure"`
 	}
 
 	if !decodeStrictJSON(c, &req) {
@@ -417,7 +436,7 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 	req.LocalAddr = localAddr
 	req.Protocol = protocol
 
-	tunnel, err := s.tunnelManager.UpdateTunnel(tunnelID, req.LocalAddr, req.LocalPort, req.PublicPort, req.Protocol)
+	tunnel, err := s.tunnelManager.UpdateTunnel(tunnelID, req.LocalAddr, req.LocalPort, req.PublicPort, req.Protocol, req.Exposure)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
