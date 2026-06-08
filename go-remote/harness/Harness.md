@@ -1,5 +1,9 @@
 # GoRemote 项目开发指南
 
+> **路径约定**：本目录下的所有 markdown 提到 `cmd/`、`internal/`、`web/`、`docs/` 等 Go 路径时，**全部相对 `go-remote/` 仓库根**（即 `<repo>/go-remote/...`）解析。例如 `internal/server/tunnel.go` 实际位置是 `go-remote/internal/server/tunnel.go`。
+>
+> Rust 重构已迁到同级目录 `rust-remote/`，跨语言引用见 `rust-remote/harness/`。
+
 ## 技术栈
 
 - **语言**: Go 1.26.2

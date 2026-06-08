@@ -1,6 +1,9 @@
 # 加密隧道部署与验证直通流程
 
 > 最后验证：2026-05-12 | 适用场景：首次部署、版本升级、加密功能验证、Release 打包
+>
+> **状态**：本流程对应**旧版共享 auth.key 加密架构**。零配置架构（`harness/workflow/zero-config-deploy-verify.md`）已替代，本流程仅作历史复盘参考。
+> 原仓库根 `config/` 目录（含 `server-deploy.yaml` 等）已删除，下文脚本示例中的 `E:\AI-work\go-remote\config\...` 路径不再可用。零配置架构下部署不再需要上传配置文件。
 
 ## 概述
 
