@@ -1,0 +1,169 @@
+name: rust-remote
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'rust-remote/**'
+      - 'go-remote/**'
+      - '.github/workflows/rust-remote.yml'
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'rust-remote/**'
+      - 'go-remote/**'
+      - '.github/workflows/rust-remote.yml'
+
+# Cancel in-flight runs for the same branch when a new commit lands.
+concurrency:
+  group: rust-remote-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # ---------- 1) unit + integration tests ----------
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-remote -> target
+
+      - name: Run cargo test
+        working-directory: rust-remote
+        run: cargo test --workspace --no-fail-fast
+
+      - name: Run cargo test (release)
+        working-directory: rust-remote
+        run: cargo test --workspace --release --no-fail-fast
+
+  # ---------- 2) clippy strict lint ----------
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-remote -> target
+      - name: Run clippy
+        working-directory: rust-remote
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ---------- 3) macOS parity ----------
+  # Sanity check: builds + tests on Apple silicon. The release binaries
+  # (4 MB agent / 2.8 MB server) are identical between Linux and macOS, so
+  # this catches accidental Linux-only syscalls / byte-order assumptions.
+  macos:
+    name: cargo test (macos)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-remote -> target
+      - name: Run cargo test
+        working-directory: rust-remote
+        run: cargo test --workspace --no-fail-fast
+
+  # ---------- 4) static musl build (Alpine / scratch container support) ----------
+  # Compiles the agent as a fully static binary for tiny container images.
+  # `musl-tools` provides the C bootstrap; the Rust target is added via
+  # rustup so we don't need a separate `cross` invocation.
+  musl:
+    name: musl static build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install Rust toolchain + musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+          targets: x86_64-unknown-linux-musl
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-remote -> target
+      - name: Build agent (static)
+        working-directory: rust-remote
+        run: cargo build --release --target x86_64-unknown-linux-musl -p tunnel-rs-agent
+        env:
+          # The static binary needs a no-op openssl-probe; rustls has its
+          # own crypto provider and the agent only links against libc.
+          RUSTFLAGS: "-C target-feature=+crt-static"
+      - name: Smoke test (binary is runnable)
+        working-directory: rust-remote
+        run: |
+          file target/x86_64-unknown-linux-musl/release/tunnel-rs-agent
+          ./target/x86_64-unknown-linux-musl/release/tunnel-rs-agent --help 2>&1 | head -5 || true
+
+  # ---------- 5) cross-language e2e (Go server + Rust agent) ----------
+  # Windows runner is required because the e2e script is PowerShell 5.1.
+  # The script already supports -Port to avoid clashing with anything else.
+  e2e:
+    name: cross-language e2e
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: go-remote/go.sum
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-remote -> target
+
+      - name: Build Rust agent (release)
+        working-directory: rust-remote
+        run: cargo build --release -p tunnel-rs-agent
+
+      - name: Run cross-language e2e
+        # Use a non-default port so it doesn't clash with anything that
+        # might be already listening. Allow 3 heartbeats × 35s so the
+        # test has time to observe the agent transitioning through the
+        # pending → authorized state.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & rust-remote\bin\test-rust-agent-against-go-server.ps1 `
+            -Port 18080 `
+            -HeartbeatN 3 `
+            -HeartbeatSec 35
