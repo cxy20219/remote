@@ -1,8 +1,17 @@
 .claude/
 *.exe
+# Ignore the legacy build output `bin/` at the repo root but keep
+# `rust-remote/bin/` (the e2e PowerShell script that lives there).
 bin/
+!rust-remote/
+!rust-remote/bin/
+!rust-remote/bin/**
 dy
 test-web/
 release/
 *.crt
 *.key
+
+# Rust build outputs inside each crate
+rust-remote/target/
+rust-remote/**/target/
