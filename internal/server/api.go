@@ -678,18 +678,17 @@ func (s *Server) handleAPIListPendingDevices(c *gin.Context) {
 func (s *Server) handleAPIApproveDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 
-	device, encKeyEncrypted, serverDHPubkey, err := s.deviceMgr.ApproveDevice(deviceID)
+	device, _, _, err := s.deviceMgr.ApproveDevice(deviceID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	if conn, ok := s.deviceMgr.GetPendingConn(deviceID); ok {
-		okPayload := common.RegisterOKPayload{
-			ClientID:        deviceID,
-			EncKeyEncrypted: encKeyEncrypted,
-			ServerDHPubkey:  serverDHPubkey,
-			EncEnabled:      device.EncEnabled,
+		okPayload, err := s.handler.registerOKPayloadForDevice(device)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
 		}
 		payloadJSON, _ := json.Marshal(okPayload)
 		if conn.Client != nil {
@@ -736,6 +735,10 @@ func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 
 func (s *Server) handleAPIDeleteDevice(c *gin.Context) {
 	deviceID := c.Param("id")
+
+	if s.tunnelManager != nil {
+		s.tunnelManager.CloseTunnelsByClient(deviceID)
+	}
 
 	if client, ok := s.clients.Get(deviceID); ok {
 		delPayload := common.DeviceDeletedPayload{Reason: "device deleted by admin"}
@@ -786,6 +789,27 @@ func (s *Server) handleAPIUpdateDeviceConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if client, ok := s.clients.Get(deviceID); ok && s.handler != nil {
+		okPayload, err := s.handler.registerOKPayloadForDevice(device)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		updatePayload := common.RegisterUpdatePayload{
+			Type:             "enc_config_update",
+			ClientID:         okPayload.ClientID,
+			EncKeyEncrypted:  okPayload.EncKeyEncrypted,
+			ServerDHPubkey:   okPayload.ServerDHPubkey,
+			EncEnabled:       okPayload.EncEnabled,
+			ServerSignPubkey: okPayload.ServerSignPubkey,
+			ServerSignature:  okPayload.ServerSignature,
+		}
+		payloadJSON, _ := json.Marshal(updatePayload)
+		if err := client.WriteJSON(common.Message{Type: "register_update", Payload: payloadJSON}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"device_id":    device.ID,
@@ -798,18 +822,26 @@ func (s *Server) handleAPIUpdateDeviceConfig(c *gin.Context) {
 func (s *Server) handleAPIRegenKey(c *gin.Context) {
 	deviceID := c.Param("id")
 
-	device, encKeyEncrypted, serverDHPubkey, err := s.deviceMgr.RegenerateEncKey(deviceID)
+	device, _, _, err := s.deviceMgr.RegenerateEncKey(deviceID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	if client, ok := s.clients.Get(deviceID); ok {
+		okPayload, err := s.handler.registerOKPayloadForDevice(device)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		updatePayload := common.RegisterUpdatePayload{
-			Type:            "enc_key_update",
-			EncKeyEncrypted: encKeyEncrypted,
-			ServerDHPubkey:  serverDHPubkey,
-			EncEnabled:      device.EncEnabled,
+			Type:             "enc_key_update",
+			ClientID:         okPayload.ClientID,
+			EncKeyEncrypted:  okPayload.EncKeyEncrypted,
+			ServerDHPubkey:   okPayload.ServerDHPubkey,
+			EncEnabled:       okPayload.EncEnabled,
+			ServerSignPubkey: okPayload.ServerSignPubkey,
+			ServerSignature:  okPayload.ServerSignature,
 		}
 		payloadJSON, _ := json.Marshal(updatePayload)
 		client.WriteJSON(common.Message{

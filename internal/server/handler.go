@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -136,6 +137,9 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 		return h.sendRegisterFail(client, err.Error())
 	}
 
+	if h.server.tunnelManager != nil {
+		h.server.tunnelManager.CloseTunnelsByClient(device.ID)
+	}
 	h.server.clients.Add(client)
 	h.server.deviceMgr.RemovePendingConn(client.ClientID)
 
@@ -190,12 +194,34 @@ func (h *Handler) registerOKPayloadForDevice(device *DeviceState) (common.Regist
 		serverDHPubkey = common.EncodeBytes(serverDHPub[:])
 	}
 
-	return common.RegisterOKPayload{
+	payload := common.RegisterOKPayload{
 		ClientID:        device.ID,
 		EncKeyEncrypted: encKeyEncrypted,
 		ServerDHPubkey:  serverDHPubkey,
 		EncEnabled:      device.EncEnabled,
-	}, nil
+	}
+	if err := h.signRegisterOKPayload(&payload); err != nil {
+		return common.RegisterOKPayload{}, err
+	}
+	return payload, nil
+}
+
+func (h *Handler) signRegisterOKPayload(payload *common.RegisterOKPayload) error {
+	if h == nil || h.server == nil || h.server.stateStore == nil || payload == nil {
+		return nil
+	}
+	priv := h.server.stateStore.GetServerSignPrivkey()
+	pub := h.server.stateStore.GetServerSignPubkey()
+	if len(priv) != ed25519.PrivateKeySize || len(pub) != ed25519.PublicKeySize {
+		return nil
+	}
+	signature, err := common.SignServerKeyPayload(priv, payload.ClientID, payload.EncEnabled, payload.ServerDHPubkey, payload.EncKeyEncrypted)
+	if err != nil {
+		return err
+	}
+	payload.ServerSignPubkey = common.EncodePublicKey(pub)
+	payload.ServerSignature = common.EncodeBytes(signature)
+	return nil
 }
 
 func (h *Handler) handlePing(client *Client, msg *common.Message) error {
@@ -317,16 +343,16 @@ func (h *Handler) handleTunnelDataBinary(client *Client, msg *common.Message) er
 		return fmt.Errorf("missing binary tunnel payload")
 	}
 
-	if payload.IsEOF && len(payload.Data) == 0 {
-		return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, nil, true)
-	}
-
 	tunnel, ok := h.server.tunnelManager.GetTunnel(payload.TunnelID)
 	if !ok || tunnel.ClientID != client.ClientID {
 		return fmt.Errorf("tunnel not found or not owned by client")
 	}
 
-	data, err := h.server.cryptoMgr.DecryptBytes(client.ClientID, payload.Data)
+	if payload.IsEOF && len(payload.Data) == 0 {
+		return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, nil, true)
+	}
+
+	data, err := h.server.decryptTunnelBytes(client.ClientID, payload.Data)
 	if err != nil {
 		return fmt.Errorf("decrypt failed: %w", err)
 	}
@@ -372,6 +398,9 @@ func (h *Handler) sendRegisterOK(client *Client, deviceID, encKeyEncrypted, serv
 		EncKeyEncrypted: encKeyEncrypted,
 		ServerDHPubkey:  serverDHPubkey,
 		EncEnabled:      encEnabled,
+	}
+	if err := h.signRegisterOKPayload(&payload); err != nil {
+		return err
 	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {

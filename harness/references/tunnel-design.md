@@ -89,7 +89,7 @@ type TunnelErrorPayload struct {
 | 6 | 4 | data_len | big endian uint32 |
 | 10 | N | tunnel_id | UTF-8 字符串 |
 | 10+N | M | conn_id | UTF-8 字符串 |
-| ... | K | data | AES-GCM nonce+ciphertext 原始字节 |
+| ... | K | data | `enc_enabled=true` 时为 AES-GCM nonce+ciphertext 原始字节；`enc_enabled=false` 时为明文原始字节 |
 
 `flags` 当前只允许 bit0。收到未知 bit 必须拒绝该帧，避免畸形帧或未来协议扩展被旧逻辑静默接受。解析长度时必须按 tunnel_id、conn_id、data 三段逐步扣减剩余字节，不用 `10 + N + M + K` 直接相加作为唯一判断，避免畸形长度在不同架构上触发整数边界问题。
 
@@ -98,7 +98,26 @@ type TunnelErrorPayload struct {
 - TextMessage → `common.Message` JSON 控制消息，使用严格 JSON 解码，拒绝未知字段和尾随多个 JSON 文档。
 - BinaryMessage → `DecodeBinaryTunnelDataFrame`，包装为内部消息类型 `tunnel_data_bin`。
 
-旧 `tunnel_data` JSON/base64 路径已移除；旧 Agent/Server 必须升级后才能互通。
+旧 `tunnel_data` JSON/base64 路径已移除；旧 Agent/Server 必须升级后才能互通。`EncEnabled` 是设备级运行时开关，关闭后服务端和 Agent 都必须移除该设备运行时密钥，并在隧道数据路径跳过加解密。
+
+### 2.4 注册与密钥更新签名
+
+`register_ok` 和 `register_update` 会携带服务端签名字段，保护 ECDH 返回的服务端 DH 公钥和加密后的设备密钥不被中间人替换：
+
+```go
+type RegisterOKPayload struct {
+    ClientID         string
+    EncKeyEncrypted  string
+    ServerDHPubkey   string
+    EncEnabled       bool
+    ServerSignPubkey string
+    ServerSignature  string
+}
+```
+
+签名语义为 `client_id + enc_enabled + server_dh_pubkey + enc_key_encrypted`。Agent 首次看到 `server_sign_pubkey` 时执行 TOFU pin；已 pin 后的 `register_ok` / `register_update` 缺签名、签名不匹配或服务端签名公钥变化都应拒绝。为兼容旧服务端，首次未 pin 且响应无签名时允许通过，但不会建立 pin。
+
+reauth 仍使用设备 ed25519 签名 `client_id:timestamp`，服务端接受秒/毫秒/微秒/纳秒时间戳，并缓存 5 分钟窗口内已见签名，防止同一签名重放。
 
 ### 2.3 数据流说明
 
@@ -224,6 +243,8 @@ func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
                          ▼
                     Server 收到 tunnel_data_bin → 解密后写入外部 TCP 连接
 ```
+
+服务端处理 Agent 返回数据时必须同时校验 `tunnel_id` 归属和 `conn_id` 归属：`ExternalConn.TunnelID` 必须等于当前帧的 `tunnel_id`，且 EOF 帧也不能跳过该检查。设备重连、pending 转 authorized、WebSocket readLoop 退出、删除设备时必须关闭该 client 的所有隧道和 listener，避免旧公网端口泄漏。
 
 ### 3.6 端口状态查询
 
@@ -405,9 +426,6 @@ tunnel:
   port_range_end: 20000     # 分配的公网端口结束
   max_tunnels_per_client: 10 # 每个客户端最大隧道数
 
-auth:
-  key: "your-secret-key"
-
 heartbeat:
   interval: 30
   timeout: 90
@@ -427,9 +445,6 @@ tunnel:
   #     protocol: tcp
   #   - local_port: 80
   #     protocol: tcp
-
-auth:
-  key: "your-secret-key"
 
 heartbeat:
   interval: 30

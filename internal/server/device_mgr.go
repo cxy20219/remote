@@ -24,6 +24,7 @@ type DeviceManager struct {
 	store        *StateStore
 	pendingConns map[string]*PendingConnInfo
 	cryptoMgr    *common.CryptoManager
+	seenReauth   map[string]int64
 }
 
 func NewDeviceManager(store *StateStore, cryptoMgr *common.CryptoManager) *DeviceManager {
@@ -31,12 +32,13 @@ func NewDeviceManager(store *StateStore, cryptoMgr *common.CryptoManager) *Devic
 		store:        store,
 		pendingConns: make(map[string]*PendingConnInfo),
 		cryptoMgr:    cryptoMgr,
+		seenReauth:   make(map[string]int64),
 	}
 
 	devices := store.GetAllDevices()
 	for i := range devices {
 		d := devices[i]
-		if d.Status == "authorized" && d.EncKey != "" {
+		if d.Status == "authorized" && d.EncEnabled && d.EncKey != "" {
 			key, err := hex.DecodeString(d.EncKey)
 			if err != nil {
 				slog.Warn("failed to decode enc_key for device", "device_id", d.ID, "error", err)
@@ -154,6 +156,18 @@ func (dm *DeviceManager) ReauthClient(clientID, deviceSignPubkey string, timesta
 	if !common.IsTimestampValid(timestamp, 5*time.Minute) {
 		return false, nil, fmt.Errorf("timestamp expired")
 	}
+
+	cacheKey := clientID + ":" + signature
+	if _, replayed := dm.seenReauth[cacheKey]; replayed {
+		return false, nil, fmt.Errorf("reauth signature replayed")
+	}
+	cutoff := time.Now().Add(-5 * time.Minute).Unix()
+	for key, seenAt := range dm.seenReauth {
+		if seenAt < cutoff {
+			delete(dm.seenReauth, key)
+		}
+	}
+	dm.seenReauth[cacheKey] = time.Now().Unix()
 
 	return true, device, nil
 }
@@ -309,9 +323,26 @@ func (dm *DeviceManager) UpdateDeviceConfig(deviceID, name string, encEnabled bo
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
+	device := dm.store.GetDeviceByID(deviceID)
+	if device == nil {
+		return nil, fmt.Errorf("device not found: %s", deviceID)
+	}
+
+	var generatedKey []byte
+	if encEnabled && device.EncKey == "" {
+		key, err := common.GenerateEncKey()
+		if err != nil {
+			return nil, fmt.Errorf("generate enc_key: %w", err)
+		}
+		generatedKey = key
+	}
+
 	updated := dm.store.UpdateDevice(deviceID, func(d *DeviceState) {
 		if name != "" {
 			d.Name = name
+		}
+		if generatedKey != nil {
+			d.EncKey = hex.EncodeToString(generatedKey)
 		}
 		d.EncEnabled = encEnabled
 		if ipWhitelist != nil {
@@ -323,7 +354,20 @@ func (dm *DeviceManager) UpdateDeviceConfig(deviceID, name string, encEnabled bo
 		return nil, fmt.Errorf("device not found: %s", deviceID)
 	}
 
-	return dm.store.GetDeviceByID(deviceID), nil
+	device = dm.store.GetDeviceByID(deviceID)
+	if device != nil && device.EncEnabled {
+		key, err := hex.DecodeString(device.EncKey)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stored enc_key: %w", err)
+		}
+		if err := dm.cryptoMgr.SetKey(deviceID, key); err != nil {
+			return nil, err
+		}
+	} else {
+		dm.cryptoMgr.RemoveKey(deviceID)
+	}
+
+	return device, nil
 }
 
 func (dm *DeviceManager) GetAuthorizedDevices() []DeviceState {

@@ -18,10 +18,12 @@ func TestProcessRegisterOKSavesConfiguredIdentityDir(t *testing.T) {
 	}
 
 	ag := NewAgent(cfg, identity)
-	ag.processRegisterOK(&common.RegisterOKPayload{
+	if err := ag.processRegisterOK(&common.RegisterOKPayload{
 		ClientID:   "client-test",
 		EncEnabled: false,
-	})
+	}); err != nil {
+		t.Fatalf("processRegisterOK: %v", err)
+	}
 
 	reloaded, err := LoadIdentity(dir)
 	if err != nil {

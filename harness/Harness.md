@@ -128,11 +128,11 @@ go vet ./internal/...
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 隧道数据加密 | `common/crypto.go` | AES-256-GCM，每设备密钥，ECDH 安全传输 |
+| 隧道数据加密 | `common/crypto.go` | AES-256-GCM，每设备密钥；设备 `enc_enabled=false` 时数据帧按明文透传，不应残留运行时密钥 |
 | 隧道数据帧 | `common/message.go` / `server/tunnel.go` / `agent/tunnel.go` | WebSocket Binary frame 传输 nonce+ciphertext；仅允许已定义 flags，并分段校验 tunnel_id/conn_id/data 长度；旧 JSON/base64 `tunnel_data` 路径已移除 |
 | WS 控制消息 | `common/message.go` / `server/server.go` / `agent/connector.go` | TextMessage 使用严格 JSON 解码，拒绝未知字段和尾随多个 JSON 文档 |
-| 设备身份认证 | `common/identity.go` | ed25519 签名 `client_id:timestamp`，5 分钟窗口防重放 |
-| X25519 密钥交换 | `common/identity.go` / `server/device_mgr.go` | 审批时 ECDH + HKDF-SHA256 派生密钥，加密传输 enc_key；设备 DH 公钥必须是 32 字节 hex |
+| 设备身份认证 | `common/identity.go` | ed25519 签名 `client_id:timestamp`，支持秒/毫秒/微秒/纳秒时间戳，5 分钟窗口 + reauth 签名缓存防重放 |
+| X25519 密钥交换 | `common/identity.go` / `server/device_mgr.go` / `server/handler.go` | 审批、重连、`register_update` 时 ECDH + HKDF-SHA256 加密传输 enc_key；服务端签名 `client_id+enc_enabled+server_dh_pubkey+enc_key_encrypted`，Agent 首次 TOFU pin 后必须验签 |
 | 审批制注册 | `server/device_mgr.go` | 新设备需管理员批准才能接入，pending → authorized |
 | 密钥轮换 | `server/device_mgr.go` | Web UI 一键重新生成密钥，Agent 通过 `register_update` 自动接收 |
 | 管理员会话 | `server/admin_auth.go` | 256-bit 随机 token，HttpOnly Cookie，24 小时过期，最多保留 64 个会话并清理过期会话 |
@@ -229,6 +229,8 @@ go vet ./internal/...
 | 大文件下载慢 | 先做公网服务端直连下载和内网 SSH 直连对照；若公网直连也慢，瓶颈不在隧道协议 |
 | pending 超时断开 | 新版已通过 pending heartbeat 修复；若复现，多半是旧二进制或未知旧 Agent 持续重连 |
 | SSH 隧道握手卡死且 Agent 报 `encryption key not found` | 检查 reauth 降级注册路径是否携带/刷新 `DeviceDHPubkey`，坏授权设备需删除后重新审批 |
+| 关闭设备加密后仍尝试解密 | 检查 Agent identity、服务端 `CryptoManager` 和 `register_update` 是否同步清 key；`enc_enabled=false` 的隧道数据应明文透传 |
+| 重连或删除设备后旧公网端口仍可连接 | 检查 `CloseTunnelsByClient` 是否在 reauth、pending 转 authorized、readLoop 退出、删除设备路径调用 |
 
 ## 测试注意
 

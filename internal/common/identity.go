@@ -127,11 +127,38 @@ func VerifyTimestamp(pubKey ed25519.PublicKey, clientID string, timestamp int64,
 
 func IsTimestampValid(timestamp int64, maxDrift time.Duration) bool {
 	now := time.Now().Unix()
-	diff := now - timestamp
+	diff := now - timestampToUnixSeconds(timestamp)
 	if diff < 0 {
 		diff = -diff
 	}
 	return diff <= int64(maxDrift.Seconds())
+}
+
+func timestampToUnixSeconds(timestamp int64) int64 {
+	switch {
+	case timestamp > 1_000_000_000_000_000_00:
+		return timestamp / 1_000_000_000
+	case timestamp > 1_000_000_000_000_00:
+		return timestamp / 1_000_000
+	case timestamp > 1_000_000_000_000:
+		return timestamp / 1_000
+	default:
+		return timestamp
+	}
+}
+
+func SignServerKeyPayload(privKey ed25519.PrivateKey, clientID string, encEnabled bool, serverDHPubkey, encKeyEncrypted string) ([]byte, error) {
+	msg := serverKeyPayloadMessage(clientID, encEnabled, serverDHPubkey, encKeyEncrypted)
+	return ed25519.Sign(privKey, []byte(msg)), nil
+}
+
+func VerifyServerKeyPayload(pubKey ed25519.PublicKey, clientID string, encEnabled bool, serverDHPubkey, encKeyEncrypted string, signature []byte) bool {
+	msg := serverKeyPayloadMessage(clientID, encEnabled, serverDHPubkey, encKeyEncrypted)
+	return ed25519.Verify(pubKey, []byte(msg), signature)
+}
+
+func serverKeyPayloadMessage(clientID string, encEnabled bool, serverDHPubkey, encKeyEncrypted string) string {
+	return fmt.Sprintf("%s:%t:%s:%s", clientID, encEnabled, serverDHPubkey, encKeyEncrypted)
 }
 
 func EncodePrivateKey(key ed25519.PrivateKey) string {
@@ -142,6 +169,9 @@ func DecodePrivateKey(hexStr string) (ed25519.PrivateKey, error) {
 	b, err := hex.DecodeString(hexStr)
 	if err != nil {
 		return nil, err
+	}
+	if len(b) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid private key size: %d", len(b))
 	}
 	return ed25519.PrivateKey(b), nil
 }

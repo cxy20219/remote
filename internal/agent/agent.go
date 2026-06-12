@@ -61,7 +61,7 @@ func NewAgent(config *Config, identity *AgentIdentity) *Agent {
 	agent.tunnelManager.agent = agent
 	agent.handler = NewHandler(agent)
 
-	if identity != nil && identity.EncKey != "" {
+	if identity != nil && identity.EncEnabled && identity.EncKey != "" {
 		encKeyBytes, err := common.DecodeBytes(identity.EncKey)
 		if err != nil {
 			slog.Error("failed to decode enc_key from identity", "error", err)
@@ -137,7 +137,7 @@ func (a *Agent) connect() error {
 
 	identity := a.identity
 	if identity != nil && identity.ClientID != "" {
-		timestamp := time.Now().Unix()
+		timestamp := time.Now().UnixNano()
 		if err := a.connector.RegisterReauth(identity.ClientID, timestamp, a.hostname, a.os); err != nil {
 			a.connector.Close()
 			return err
@@ -165,8 +165,11 @@ func (a *Agent) connect() error {
 				a.connector.Close()
 				return err
 			}
+			if err := a.processRegisterOK(&payload); err != nil {
+				a.connector.Close()
+				return err
+			}
 			a.SetClientID(payload.ClientID)
-			a.processRegisterOK(&payload)
 			slog.Info("registered successfully", "client_id", payload.ClientID)
 			return nil
 
@@ -212,15 +215,25 @@ func (a *Agent) connect() error {
 	}
 }
 
-func (a *Agent) processRegisterOK(payload *common.RegisterOKPayload) {
+func (a *Agent) processRegisterOK(payload *common.RegisterOKPayload) error {
 	identity := a.identity
 	if identity == nil {
-		return
+		return nil
+	}
+	if err := a.verifyServerKeySignature(payload.ClientID, payload.EncEnabled, payload.ServerDHPubkey, payload.EncKeyEncrypted, payload.ServerSignPubkey, payload.ServerSignature); err != nil {
+		return err
+	}
+	if identity.ClientID != "" && identity.ClientID != payload.ClientID {
+		return fmt.Errorf("register_ok client_id mismatch: got %q, expected %q", payload.ClientID, identity.ClientID)
 	}
 
 	identity.ClientID = payload.ClientID
 
-	if payload.EncKeyEncrypted != "" && payload.ServerDHPubkey != "" && identity.DeviceDHPrivkey != "" {
+	if !payload.EncEnabled {
+		identity.EncEnabled = false
+		identity.EncKey = ""
+		a.cryptoMgr.RemoveKey(payload.ClientID)
+	} else if payload.EncKeyEncrypted != "" && payload.ServerDHPubkey != "" && identity.DeviceDHPrivkey != "" {
 		encKey, err := identity.DecryptEncKey(payload.EncKeyEncrypted, payload.ServerDHPubkey)
 		if err != nil {
 			slog.Error("failed to decrypt enc_key", "error", err)
@@ -242,6 +255,44 @@ func (a *Agent) processRegisterOK(payload *common.RegisterOKPayload) {
 	if err := identity.Save(a.config.IdentityDir); err != nil {
 		slog.Error("failed to save identity", "error", err)
 	}
+	return nil
+}
+
+func (a *Agent) verifyServerKeySignature(clientID string, encEnabled bool, serverDHPubkey, encKeyEncrypted, serverSignPubkey, serverSignature string) error {
+	identity := a.identity
+	if identity == nil {
+		return nil
+	}
+
+	if serverSignPubkey == "" || serverSignature == "" {
+		if identity.ServerSignPubkey != "" {
+			return fmt.Errorf("missing server signature")
+		}
+		return nil
+	}
+	if clientID == "" {
+		return fmt.Errorf("missing client_id in signed server key payload")
+	}
+	if identity.ServerSignPubkey != "" && identity.ServerSignPubkey != serverSignPubkey {
+		return fmt.Errorf("server sign key changed")
+	}
+
+	pub, err := common.DecodePublicKey(serverSignPubkey)
+	if err != nil {
+		return fmt.Errorf("decode server sign pubkey: %w", err)
+	}
+	signature, err := common.DecodeBytes(serverSignature)
+	if err != nil {
+		return fmt.Errorf("decode server signature: %w", err)
+	}
+	if !common.VerifyServerKeyPayload(pub, clientID, encEnabled, serverDHPubkey, encKeyEncrypted, signature) {
+		return fmt.Errorf("invalid server signature")
+	}
+
+	if identity.ServerSignPubkey == "" {
+		identity.ServerSignPubkey = serverSignPubkey
+	}
+	return nil
 }
 
 func (a *Agent) handleConnection() error {
@@ -290,8 +341,10 @@ func (a *Agent) handlePending() error {
 			if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
 				return err
 			}
+			if err := a.processRegisterOK(&payload); err != nil {
+				return err
+			}
 			a.SetClientID(payload.ClientID)
-			a.processRegisterOK(&payload)
 			a.setPendingApproval(false)
 			slog.Info("approved, entering work state", "client_id", payload.ClientID)
 			if err := a.connector.SendPing(); err != nil {
@@ -376,4 +429,25 @@ func (a *Agent) GetClientID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.clientID
+}
+
+func (a *Agent) isEncryptionEnabled() bool {
+	if a == nil || a.identity == nil {
+		return true
+	}
+	return a.identity.EncEnabled
+}
+
+func (a *Agent) encryptTunnelBytes(data []byte) ([]byte, error) {
+	if !a.isEncryptionEnabled() {
+		return data, nil
+	}
+	return a.cryptoMgr.EncryptBytes(a.GetClientID(), data)
+}
+
+func (a *Agent) decryptTunnelBytes(data []byte) ([]byte, error) {
+	if !a.isEncryptionEnabled() {
+		return data, nil
+	}
+	return a.cryptoMgr.DecryptBytes(a.GetClientID(), data)
 }

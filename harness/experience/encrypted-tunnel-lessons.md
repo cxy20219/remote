@@ -263,6 +263,44 @@ func (tm *TunnelManager) startListener(port int, id string) error {
 }
 ```
 
+## 12. 设备级加密开关不是“只改 UI 状态”
+
+**现象**：Web UI 关闭某设备的“隧道数据加密”后，Agent/Server 仍可能沿用内存中的 `enc_key`，隧道数据继续尝试 AES-GCM 解密，表现为 `ciphertext too short`、`encryption key not found` 或明文测试失败。
+
+**根因**：`enc_enabled` 是协议数据路径开关，不只是展示字段。若只更新持久化设备状态，不同步清理 `CryptoManager` 和 Agent identity，运行时仍会按旧密钥处理数据。
+
+**做法**：
+- 服务端 `UpdateDeviceConfig` 关闭加密时清空设备 `EncKey` 并 `RemoveKey(clientID)`；重新启用时生成新密钥并通过 `register_update` 下发。
+- Agent 收到 `register_ok` / `register_update` 且 `enc_enabled=false` 时清空本地 `EncKey`，并从运行时 `CryptoManager` 移除该设备密钥。
+- 隧道发送/接收统一走 `encryptTunnelBytes` / `decryptTunnelBytes`，由 `EncEnabled` 决定明文透传还是 AES-GCM。
+
+**验证**：补 `AgentTunnelBytesAllowPlaintextWhenEncryptionDisabled`、服务端明文路径和 `NewDeviceManagerDoesNotLoadDisabledEncryptionKey` 类测试；本地门禁跑 `go test ./...` 与 `go vet ./internal/...`。
+
+## 13. 隧道归属与生命周期必须成组校验
+
+**现象**：跨隧道复用 `conn_id` 或 Agent 重连后旧 listener 未清理，会造成数据写入错误外部连接、旧公网端口继续暴露或删除设备后端口仍可连。
+
+**根因**：只校验 `conn_id` 存在不足以证明它属于当前 `tunnel_id`；EOF 帧也可能绕过归属检查。客户端重连和删除设备是设备级生命周期切换，必须联动关闭该设备全部隧道。
+
+**做法**：
+- `HandleAgentData` 要求 `ExternalConn.TunnelID == tunnelID`，EOF 帧同样先校验归属。
+- `CloseTunnelsByClient(clientID)` 用于 reauth、pending 转 authorized、WebSocket readLoop 退出和删除设备路径。
+- `CreateTunnel` 的 `max_tunnels_per_client` 从运行时 `StateStore.GetSettings()` 读取，避免 API 更新后隧道管理器继续用旧值。
+
+**验证**：覆盖跨 tunnel conn 拒绝、匹配 EOF 删除、只关闭目标 client 隧道、运行时 max tunnel 更新即时生效。
+
+## 14. `register_ok` / `register_update` 需要服务端签名闭环
+
+**现象**：只做设备 reauth 签名时，服务端下发的 `server_dh_pubkey` 与 `enc_key_encrypted` 缺少完整性保护；密钥轮换或配置更新路径如果手写 payload，容易漏签。
+
+**做法**：
+- 服务端统一通过 `registerOKPayloadForDevice` 构造 `RegisterOKPayload`，并签名 `client_id + enc_enabled + server_dh_pubkey + enc_key_encrypted`。
+- 审批、reauth、设备配置更新、密钥再生成都复用同一签名生成逻辑；不要在 API handler 手写未签名 payload。
+- Agent 首次 TOFU 保存 `server_sign_pubkey`；已 pin 后缺签名、签名错误、服务端签名公钥变化或 `client_id` 不匹配都拒绝。
+- reauth timestamp 用 `UnixNano()` 降低同秒签名重复概率；服务端仍兼容秒/毫秒/微秒/纳秒，并缓存窗口内已见签名防重放。
+
+**验证**：覆盖 TOFU pin、篡改 payload 拒绝、已 pin 后无签名 `register_update` 拒绝、reauth 重放拒绝、纳秒 timestamp 有效。
+
 在 `UpdateTunnel` 中直接调用 `tm.startListener()`（已持有锁）。
 
 **经验**：

@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"goremote/internal/common"
+)
 
 func TestLocalServiceAddr(t *testing.T) {
 	tests := []struct {
@@ -21,5 +25,29 @@ func TestLocalServiceAddr(t *testing.T) {
 				t.Fatalf("localServiceAddr(%q, %d) = %q, want %q", tc.host, tc.port, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAgentTunnelBytesAllowPlaintextWhenEncryptionDisabled(t *testing.T) {
+	a := &Agent{
+		clientID:  "client-plain",
+		identity:  &AgentIdentity{ClientID: "client-plain", EncEnabled: false},
+		cryptoMgr: common.NewCryptoManager(),
+	}
+
+	data := []byte("plain")
+	encrypted, err := a.encryptTunnelBytes(data)
+	if err != nil {
+		t.Fatalf("encryptTunnelBytes: %v", err)
+	}
+	if string(encrypted) != string(data) {
+		t.Fatalf("disabled encryption should pass plaintext through, got %q", encrypted)
+	}
+	decrypted, err := a.decryptTunnelBytes(encrypted)
+	if err != nil {
+		t.Fatalf("decryptTunnelBytes: %v", err)
+	}
+	if string(decrypted) != string(data) {
+		t.Fatalf("disabled encryption should decode plaintext, got %q", decrypted)
 	}
 }

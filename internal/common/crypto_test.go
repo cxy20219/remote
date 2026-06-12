@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+	"time"
 )
 
 func TestNewCryptoContext_ValidKey(t *testing.T) {
@@ -170,6 +171,18 @@ func TestDecodeStrictJSONRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
 
 	if err := DecodeStrictJSON([]byte(`{"name":"agent"}{"name":"again"}`), &p); err == nil {
 		t.Fatal("expected trailing JSON value to be rejected")
+	}
+}
+
+func TestDecodePrivateKeyRejectsInvalidSize(t *testing.T) {
+	if _, err := DecodePrivateKey("abcd"); err == nil {
+		t.Fatal("expected invalid private key size to be rejected")
+	}
+}
+
+func TestIsTimestampValidAcceptsUnixNano(t *testing.T) {
+	if !IsTimestampValid(time.Now().UnixNano(), 5*time.Minute) {
+		t.Fatal("expected current UnixNano timestamp to be valid")
 	}
 }
 

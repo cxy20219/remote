@@ -157,16 +157,67 @@ func (s *StateStore) Load() error {
 		return err
 	}
 
-	if state.Settings.PortRangeStart == 0 {
-		state.Settings.PortRangeStart = 10000
-	}
-	if state.Settings.PortRangeEnd == 0 {
-		state.Settings.PortRangeEnd = 20000
-	}
+	state.Settings = mergeMissingSettingsDefaults(data, state.Settings)
 
 	s.state = &state
 	slog.Info("server state loaded", "path", s.path, "devices", len(state.Devices))
 	return nil
+}
+
+func mergeMissingSettingsDefaults(data []byte, loaded ServerSettings) ServerSettings {
+	settings := defaultSettings()
+
+	var raw struct {
+		Settings map[string]json.RawMessage `json:"settings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil || raw.Settings == nil {
+		return settings
+	}
+
+	if _, ok := raw.Settings["port_range_start"]; ok {
+		settings.PortRangeStart = loaded.PortRangeStart
+	}
+	if _, ok := raw.Settings["port_range_end"]; ok {
+		settings.PortRangeEnd = loaded.PortRangeEnd
+	}
+	if settings.PortRangeStart == 0 {
+		settings.PortRangeStart = 10000
+	}
+	if settings.PortRangeEnd == 0 {
+		settings.PortRangeEnd = 20000
+	}
+	if _, ok := raw.Settings["max_tunnels_per_client"]; ok {
+		settings.MaxTunnelsPerClient = loaded.MaxTunnelsPerClient
+	}
+	if _, ok := raw.Settings["default_local_addr"]; ok {
+		settings.DefaultLocalAddr = loaded.DefaultLocalAddr
+	}
+	if _, ok := raw.Settings["public_host"]; ok {
+		settings.PublicHost = loaded.PublicHost
+	}
+	if _, ok := raw.Settings["max_conn_per_min"]; ok {
+		settings.MaxConnPerMin = loaded.MaxConnPerMin
+	}
+	if _, ok := raw.Settings["login_rate_limit"]; ok {
+		settings.LoginRateLimit = loaded.LoginRateLimit
+	}
+	if _, ok := raw.Settings["blacklist_threshold"]; ok {
+		settings.BlacklistThreshold = loaded.BlacklistThreshold
+	}
+	if _, ok := raw.Settings["global_whitelist"]; ok {
+		settings.GlobalWhitelist = append([]string(nil), loaded.GlobalWhitelist...)
+	}
+	if _, ok := raw.Settings["max_body_size_mb"]; ok {
+		settings.MaxBodySizeMB = loaded.MaxBodySizeMB
+	}
+	if _, ok := raw.Settings["heartbeat_interval"]; ok {
+		settings.HeartbeatInterval = loaded.HeartbeatInterval
+	}
+	if _, ok := raw.Settings["heartbeat_timeout"]; ok {
+		settings.HeartbeatTimeout = loaded.HeartbeatTimeout
+	}
+
+	return settings
 }
 
 func (s *StateStore) initNew() error {

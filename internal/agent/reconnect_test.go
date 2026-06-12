@@ -50,3 +50,13 @@ func TestReconnectNextBackoffHonorsMaxInterval(t *testing.T) {
 		t.Fatalf("expected later backoff to remain capped at 2s, got %v", got)
 	}
 }
+
+func TestReconnectNextBackoffSaturatesForLongRetrySeries(t *testing.T) {
+	r := NewReconnect(1, 0, 2)
+
+	for i := 0; i < 200; i++ {
+		if got := r.nextBackoff(); got < 0 || got > 2*time.Second {
+			t.Fatalf("backoff should remain saturated, attempt %d got %v", i, got)
+		}
+	}
+}

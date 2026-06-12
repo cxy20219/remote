@@ -161,15 +161,15 @@ func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client,
 	}
 
 	// 检查客户端隧道数量限制
-	if tm.server.config.Tunnel.MaxTunnelsPerClient > 0 {
+	if maxTunnels := tm.maxTunnelsPerClient(); maxTunnels > 0 {
 		count := 0
 		for _, t := range tm.tunnels {
 			if t.ClientID == clientID && t.Status == "active" {
 				count++
 			}
 		}
-		if count >= tm.server.config.Tunnel.MaxTunnelsPerClient {
-			return fmt.Errorf("max tunnels per client reached: %d", tm.server.config.Tunnel.MaxTunnelsPerClient)
+		if count >= maxTunnels {
+			return fmt.Errorf("max tunnels per client reached: %d", maxTunnels)
 		}
 	}
 
@@ -279,6 +279,36 @@ func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 
 	slog.Info("tunnel closed", "tunnel_id", tunnelID)
 	return nil
+}
+
+func (tm *TunnelManager) maxTunnelsPerClient() int {
+	if tm.server == nil {
+		return 0
+	}
+	if tm.server.stateStore != nil {
+		return tm.server.stateStore.GetSettings().MaxTunnelsPerClient
+	}
+	if tm.server.config != nil {
+		return tm.server.config.Tunnel.MaxTunnelsPerClient
+	}
+	return 0
+}
+
+func (tm *TunnelManager) CloseTunnelsByClient(clientID string) {
+	tm.mu.RLock()
+	tunnelIDs := make([]string, 0)
+	for _, tunnel := range tm.tunnels {
+		if tunnel.ClientID == clientID {
+			tunnelIDs = append(tunnelIDs, tunnel.TunnelID)
+		}
+	}
+	tm.mu.RUnlock()
+
+	for _, tunnelID := range tunnelIDs {
+		if err := tm.CloseTunnel(tunnelID); err != nil {
+			slog.Warn("failed to close tunnel for client", "client_id", clientID, "tunnel_id", tunnelID, "error", err)
+		}
+	}
 }
 
 func (tm *TunnelManager) CloseAll() {
@@ -604,7 +634,7 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extCo
 			extConn.SetReadDeadline(time.Now().Add(readDeadline))
 		}
 		if n > 0 {
-			encrypted, encErr := tm.server.cryptoMgr.EncryptBytes(clientID, buf[:n])
+			encrypted, encErr := tm.server.encryptTunnelBytes(clientID, buf[:n])
 			if encErr != nil {
 				slog.Error("failed to encrypt tunnel data",
 					"conn_id", connID,
@@ -713,7 +743,7 @@ func (tm *TunnelManager) SendToClient(tunnelID, connID string, data []byte, isEO
 		return tunnel.Client.WriteMessage(websocket.BinaryMessage, frame)
 	}
 
-	encrypted, err := tm.server.cryptoMgr.EncryptBytes(tunnel.ClientID, data)
+	encrypted, err := tm.server.encryptTunnelBytes(tunnel.ClientID, data)
 	if err != nil {
 		return fmt.Errorf("encrypt failed: %w", err)
 	}
@@ -738,6 +768,9 @@ func (tm *TunnelManager) HandleAgentData(tunnelID, connID string, data []byte, i
 			"is_eof", isEOF,
 			"bytes", len(data))
 		return nil
+	}
+	if ec.TunnelID != tunnelID {
+		return fmt.Errorf("conn %s does not belong to tunnel %s", connID, tunnelID)
 	}
 
 	if len(data) > 0 {

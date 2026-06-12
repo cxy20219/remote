@@ -356,6 +356,9 @@ func (s *Server) pendingLoop(client *Client) {
 			slog.Info("device approved, transition to working state",
 				"client_id", client.ClientID)
 			s.deviceMgr.DetachPendingConnIfMatch(client.ClientID, client)
+			if s.tunnelManager != nil {
+				s.tunnelManager.CloseTunnelsByClient(client.ClientID)
+			}
 			s.clients.Add(client)
 			s.readLoop(client)
 			return
@@ -372,11 +375,7 @@ func (s *Server) readLoop(client *Client) {
 		if client.ClientID != "" {
 			current := s.clients.IsCurrent(client.ClientID, client)
 			if current && s.tunnelManager != nil {
-				for _, t := range s.tunnelManager.ListTunnelsByClient(client.ClientID) {
-					if err := s.tunnelManager.CloseTunnel(t.TunnelID); err != nil {
-						slog.Warn("failed to close tunnel on disconnect", "tunnel_id", t.TunnelID, "error", err)
-					}
-				}
+				s.tunnelManager.CloseTunnelsByClient(client.ClientID)
 			}
 			if current {
 				s.clients.RemoveIfMatch(client.ClientID, client)
@@ -524,6 +523,28 @@ func (s *Server) applyRuntimeSettings(settings ServerSettings) {
 		s.blacklist.SetThreshold(settings.BlacklistThreshold)
 	}
 	s.maxBodyBytes.Store(maxBodySizeBytes(settings.MaxBodySizeMB))
+}
+
+func (s *Server) isDeviceEncryptionEnabled(clientID string) bool {
+	if s == nil || s.stateStore == nil {
+		return true
+	}
+	device := s.stateStore.GetDeviceByID(clientID)
+	return device == nil || device.EncEnabled
+}
+
+func (s *Server) encryptTunnelBytes(clientID string, data []byte) ([]byte, error) {
+	if !s.isDeviceEncryptionEnabled(clientID) {
+		return data, nil
+	}
+	return s.cryptoMgr.EncryptBytes(clientID, data)
+}
+
+func (s *Server) decryptTunnelBytes(clientID string, data []byte) ([]byte, error) {
+	if !s.isDeviceEncryptionEnabled(clientID) {
+		return data, nil
+	}
+	return s.cryptoMgr.DecryptBytes(clientID, data)
 }
 
 func (s *Server) IsGloballyWhitelisted(ip string) bool {

@@ -227,8 +227,7 @@ func (tm *TunnelManager) HandleLocalResponse(connID, tunnelID string, data []byt
 		return nil
 	}
 
-	clientID := tm.agent.GetClientID()
-	encrypted, err := tm.agent.cryptoMgr.EncryptBytes(clientID, data)
+	encrypted, err := tm.agent.encryptTunnelBytes(data)
 	if err != nil {
 		return fmt.Errorf("encrypt failed: %w", err)
 	}

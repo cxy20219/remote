@@ -50,7 +50,9 @@ func (h *Handler) handleRegisterOK(msg *common.Message) error {
 	}
 
 	h.agent.SetClientID(payload.ClientID)
-	h.agent.processRegisterOK(&payload)
+	if err := h.agent.processRegisterOK(&payload); err != nil {
+		return err
+	}
 	slog.Info("registered successfully", "client_id", payload.ClientID)
 	return nil
 }
@@ -73,6 +75,26 @@ func (h *Handler) handleRegisterUpdate(msg *common.Message) error {
 
 	identity := h.agent.identity
 	if identity == nil {
+		return nil
+	}
+	clientID := payload.ClientID
+	if clientID == "" {
+		clientID = identity.ClientID
+	}
+	if err := h.agent.verifyServerKeySignature(clientID, payload.EncEnabled, payload.ServerDHPubkey, payload.EncKeyEncrypted, payload.ServerSignPubkey, payload.ServerSignature); err != nil {
+		return err
+	}
+	if clientID != "" && identity.ClientID != "" && clientID != identity.ClientID {
+		return fmt.Errorf("register_update client_id mismatch: got %q, expected %q", clientID, identity.ClientID)
+	}
+
+	if !payload.EncEnabled {
+		identity.EncEnabled = false
+		identity.EncKey = ""
+		h.agent.cryptoMgr.RemoveKey(identity.ClientID)
+		if err := identity.Save(h.agent.config.IdentityDir); err != nil {
+			slog.Error("failed to save identity after update", "error", err)
+		}
 		return nil
 	}
 
@@ -183,8 +205,7 @@ func (h *Handler) handleTunnelDataBinary(msg *common.Message) error {
 		return nil
 	}
 
-	clientID := h.agent.GetClientID()
-	data, err := h.agent.cryptoMgr.DecryptBytes(clientID, payload.Data)
+	data, err := h.agent.decryptTunnelBytes(payload.Data)
 	if err != nil {
 		return fmt.Errorf("decrypt failed: %w", err)
 	}

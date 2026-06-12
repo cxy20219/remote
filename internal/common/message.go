@@ -63,10 +63,12 @@ type RegisterPendingPayload struct {
 }
 
 type RegisterOKPayload struct {
-	ClientID        string `json:"client_id"`
-	EncKeyEncrypted string `json:"enc_key_encrypted,omitempty"`
-	ServerDHPubkey  string `json:"server_dh_pubkey,omitempty"`
-	EncEnabled      bool   `json:"enc_enabled"`
+	ClientID         string `json:"client_id"`
+	EncKeyEncrypted  string `json:"enc_key_encrypted,omitempty"`
+	ServerDHPubkey   string `json:"server_dh_pubkey,omitempty"`
+	EncEnabled       bool   `json:"enc_enabled"`
+	ServerSignPubkey string `json:"server_sign_pubkey,omitempty"`
+	ServerSignature  string `json:"server_signature,omitempty"`
 }
 
 type RegisterFailPayload struct {
@@ -74,10 +76,13 @@ type RegisterFailPayload struct {
 }
 
 type RegisterUpdatePayload struct {
-	Type            string `json:"update_type"`
-	EncKeyEncrypted string `json:"enc_key_encrypted,omitempty"`
-	ServerDHPubkey  string `json:"server_dh_pubkey,omitempty"`
-	EncEnabled      bool   `json:"enc_enabled"`
+	Type             string `json:"update_type"`
+	ClientID         string `json:"client_id,omitempty"`
+	EncKeyEncrypted  string `json:"enc_key_encrypted,omitempty"`
+	ServerDHPubkey   string `json:"server_dh_pubkey,omitempty"`
+	EncEnabled       bool   `json:"enc_enabled"`
+	ServerSignPubkey string `json:"server_sign_pubkey,omitempty"`
+	ServerSignature  string `json:"server_signature,omitempty"`
 }
 
 type TunnelOpenPayload struct {

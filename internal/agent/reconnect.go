@@ -38,8 +38,23 @@ func (r *Reconnect) nextBackoff() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	interval := r.interval * time.Duration(1<<uint(r.attempts))
-	if interval > r.maxInterval {
+	interval := r.interval
+	if interval <= 0 {
+		r.attempts++
+		return interval
+	}
+	if r.maxInterval > 0 && interval >= r.maxInterval {
+		r.attempts++
+		return r.maxInterval
+	}
+	for i := 0; i < r.attempts; i++ {
+		if r.maxInterval > 0 && interval >= r.maxInterval/2 {
+			interval = r.maxInterval
+			break
+		}
+		interval *= 2
+	}
+	if r.maxInterval > 0 && interval > r.maxInterval {
 		interval = r.maxInterval
 	}
 
