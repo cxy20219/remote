@@ -2,6 +2,10 @@
 
 基于 WebSocket 的零配置内网穿透系统。每设备独立 AES-256-GCM 加密，审批制注册，一键部署。
 
+## 试用效果图
+
+零配置内网穿透：服务端一键启动，Agent 只填写服务器地址，管理员审批后即可创建 SSH/HTTP 等内网服务映射。
+
 ## 功能特性
 
 - **零配置启动** — `./server` 一键启动，admin 密码自动生成；Agent 仅需服务器地址
@@ -10,6 +14,16 @@
 - **Web 管理面板** — 设备管理、隧道 CRUD、安全策略配置、系统设置全套界面
 - **安全机制** — 登录/连接/端口扫描三层限流、自动黑名单、全局/设备级 IP 白名单
 - **心跳保活 + 指数退避重连** — 网络中断后 ed25519 签名快速重认证，自动恢复
+
+## 安全特性
+
+- **审批制接入**：新 Agent 首次连接只会进入 pending 状态，必须由管理员在 Web 面板批准后才能创建隧道。
+- **设备身份认证**：每个 Agent 本地生成 ed25519 身份密钥，重连时使用签名认证，避免仅凭 client ID 冒充设备。
+- **每设备独立密钥**：每台设备单独协商 AES-256-GCM 隧道数据密钥，支持按设备关闭加密或重新生成密钥。
+- **密钥交换保护**：服务端下发的密钥更新带签名，Agent 首次信任后会校验后续 `register_ok` / `register_update`，防止密钥更新被篡改。
+- **防重放**：设备重连签名带时间戳，服务端限制时间窗口并记录已使用签名，减少重放风险。
+- **访问控制**：支持管理员登录、HttpOnly Cookie、全局/设备级 IP 白名单、黑名单和自动拉黑。
+- **端口防扫描**：隧道公网端口带连接频率限制，异常扫描会被拒绝并可触发自动黑名单。
 
 ## 一句话部署
 
@@ -68,7 +82,3 @@ GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o agent-linux-arm64  ./cmd/
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o agent-windows-amd64.exe ./cmd/agent
 GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w" -o agent-darwin-amd64 ./cmd/agent
 ```
-
-## License
-
-MIT
