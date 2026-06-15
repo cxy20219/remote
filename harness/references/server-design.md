@@ -44,7 +44,8 @@
 | Tunnel Manager | 管理端口映射隧道，含端口防扫描限流（portLimiter） |
 | Handler | 消息路由，分发给对应处理函数 |
 | Security | 安全中间件：响应头、CSP、动态 Body 限大、浏览器写请求 Origin/Referer 校验、HTTP 管理写接口与 WebSocket 控制消息严格 JSON 解码、登录限流、WS 限流（connLimiter）、IP 白名单检查；公网直连默认不信任代理头和 `X-Forwarded-Proto` |
-| AdminAuth | 管理员密码校验和会话管理；token 为 256-bit 随机值，24 小时过期，最多保留 64 个会话 |
+| AdminAuth | 管理员密码校验、失败锁定、改密和会话管理；token 为 256-bit 随机值，24 小时过期，最多保留 64 个会话，改密后吊销全部会话 |
+| StateStore | 持久化 `server-state.json`；配置状态密钥时使用 AES-256-GCM 加密服务端签名私钥、管理员密码 hash 和设备隧道密钥，并兼容旧明文状态自动迁移 |
 | Logger | 日志记录 |
 
 ## 3. 数据结构

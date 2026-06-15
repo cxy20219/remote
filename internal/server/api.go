@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -23,7 +24,11 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	if !s.adminAuth.Login(req.Password) {
+	if err := s.adminAuth.Login(req.Password); err != nil {
+		if errors.Is(err, ErrAdminLoginLocked) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
+			return
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid password"})
 		return
 	}
@@ -34,6 +39,31 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 	s.setAdminCookie(c, token, 86400)
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (s *Server) handleAPIChangeAdminPassword(c *gin.Context) {
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if !decodeStrictJSON(c, &req) {
+		return
+	}
+
+	if err := s.adminAuth.ChangePassword(req.CurrentPassword, req.NewPassword); err != nil {
+		switch {
+		case errors.Is(err, ErrAdminInvalidPassword):
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "current password is invalid"})
+		case errors.Is(err, ErrAdminWeakPassword):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "new password must be at least 12 characters and use at least 3 character types"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to change password"})
+		}
+		return
+	}
+
+	s.setAdminCookie(c, "", -1)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 

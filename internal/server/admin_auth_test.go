@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -75,5 +76,62 @@ func TestAdminAuthSessionLimitEvictsOldest(t *testing.T) {
 	}
 	if !auth.Validate(token) {
 		t.Fatal("new session should validate")
+	}
+}
+
+func TestAdminAuthLocksAfterFailedLogins(t *testing.T) {
+	store := NewStateStoreWithSettings(defaultSettings())
+	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
+		t.Fatalf("SetAdminPassword: %v", err)
+	}
+	auth := NewAdminAuth(store)
+
+	for i := 0; i < maxFailedAdminLogins-1; i++ {
+		if err := auth.Login("wrong"); !errors.Is(err, ErrAdminInvalidPassword) {
+			t.Fatalf("failed login %d err = %v, want invalid password", i, err)
+		}
+	}
+	if err := auth.Login("wrong"); !errors.Is(err, ErrAdminLoginLocked) {
+		t.Fatalf("lock err = %v, want locked", err)
+	}
+	if err := auth.Login("CorrectPassword1!"); !errors.Is(err, ErrAdminLoginLocked) {
+		t.Fatalf("locked login err = %v, want locked", err)
+	}
+}
+
+func TestAdminAuthChangePasswordRevokesSessions(t *testing.T) {
+	store := NewStateStoreWithSettings(defaultSettings())
+	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
+		t.Fatalf("SetAdminPassword: %v", err)
+	}
+	auth := NewAdminAuth(store)
+
+	token, err := auth.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := auth.ChangePassword("CorrectPassword1!", "NewPassword1!"); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	if auth.Validate(token) {
+		t.Fatal("old session should be revoked")
+	}
+	if err := auth.Login("CorrectPassword1!"); !errors.Is(err, ErrAdminInvalidPassword) {
+		t.Fatalf("old password err = %v, want invalid", err)
+	}
+	if err := auth.Login("NewPassword1!"); err != nil {
+		t.Fatalf("new password login: %v", err)
+	}
+}
+
+func TestAdminAuthRejectsWeakPassword(t *testing.T) {
+	store := NewStateStoreWithSettings(defaultSettings())
+	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
+		t.Fatalf("SetAdminPassword: %v", err)
+	}
+	auth := NewAdminAuth(store)
+
+	if err := auth.ChangePassword("CorrectPassword1!", "short1!"); !errors.Is(err, ErrAdminWeakPassword) {
+		t.Fatalf("ChangePassword err = %v, want weak password", err)
 	}
 }

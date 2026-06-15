@@ -217,3 +217,30 @@ func TestDecodeStrictJSONRejectsUnknownFieldsAndWrongContentType(t *testing.T) {
 		t.Fatalf("status = %d, want %d", multiple.Code, http.StatusBadRequest)
 	}
 }
+
+func TestHandleAPIChangeAdminPassword(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := NewStateStoreWithSettings(defaultSettings())
+	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
+		t.Fatalf("SetAdminPassword: %v", err)
+	}
+	srv := &Server{stateStore: store, adminAuth: NewAdminAuth(store)}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/admin/password", strings.NewReader(`{"current_password":"CorrectPassword1!","new_password":"NewPassword1!"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	srv.handleAPIChangeAdminPassword(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if store.VerifyAdminPassword("CorrectPassword1!") {
+		t.Fatal("old password should not verify")
+	}
+	if !store.VerifyAdminPassword("NewPassword1!") {
+		t.Fatal("new password should verify")
+	}
+}

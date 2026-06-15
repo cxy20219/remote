@@ -3,6 +3,7 @@ package server
 import (
 	"flag"
 	"fmt"
+	"os"
 
 	"goremote/internal/common"
 )
@@ -43,6 +44,7 @@ type SecurityConfig struct {
 	MaxConnPerMin      int
 	GlobalWhitelist    []string
 	BlacklistThreshold int
+	StateKey           string
 }
 
 type TunnelConfig struct {
@@ -80,6 +82,7 @@ func ParseConfig() *Config {
 	flag.IntVar(&cfg.Tunnel.MaxTunnelsPerClient, "max-tunnels", 10, "max tunnels per client")
 	flag.StringVar(&cfg.Tunnel.DefaultLocalAddr, "local-addr", "127.0.0.1", "default local address for tunnels")
 	flag.StringVar(&cfg.Tunnel.PublicHost, "public-host", "", "public host for tunnel addresses")
+	flag.StringVar(&cfg.Security.StateKey, "state-key", "", "state encryption key (prefer GOREMOTE_STATE_KEY)")
 
 	flag.BoolVar(&cfg.Swagger.Enabled, "swagger", true, "enable swagger UI")
 
@@ -97,6 +100,9 @@ func ParseConfig() *Config {
 	cfg.Security.GlobalWhitelist = []string{}
 	cfg.Security.AllowedOrigins = []string{}
 	cfg.Security.MaxBodySizeMB = defaultMaxBodySizeMB
+	if cfg.Security.StateKey == "" {
+		cfg.Security.StateKey = os.Getenv("GOREMOTE_STATE_KEY")
+	}
 
 	return cfg
 }

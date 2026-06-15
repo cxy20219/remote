@@ -35,7 +35,7 @@ go-remote/
 │   │   ├── handler.go      # 消息分发（register → pending/reauth 审批制流程）
 │   │   ├── config.go       # CLI 参数解析（--port/--host/--data/--tls-*）
 │   │   ├── api.go          # HTTP 管理 API（含设备、设置接口）
-│   │   ├── admin_auth.go   # 管理员 bcrypt 密码认证
+│   │   ├── admin_auth.go   # 管理员 bcrypt 密码认证、失败锁定、改密和会话吊销
 │   │   ├── security.go     # 安全中间件（限流、黑名单、白名单、请求头）
 │   │   └── client.go       # 运行时 WebSocket 连接管理器（简化，不管理持久状态）
 │   └── agent/
@@ -89,6 +89,7 @@ go vet ./internal/...
 | `internal/common/crypto.go` | `CryptoManager` 每设备密钥管理，`CryptoContext` AES-256-GCM 加解密 |
 | `internal/common/identity.go` | ed25519 签名/验证、x25519 ECDH 密钥交换、HKDF 派生 |
 | `internal/server/persist.go` | `StateStore` 异步原子写入 `server-state.json` |
+| `internal/server/state_crypto.go` | `server-state.json` 敏感字段 AES-256-GCM 落盘加密 |
 | `internal/server/device_mgr.go` | `DeviceManager` pending/authorized 审批状态机 |
 | `internal/server/tunnel.go` | 隧道管理，`bufPool` sync.Pool 复用 256KB chunk，支持 WebSocket Binary 隧道数据帧 |
 | `internal/server/client.go` | `ClientManager`+`DeviceQuerier` 接口，支持设备级 IP 白名单查询；`LastPing` 同时承载最近有效活动时间 |
@@ -135,7 +136,8 @@ go vet ./internal/...
 | X25519 密钥交换 | `common/identity.go` / `server/device_mgr.go` / `server/handler.go` | 审批、重连、`register_update` 时 ECDH + HKDF-SHA256 加密传输 enc_key；服务端签名 `client_id+enc_enabled+server_dh_pubkey+enc_key_encrypted`，Agent 首次 TOFU pin 后必须验签 |
 | 审批制注册 | `server/device_mgr.go` | 新设备需管理员批准才能接入，pending → authorized |
 | 密钥轮换 | `server/device_mgr.go` | Web UI 一键重新生成密钥，Agent 通过 `register_update` 自动接收 |
-| 管理员会话 | `server/admin_auth.go` | 256-bit 随机 token，HttpOnly Cookie，24 小时过期，最多保留 64 个会话并清理过期会话 |
+| 管理员会话 | `server/admin_auth.go` / `server/api.go` | 256-bit 随机 token，HttpOnly Cookie，24 小时过期，最多保留 64 个会话并清理过期会话；连续失败 10 次临时锁定 5 分钟；管理面支持改密，改密后吊销全部会话 |
+| 状态敏感字段加密 | `server/state_crypto.go` / `server/persist.go` | 可通过 `GOREMOTE_STATE_KEY` 或 `--state-key` 启用 AES-256-GCM 落盘加密，保护服务端签名私钥、管理员密码 hash、设备隧道密钥；旧明文状态在带 key 启动后自动迁移为加密格式 |
 | CheckOrigin | `server/server.go` | `allowed_origins` 白名单；空配置只允许无 Origin 的 Agent 请求，拒绝浏览器 Origin |
 | 管理 API 写保护 | `server/security.go` / `server/api.go` | 已认证 POST/PUT/DELETE 会校验浏览器 Origin/Referer；写接口严格 JSON 解码，拒绝未知字段和多 JSON 文档；CLI/脚本无 Origin 请求仍可用 |
 | 真实客户端 IP | `server/server.go` | 默认 `SetTrustedProxies(nil)`，公网直连时限流/黑名单只信任 TCP RemoteAddr，避免伪造 `X-Forwarded-For` |

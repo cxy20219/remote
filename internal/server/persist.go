@@ -47,12 +47,13 @@ type DeviceState struct {
 }
 
 type ServerState struct {
-	ServerSignPrivkey string         `json:"server_sign_privkey"`
-	ServerSignPubkey  string         `json:"server_sign_pubkey"`
-	AdminPasswordHash string         `json:"admin_password_hash"`
-	AdminPassword     string         `json:"admin_password_plain,omitempty"`
-	Settings          ServerSettings `json:"settings"`
-	Devices           []DeviceState  `json:"devices"`
+	ServerSignPrivkey string          `json:"server_sign_privkey"`
+	ServerSignPubkey  string          `json:"server_sign_pubkey"`
+	AdminPasswordHash string          `json:"admin_password_hash"`
+	AdminPassword     string          `json:"admin_password_plain,omitempty"`
+	Settings          ServerSettings  `json:"settings"`
+	Devices           []DeviceState   `json:"devices"`
+	Encrypted         *EncryptedState `json:"encrypted,omitempty"`
 }
 
 func defaultSettings() ServerSettings {
@@ -104,16 +105,21 @@ func cloneServerState(state *ServerState) ServerState {
 			cloned.Devices[i] = cloneDevice(state.Devices[i])
 		}
 	}
+	if state.Encrypted != nil {
+		encrypted := *state.Encrypted
+		cloned.Encrypted = &encrypted
+	}
 	return cloned
 }
 
 type StateStore struct {
-	mu       sync.RWMutex
-	state    *ServerState
-	path     string
-	dirty    bool
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	mu            sync.RWMutex
+	state         *ServerState
+	path          string
+	encryptionKey []byte
+	dirty         bool
+	stopCh        chan struct{}
+	stopOnce      sync.Once
 }
 
 func NewStateStore(path string) *StateStore {
@@ -156,10 +162,19 @@ func (s *StateStore) Load() error {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return err
 	}
+	loadedEncrypted := state.Encrypted != nil
+	if err := s.decryptSensitiveState(&state); err != nil {
+		return err
+	}
 
 	state.Settings = mergeMissingSettingsDefaults(data, state.Settings)
 
 	s.state = &state
+	if len(s.encryptionKey) > 0 && !loadedEncrypted {
+		if err := s.saveLocked(); err != nil {
+			return err
+		}
+	}
 	slog.Info("server state loaded", "path", s.path, "devices", len(state.Devices))
 	return nil
 }
@@ -256,8 +271,15 @@ func (s *StateStore) Save() error {
 }
 
 func (s *StateStore) saveLocked() error {
+	if s.path == "" {
+		return nil
+	}
+
 	copy := cloneServerState(s.state)
 	copy.AdminPassword = ""
+	if err := s.encryptSensitiveState(&copy); err != nil {
+		return err
+	}
 
 	data, err := json.MarshalIndent(copy, "", "  ")
 	if err != nil {
@@ -426,6 +448,19 @@ func (s *StateStore) VerifyAdminPassword(password string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return bcrypt.CompareHashAndPassword([]byte(s.state.AdminPasswordHash), []byte(password)) == nil
+}
+
+func (s *StateStore) SetAdminPassword(password string) error {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.AdminPasswordHash = string(hashedPassword)
+	s.state.AdminPassword = ""
+	s.dirty = true
+	return s.saveLocked()
 }
 
 func (s *StateStore) GetAdminPassword() string {

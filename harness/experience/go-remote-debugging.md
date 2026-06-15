@@ -287,6 +287,16 @@ nc -w 2 127.0.0.1 TUNNEL_PORT
 plink root@host "timeout 3 nc -w 2 127.0.0.1 TUNNEL_PORT 2>&1"
 ```
 
+### 5.7 状态文件加密与改密排查
+
+服务端配置 `GOREMOTE_STATE_KEY` 或 `--state-key` 后，`server-state.json` 的服务端签名私钥、管理员密码 hash、设备 `enc_key` 会迁移到 `encrypted` 字段；之后启动必须提供同一个 key。
+
+**关键要点**：
+- 首次带 key 启动会把旧明文状态自动重写为加密格式；迁移前建议备份 `server-state.json`。
+- 未提供 key 加载已加密状态会失败并报 `state encryption key is required`。
+- key 支持 `hex:<32字节hex>`、`base64:<32字节base64>` 或 32 字符以上随机字符串；生产优先用环境变量，避免命令行泄露到进程列表。
+- 管理员改密后会吊销全部管理会话，前端需要重新登录；连续错误登录 10 次会临时锁定 5 分钟。
+
 ## 6. 交叉编译
 
 ```powershell
@@ -354,6 +364,9 @@ nohup ./agent --server YOUR_SERVER:8080 \
 | 登录返回 "invalid request" | JSON 请求体格式错误 | 用 `-d @file.json`，确保正确 Content-Type |
 | 服务器本地 curl 返回 "unauthorized" | cookie 名称错误 | cookie 名称为 `go_remote_token`，非 `token` |
 | IP 已被黑名单无法登录 | 无管理入口 | 通过 plink 从服务器 localhost 调用 API 解除 |
+| 启动时报 `state encryption key is required` | `server-state.json` 已加密但本次未提供 key | 使用相同 `GOREMOTE_STATE_KEY` 或 `--state-key` 启动 |
+| 管理面改密后立刻掉线 | 改密会吊销全部会话 | 用新密码重新登录 |
+| 登录返回 `admin login temporarily locked` | 连续错误密码触发临时锁定 | 等待 5 分钟或重启服务端清空内存锁定状态 |
 
 ### Android agent adb 部署要点
 

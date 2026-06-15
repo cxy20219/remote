@@ -34,6 +34,9 @@
 | `max_conn_per_min` | int | `10` | WebSocket 连接和隧道端口每分钟每 IP 最大连接数（防扫描，0=禁用） |
 | `global_whitelist` | []string | `[]` | 全局 IP 白名单，支持 CIDR（如 `192.168.1.0/24`）；白名单内 IP 绕过所有限流检查 |
 | `blacklist_threshold` | int | `100` | 累计限流违规次数阈值；达到后 IP 自动拉黑，后续请求直接拒绝（0=禁用自动拉黑） |
+| `--state-key` / `GOREMOTE_STATE_KEY` | string | 空 | 状态文件敏感字段加密密钥；支持 `hex:<32字节hex>`、`base64:<32字节base64>` 或 32 字符以上随机字符串；建议使用环境变量而不是命令行参数 |
+
+> 启用 `state_key` 后，`server-state.json` 中的服务端签名私钥、管理员密码 hash 和设备隧道密钥会以 AES-256-GCM 加密保存。已有明文状态在带 key 启动后会自动重写为加密格式；之后启动必须提供同一个 key。
 
 ### heartbeat
 

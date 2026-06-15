@@ -1,8 +1,10 @@
 package server
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -82,5 +84,68 @@ func TestStateStoreLoadBackfillsMissingSettingsDefaults(t *testing.T) {
 	}
 	if settings.DefaultLocalAddr != "127.0.0.1" {
 		t.Fatalf("missing default_local_addr should be backfilled, got %q", settings.DefaultLocalAddr)
+	}
+}
+
+func TestStateStoreEncryptsSensitiveFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server-state.json")
+	store := NewStateStore(path)
+	if err := store.SetEncryptionKey("this-is-a-long-enough-state-key-for-tests"); err != nil {
+		t.Fatalf("SetEncryptionKey: %v", err)
+	}
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	store.AddDevice(&DeviceState{ID: "client-1", EncKey: "secret-device-key"})
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if strings.Contains(string(data), "secret-device-key") {
+		t.Fatal("sensitive state leaked in persisted JSON")
+	}
+	var raw ServerState
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw state: %v", err)
+	}
+	if raw.Encrypted == nil || raw.ServerSignPrivkey != "" || raw.AdminPasswordHash != "" || raw.Devices[0].EncKey != "" {
+		t.Fatalf("expected sensitive fields to be encrypted and cleared: %+v", raw)
+	}
+
+	loaded := NewStateStore(path)
+	if err := loaded.SetEncryptionKey("this-is-a-long-enough-state-key-for-tests"); err != nil {
+		t.Fatalf("SetEncryptionKey loaded: %v", err)
+	}
+	if err := loaded.Load(); err != nil {
+		t.Fatalf("Load encrypted: %v", err)
+	}
+	device := loaded.GetDeviceByID("client-1")
+	if device == nil || device.EncKey != "secret-device-key" {
+		t.Fatalf("decrypted device key = %+v", device)
+	}
+}
+
+func TestStateStoreRequiresKeyForEncryptedState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server-state.json")
+	store := NewStateStore(path)
+	if err := store.SetEncryptionKey("this-is-a-long-enough-state-key-for-tests"); err != nil {
+		t.Fatalf("SetEncryptionKey: %v", err)
+	}
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	withoutKey := NewStateStore(path)
+	if err := withoutKey.Load(); err != ErrStateEncryptionKeyRequired {
+		t.Fatalf("Load without key err = %v, want %v", err, ErrStateEncryptionKeyRequired)
 	}
 }

@@ -65,6 +65,10 @@ type Server struct {
 func NewServer(config *Config, staticFS embed.FS) *Server {
 	statePath := filepath.Join(config.DataDir(), "server-state.json")
 	stateStore := NewStateStore(statePath)
+	if err := stateStore.SetEncryptionKey(config.Security.StateKey); err != nil {
+		slog.Error("invalid state encryption key", "error", err)
+		panic(err)
+	}
 	if err := stateStore.Load(); err != nil {
 		slog.Error("failed to load server state", "error", err)
 		panic(err)
@@ -172,6 +176,7 @@ func (s *Server) Start() error {
 		protected.DELETE("/api/security/blacklist/:ip", s.handleAPIRemoveBlacklist)
 		protected.GET("/api/security/blacklist-threshold", s.handleAPIGetBlacklistThreshold)
 		protected.PUT("/api/security/blacklist-threshold", s.handleAPIUpdateBlacklistThreshold)
+		protected.PUT("/api/admin/password", s.handleAPIChangeAdminPassword)
 		protected.GET("/api/tunnels", s.handleAPIListTunnels)
 		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
