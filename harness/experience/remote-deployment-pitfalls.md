@@ -126,3 +126,55 @@ pwdx <PID>
 ### 最佳实践
 - 建立统一的部署目录约定，删除废弃的旧目录
 - 在 AGENTS.md 中记录当前实际的部署路径
+
+---
+
+## 6. 旧数据目录启用状态加密，新二进制启动失败
+
+### 现象
+```bash
+tail -20 /root/goremote/server.log
+# {"msg":"failed to load server state","error":"state encryption key is required"}
+```
+
+### 原因
+旧 `/root/goremote/data/server-state.json` 曾使用 `GOREMOTE_STATE_KEY` 或 `--state-key` 加密落盘。新进程未带同一个 state key 启动时，无法读取已有状态。
+
+### 处理
+```bash
+# 生产保留旧状态：必须带原 state key 启动，不能换空数据目录
+./server --data /root/goremote/data --state-key CHANGE-ME
+
+# 临时功能验证：使用独立数据目录，避免破坏旧状态
+./server --data /root/goremote/data-test --log-file /root/goremote/server-test.log
+```
+
+### 最佳实践
+- 生产升级先确认是否存在加密状态文件和 state key 来源。
+- 临时验证新功能时使用独立 `data-*` 目录和独立日志文件。
+- 不要把真实 state key、管理员密码或服务器凭据写入 harness 文档。
+
+---
+
+## 7. Clash 测速触发代理入口黑名单
+
+### 现象
+Clash 订阅节点能识别，但测速或切换后节点大量超时；服务端日志出现：
+
+```text
+proxy connection rate limited
+proxy connection from blacklisted IP, rejecting
+```
+
+### 原因
+Clash 会并发探测多个节点和目标 URL，测试公网来源 IP 可能超过 `max_conn_per_min`，进而触发自动黑名单。若实现顺序先查黑名单再查白名单，后续加入全局白名单也不能绕过已有黑名单。
+
+### 处理
+- 测试环境可临时提高 `max_conn_per_min`，并把 `blacklist_threshold` 设为 `0` 关闭自动黑名单。
+- 如果 IP 已被拉黑，先通过服务端本机回环管理 API 删除黑名单，再加入全局白名单。
+- 代码层面应保证全局/设备白名单优先于黑名单与限流判断。
+
+### 验证
+- `GET /api/settings` 不应返回 `proxy_subscribe_token`。
+- Clash 重置订阅 token 或重建代理后，需要更新订阅再测速。
+- 分别验证节点出口 IP；服务器 Agent 节点访问 Google 目标失败时，先在服务器本机直连同一目标，区分代理链路问题和机房网络不可达。

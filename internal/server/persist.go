@@ -29,6 +29,7 @@ type ServerSettings struct {
 	MaxBodySizeMB       int      `json:"max_body_size_mb"`
 	HeartbeatInterval   int      `json:"heartbeat_interval"`
 	HeartbeatTimeout    int      `json:"heartbeat_timeout"`
+	ProxySubscribeToken string   `json:"proxy_subscribe_token"`
 }
 
 type DeviceState struct {
@@ -230,6 +231,9 @@ func mergeMissingSettingsDefaults(data []byte, loaded ServerSettings) ServerSett
 	}
 	if _, ok := raw.Settings["heartbeat_timeout"]; ok {
 		settings.HeartbeatTimeout = loaded.HeartbeatTimeout
+	}
+	if _, ok := raw.Settings["proxy_subscribe_token"]; ok {
+		settings.ProxySubscribeToken = loaded.ProxySubscribeToken
 	}
 
 	return settings

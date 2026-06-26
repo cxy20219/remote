@@ -77,6 +77,8 @@ tbody tr:hover td{background:#f8fafc}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
+.clash-box{background:#0f172a;color:#dbeafe;border-radius:12px;padding:14px 16px;font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin-top:12px}
+.hint{font-size:12px;color:#94a3b8;line-height:1.5;margin-top:8px}
 
 .toast{position:fixed;top:20px;right:20px;z-index:300;display:flex;flex-direction:column;gap:8px}
 .toast-item{padding:12px 20px;border-radius:12px;font-size:13px;font-weight:500;animation:slideIn .3s;max-width:380px;box-shadow:0 4px 12px rgba(0,0,0,.15)}
@@ -186,6 +188,10 @@ th,td{padding:8px 8px}
       <div class="stat-info"><div class="stat-value" id="stat-tunnels">0</div><div class="stat-label">活跃隧道</div></div>
     </div>
     <div class="stat-card">
+      <div class="stat-icon purple">&#128279;</div>
+      <div class="stat-info"><div class="stat-value" id="stat-proxies">0</div><div class="stat-label">SOCKS5 代理</div></div>
+    </div>
+    <div class="stat-card">
       <div class="stat-icon red">&#9888;</div>
       <div class="stat-info"><div class="stat-value" id="stat-pending">0</div><div class="stat-label">待审批</div></div>
     </div>
@@ -242,6 +248,26 @@ th,td{padding:8px 8px}
       <button class="btn btn-primary" onclick="createTunnel()">创建隧道</button>
     </div>
     <div id="tunnels" style="margin-top:4px"><div class="empty">加载中...</div></div>
+  </div>
+
+  <!-- SOCKS5 Proxy -->
+  <div class="card" id="proxy-card">
+    <div class="card-header"><h2>SOCKS5 代理</h2></div>
+    <div class="form-row">
+      <div class="form-group"><label>目标设备</label><select id="proxy-client-select"><option value="">请选择...</option></select></div>
+      <div class="form-group"><label>入口类型</label><select id="proxy-exposure"><option value="server_local">服务端本机代理</option><option value="public">公网 SOCKS5</option></select></div>
+      <div class="form-group"><label>监听端口</label><input type="number" id="proxy-public-port" placeholder="0 = 自动分配" value="0"></div>
+      <div class="form-group"><label>用户名</label><input type="text" id="proxy-username" placeholder="public 必填"></div>
+      <div class="form-group"><label>密码</label><input type="password" id="proxy-password" placeholder="public 必填" autocomplete="new-password"></div>
+      <button class="btn btn-primary" onclick="createProxy()">创建代理</button>
+    </div>
+    <div class="hint">Clash 配置请使用 <code>type: socks5</code> 和 <code>udp: false</code>。公网入口必须配置用户名和密码。</div>
+    <div style="margin-top:14px">
+      <div class="hint">Clash 订阅链接（仅包含公网 SOCKS5 代理）</div>
+      <div id="proxy-subscription"><div class="empty">加载中...</div></div>
+    </div>
+    <div id="proxy-clash-result" style="display:none"></div>
+    <div id="proxies" style="margin-top:14px"><div class="empty">加载中...</div></div>
   </div>
 
 </div>
@@ -369,6 +395,7 @@ th,td{padding:8px 8px}
 <script>
 let drawerLoaded = false;
 let deviceList = [];
+let proxyList = [];
 
 async function checkAuth(){try{const r=await fetch('/api/check-auth');if(!(await r.json()).authenticated)window.location.href='/login.html'}catch(e){window.location.href='/login.html'}}
 
@@ -459,13 +486,18 @@ async function loadDevices(){
     document.getElementById('stat-online').textContent=online;
 
     const sel=document.getElementById('client-select');
+    const proxySel=document.getElementById('proxy-client-select');
     const oldVal=sel.value;
+    const oldProxyVal=proxySel.value;
     sel.innerHTML='<option value="">请选择...</option>';
+    proxySel.innerHTML='<option value="">请选择...</option>';
     d.devices.filter(x=>x.status==='authorized'&&x.online).forEach(c=>{
       const name=c.name||c.hostname||c.id.substring(0,12);
       sel.innerHTML+=`<option value="${c.id}">${name}</option>`;
+      proxySel.innerHTML+=`<option value="${c.id}">${name}</option>`;
     });
     sel.value=oldVal;
+    proxySel.value=oldProxyVal;
 
     renderDevices();
   }catch(e){document.getElementById('devices').innerHTML='<div class="empty">加载失败</div>'}
@@ -479,7 +511,8 @@ function renderDevices(){
     const encBadge=d.enc_enabled?'<span class="badge badge-enc-on">&#128274; 加密</span>':'<span class="badge badge-enc-off">&#128275; 明文</span>';
     const onBadge=d.online?'<span class="badge badge-online">在线</span>':'<span class="badge badge-offline">离线</span>';
     const approved=d.approved_at?new Date(d.approved_at).toLocaleDateString():'-';
-    h+=`<tr><td><strong>${d.name||d.hostname}</strong></td><td>${d.hostname}</td><td>${d.os}</td><td>${encBadge}</td><td>${onBadge}</td><td style="font-size:12px">${approved}</td><td><button class="btn btn-ghost" onclick="openDeviceModal('${d.id}')">配置</button> <button class="btn btn-danger" onclick="deleteDevice('${d.id}','${d.name||d.hostname}')">删除</button></td></tr>`;
+    const proxyBtn=d.online?` <button class="btn btn-ghost" onclick="selectProxyClient('${d.id}')">代理</button>`:'';
+    h+=`<tr><td><strong>${d.name||d.hostname}</strong></td><td>${d.hostname}</td><td>${d.os}</td><td>${encBadge}</td><td>${onBadge}</td><td style="font-size:12px">${approved}</td><td><button class="btn btn-ghost" onclick="openDeviceModal('${d.id}')">配置</button>${proxyBtn} <button class="btn btn-danger" onclick="deleteDevice('${d.id}','${d.name||d.hostname}')">删除</button></td></tr>`;
   });
   h+='</tbody></table>';
   document.getElementById('devices').innerHTML=h;
@@ -641,6 +674,135 @@ async function saveTunnelEdit(){
   }catch(e){toast('网络错误','error')}
 }
 
+// --- SOCKS5 Proxies ---
+function proxyExposureValue(p){return p.exposure||p.Exposure||'public'}
+function proxyExposureLabel(v){return v==='server_local'?'服务端本机代理':'公网 SOCKS5'}
+function proxyListenAddr(p){
+  const port=p.public_port||p.PublicPort;
+  if(proxyExposureValue(p)==='server_local')return '127.0.0.1:'+port;
+  return '公网:'+port
+}
+
+function escapeHTML(s){return String(s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]))}
+
+function selectProxyClient(id){
+  document.getElementById('proxy-client-select').value=id;
+  document.getElementById('proxy-card').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+async function loadProxySubscription(){
+  try{
+    const r=await fetch('/api/proxy-subscription');
+    const d=await r.json();
+    renderProxySubscription(d.subscription_url||'');
+  }catch(e){document.getElementById('proxy-subscription').innerHTML='<div class="empty">订阅链接加载失败</div>'}
+}
+
+function renderProxySubscription(url){
+  const box=document.getElementById('proxy-subscription');
+  if(!url){
+    box.innerHTML='<div class="hint">尚未生成。生成后，拥有链接的人可拉取当前公网 SOCKS5 节点。</div><div style="margin-top:10px"><button class="btn btn-ghost" onclick="resetProxySubscription(false)">生成订阅链接</button></div>';
+    return
+  }
+  box.innerHTML=`<div class="clash-box" id="proxy-subscription-url">${escapeHTML(url)}</div><div style="margin-top:10px"><button class="btn btn-ghost" onclick="copyText('proxy-subscription-url')">复制订阅链接</button> <button class="btn btn-danger" onclick="resetProxySubscription(true)">重置订阅链接</button></div>`;
+}
+
+async function resetProxySubscription(confirmReset){
+  if(confirmReset&&!confirm('重置后旧订阅链接立即失效，确定继续？'))return;
+  try{
+    const r=await fetch('/api/proxy-subscription/reset',{method:'POST'});
+    const d=await r.json();
+    if(r.ok){renderProxySubscription(d.subscription_url||'');toast('订阅链接已更新')}else toast(d.error||'更新订阅链接失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
+async function loadProxies(){
+  try{
+    if(deviceList.length===0){await loadDevices()}
+    const r=await fetch('/api/proxies');
+    const d=await r.json();
+    proxyList=d.proxies||[];
+    document.getElementById('stat-proxies').textContent=d.total||proxyList.length;
+    if(!proxyList.length){document.getElementById('proxies').innerHTML='<div class="empty">暂无 SOCKS5 代理</div>';return}
+    let h='<table><thead><tr><th>代理 ID</th><th>设备</th><th>入口类型</th><th>监听入口</th><th>认证</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+    proxyList.forEach(p=>{
+      const id=p.proxy_id||p.ProxyID;
+      const cid=p.client_id||p.ClientID;
+      const device=deviceList.find(x=>x.id===cid);
+      const host=device?(device.name||device.hostname):String(cid||'').substring(0,12)+'\u2026';
+      const auth=(p.auth_enabled||p.AuthEnabled)?'<span class="badge badge-active">已启用</span>':'<span class="badge badge-offline">未启用</span>';
+      const created=p.created_at||p.CreatedAt;
+      h+=`<tr><td><code>${escapeHTML(String(id).substring(0,18))}&hellip;</code></td><td>${escapeHTML(host)}</td><td>${escapeHTML(proxyExposureLabel(proxyExposureValue(p)))}</td><td><span class="port-highlight">${escapeHTML(proxyListenAddr(p))}</span></td><td>${auth}</td><td style="font-size:12px">${created?escapeHTML(new Date(created).toLocaleString()):'-'}</td>`;
+      h+=`<td><button class="btn btn-ghost" onclick="showExistingProxyClash('${id}')">Clash</button> <button class="btn btn-danger" onclick="deleteProxy('${id}')">删除</button></td></tr>`;
+    });
+    h+='</tbody></table>';
+    document.getElementById('proxies').innerHTML=h;
+  }catch(e){document.getElementById('proxies').innerHTML='<div class="empty">加载失败</div>'}
+}
+
+async function createProxy(){
+  const cid=document.getElementById('proxy-client-select').value;
+  const exposure=document.getElementById('proxy-exposure').value;
+  const publicPort=parseInt(document.getElementById('proxy-public-port').value)||0;
+  const username=document.getElementById('proxy-username').value.trim();
+  const password=document.getElementById('proxy-password').value;
+  if(!cid)return toast('请先选择设备','error');
+  if(exposure==='public'&&(!username||!password))return toast('公网 SOCKS5 必须设置用户名和密码','error');
+  try{
+    const body={client_id:cid,public_port:publicPort,exposure,username,password};
+    const r=await fetch('/api/proxies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(r.ok){
+      toast('代理创建成功 · '+(d.access_addr||d.public_port));
+      document.getElementById('proxy-password').value='';
+      renderClashResult(d.clash||buildClashConfig(d,username,password));
+      loadProxies();loadPortStatus();
+    }else toast(d.error||'创建失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
+function buildClashConfig(d,username,password){
+  return {type:'socks5',server:d.server||'127.0.0.1',port:d.public_port,username,password,udp:false}
+}
+
+function clashYaml(c){
+  let lines=['- name: goremote-worker','  type: socks5','  server: '+c.server,'  port: '+c.port];
+  if(c.username)lines.push('  username: '+c.username);
+  if(c.password)lines.push('  password: '+c.password);
+  lines.push('  udp: false');
+  return lines.join('\n')
+}
+
+function renderClashResult(clash){
+  const yaml=clashYaml(clash);
+  const box=document.getElementById('proxy-clash-result');
+  box.style.display='block';
+  box.innerHTML=`<div class="hint" style="margin-top:14px">Clash proxies 配置</div><div class="clash-box" id="clash-yaml">${escapeHTML(yaml)}</div><div style="margin-top:10px"><button class="btn btn-ghost" onclick="copyText('clash-yaml')">复制 Clash 配置</button></div>`;
+}
+
+function showExistingProxyClash(id){
+  const p=proxyList.find(x=>(x.proxy_id||x.ProxyID)===id);
+  if(!p)return;
+  const port=p.public_port||p.PublicPort;
+  const server=proxyExposureValue(p)==='server_local'?'127.0.0.1':window.location.hostname;
+  renderClashResult({server,port,username:p.username||p.Username||'',password:'CHANGE-ME',udp:false});
+  document.getElementById('proxy-card').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+async function copyText(id){
+  const text=document.getElementById(id).textContent;
+  try{await navigator.clipboard.writeText(text);toast('已复制')}catch(e){toast('复制失败，请手动复制','error')}
+}
+
+async function deleteProxy(id){
+  if(!confirm('确定删除此 SOCKS5 代理？'))return;
+  try{
+    const r=await fetch('/api/proxies/'+id,{method:'DELETE'});
+    const d=await r.json();
+    if(r.ok){toast('已删除');loadProxies();loadPortStatus()}else toast(d.error||'删除失败','error')
+  }catch(e){toast('网络错误','error')}
+}
+
 // --- Port Status ---
 async function loadPortStatus(){
   try{
@@ -727,8 +889,8 @@ async function updateBLThreshold(){const threshold=parseInt(document.getElementB
 async function logout(){await fetch('/api/logout',{method:'POST'});window.location.href='/login.html'}
 
 // --- Init ---
-checkAuth();checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadPortStatus();
-setInterval(()=>{checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadPortStatus()},10000);
+checkAuth();checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadProxies();loadProxySubscription();loadPortStatus();
+setInterval(()=>{checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadProxies();loadPortStatus()},10000);
 </script>
 </body>
 </html>

@@ -104,6 +104,24 @@ type TunnelClosePayload struct {
 	ConnID   string `json:"conn_id,omitempty"`
 }
 
+type ProxyOpenPayload struct {
+	ProxyID string `json:"proxy_id"`
+	ConnID  string `json:"conn_id"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+}
+
+type ProxyClosePayload struct {
+	ProxyID string `json:"proxy_id"`
+	ConnID  string `json:"conn_id,omitempty"`
+}
+
+type ProxyErrorPayload struct {
+	ProxyID string `json:"proxy_id"`
+	ConnID  string `json:"conn_id,omitempty"`
+	Error   string `json:"error"`
+}
+
 func EncodeBinaryTunnelDataFrame(tunnelID, connID string, data []byte, isEOF bool) ([]byte, error) {
 	if len(tunnelID) > 0xffff {
 		return nil, fmt.Errorf("tunnel_id too long: %d", len(tunnelID))

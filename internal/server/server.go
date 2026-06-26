@@ -44,6 +44,7 @@ type Server struct {
 	clients       *ClientManager
 	handler       *Handler
 	tunnelManager *TunnelManager
+	proxyManager  *ProxyManager
 	adminAuth     *AdminAuth
 	cryptoMgr     *common.CryptoManager
 	stateStore    *StateStore
@@ -119,6 +120,7 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	if config.Tunnel.Enabled {
 		s.tunnelManager = NewTunnelManager(s, settings.PortRangeStart, settings.PortRangeEnd)
 	}
+	s.proxyManager = NewProxyManager(s)
 	s.maxBodyBytes.Store(maxBodySizeBytes(settings.MaxBodySizeMB))
 
 	s.upgrader = websocket.Upgrader{
@@ -152,6 +154,7 @@ func (s *Server) Start() error {
 	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLogin)
 	s.engine.POST("/api/logout", s.handleLogout)
 	s.engine.GET("/api/check-auth", s.handleCheckAuth)
+	s.engine.GET("/proxy-subscription/:token", s.handleProxySubscription)
 
 	staticSub, _ := fs.Sub(s.staticFS, "static")
 	s.engine.GET("/login.html", func(c *gin.Context) {
@@ -167,6 +170,10 @@ func (s *Server) Start() error {
 		protected.GET("/api/clients/:id", s.handleAPIClientDetail)
 		protected.GET("/api/client-tunnels/:client_id", s.handleAPIListClientTunnels)
 		protected.POST("/api/tunnels", s.handleAPICreateTunnel)
+		protected.POST("/api/proxies", s.handleAPICreateProxy)
+		protected.GET("/api/proxies", s.handleAPIListProxies)
+		protected.GET("/api/proxy-subscription", s.handleAPIGetProxySubscription)
+		protected.POST("/api/proxy-subscription/reset", s.handleAPIResetProxySubscription)
 		protected.GET("/api/clients/:id/whitelist", s.handleAPIGetWhitelist)
 		protected.PUT("/api/clients/:id/whitelist", s.handleAPIUpdateWhitelist)
 		protected.GET("/api/security/global-whitelist", s.handleAPIGetGlobalWhitelist)
@@ -181,6 +188,7 @@ func (s *Server) Start() error {
 		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
 		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
+		protected.DELETE("/api/proxies/:proxy_id", s.handleAPIDeleteProxy)
 		protected.GET("/api/port-status", s.handleAPIPortStatus)
 
 		protected.GET("/api/devices", s.handleAPIListDevices)
@@ -242,6 +250,9 @@ func (s *Server) Stop() error {
 	if s.tunnelManager != nil {
 		s.tunnelManager.CloseAll()
 	}
+	if s.proxyManager != nil {
+		s.proxyManager.CloseAll()
+	}
 	if s.loginLimiter != nil {
 		s.loginLimiter.Stop()
 	}
@@ -301,6 +312,9 @@ func (s *Server) handleConn(c *gin.Context) {
 				if payload.ReAuth {
 					device := s.stateStore.GetDeviceByID(client.ClientID)
 					if device != nil && device.Status == "authorized" {
+						if s.proxyManager != nil {
+							s.proxyManager.CloseProxiesByClient(client.ClientID)
+						}
 						go s.readLoop(client)
 						return
 					}
@@ -364,6 +378,9 @@ func (s *Server) pendingLoop(client *Client) {
 			if s.tunnelManager != nil {
 				s.tunnelManager.CloseTunnelsByClient(client.ClientID)
 			}
+			if s.proxyManager != nil {
+				s.proxyManager.CloseProxiesByClient(client.ClientID)
+			}
 			s.clients.Add(client)
 			s.readLoop(client)
 			return
@@ -381,6 +398,9 @@ func (s *Server) readLoop(client *Client) {
 			current := s.clients.IsCurrent(client.ClientID, client)
 			if current && s.tunnelManager != nil {
 				s.tunnelManager.CloseTunnelsByClient(client.ClientID)
+			}
+			if current && s.proxyManager != nil {
+				s.proxyManager.CloseProxiesByClient(client.ClientID)
 			}
 			if current {
 				s.clients.RemoveIfMatch(client.ClientID, client)

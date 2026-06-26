@@ -15,6 +15,7 @@ type Agent struct {
 	handler         *Handler
 	reconnect       *Reconnect
 	tunnelManager   *TunnelManager
+	proxyManager    *ProxyManager
 	cryptoMgr       *common.CryptoManager
 	hostname        string
 	os              string
@@ -52,6 +53,7 @@ func NewAgent(config *Config, identity *AgentIdentity) *Agent {
 		handler:       nil,
 		reconnect:     NewReconnect(config.Reconnect.Interval, config.Reconnect.MaxAttempts, config.Reconnect.MaxInterval),
 		tunnelManager: NewTunnelManager(nil),
+		proxyManager:  NewProxyManager(nil),
 		cryptoMgr:     cryptoMgr,
 		hostname:      hostname,
 		os:            osName,
@@ -59,6 +61,7 @@ func NewAgent(config *Config, identity *AgentIdentity) *Agent {
 	}
 
 	agent.tunnelManager.agent = agent
+	agent.proxyManager.agent = agent
 	agent.handler = NewHandler(agent)
 
 	if identity != nil && identity.EncEnabled && identity.EncKey != "" {
@@ -109,6 +112,7 @@ func (a *Agent) Run() error {
 
 		a.connector.Close()
 		a.tunnelManager.Cleanup()
+		a.proxyManager.Cleanup()
 		a.reconnect.beforeRetry()
 
 		if a.isStopped() {
@@ -122,6 +126,8 @@ func (a *Agent) Stop() {
 	defer a.mu.Unlock()
 	a.stopped = true
 	a.connector.Close()
+	a.tunnelManager.Cleanup()
+	a.proxyManager.Cleanup()
 }
 
 func (a *Agent) isStopped() bool {

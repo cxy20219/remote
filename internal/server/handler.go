@@ -32,6 +32,8 @@ func (h *Handler) Handle(client *Client, msg *common.Message) error {
 		return h.handleTunnelDataBinary(client, msg)
 	case "tunnel_error":
 		return h.handleTunnelError(client, msg)
+	case "proxy_error":
+		return h.handleProxyError(client, msg)
 	default:
 		return fmt.Errorf("unknown message type: %s", msg.Type)
 	}
@@ -139,6 +141,9 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 
 	if h.server.tunnelManager != nil {
 		h.server.tunnelManager.CloseTunnelsByClient(device.ID)
+	}
+	if h.server.proxyManager != nil {
+		h.server.proxyManager.CloseProxiesByClient(device.ID)
 	}
 	h.server.clients.Add(client)
 	h.server.deviceMgr.RemovePendingConn(client.ClientID)
@@ -334,13 +339,28 @@ func (h *Handler) handleTunnelClose(client *Client, msg *common.Message) error {
 }
 
 func (h *Handler) handleTunnelDataBinary(client *Client, msg *common.Message) error {
-	if h.server.tunnelManager == nil {
-		return fmt.Errorf("tunnel is not enabled")
-	}
-
 	payload := msg.BinaryData
 	if payload == nil {
 		return fmt.Errorf("missing binary tunnel payload")
+	}
+
+	if h.server.proxyManager != nil && h.server.proxyManager.HasProxy(payload.TunnelID) {
+		proxy, ok := h.server.proxyManager.GetProxy(payload.TunnelID)
+		if !ok || proxy.ClientID != client.ClientID {
+			return fmt.Errorf("proxy not found or not owned by client")
+		}
+		if payload.IsEOF && len(payload.Data) == 0 {
+			return h.server.proxyManager.HandleAgentData(payload.TunnelID, payload.ConnID, nil, true)
+		}
+		data, err := h.server.decryptTunnelBytes(client.ClientID, payload.Data)
+		if err != nil {
+			return fmt.Errorf("decrypt failed: %w", err)
+		}
+		return h.server.proxyManager.HandleAgentData(payload.TunnelID, payload.ConnID, data, payload.IsEOF)
+	}
+
+	if h.server.tunnelManager == nil {
+		return fmt.Errorf("tunnel is not enabled")
 	}
 
 	tunnel, ok := h.server.tunnelManager.GetTunnel(payload.TunnelID)
@@ -377,6 +397,24 @@ func (h *Handler) handleTunnelError(client *Client, msg *common.Message) error {
 		"error", payload.Error)
 
 	return nil
+}
+
+func (h *Handler) handleProxyError(client *Client, msg *common.Message) error {
+	if h.server.proxyManager == nil {
+		slog.Warn("proxy error from agent but proxy is not enabled")
+		return nil
+	}
+
+	var payload common.ProxyErrorPayload
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
+		return err
+	}
+
+	proxy, ok := h.server.proxyManager.GetProxy(payload.ProxyID)
+	if !ok || proxy.ClientID != client.ClientID {
+		return fmt.Errorf("proxy not found or not owned by client")
+	}
+	return h.server.proxyManager.HandleProxyError(payload.ProxyID, payload.ConnID, payload.Error)
 }
 
 func (h *Handler) sendRegisterFail(client *Client, reason string) error {

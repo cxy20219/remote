@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gopkg.in/yaml.v3"
 
 	"goremote/internal/common"
 )
@@ -122,6 +125,28 @@ type TunnelRequest struct {
 	Exposure  string `json:"exposure"`
 }
 
+type ProxyRequest struct {
+	ClientID   string `json:"client_id"`
+	PublicPort int    `json:"public_port"`
+	Exposure   string `json:"exposure"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+}
+
+type clashSubscription struct {
+	Proxies []clashProxy `yaml:"proxies"`
+}
+
+type clashProxy struct {
+	Name     string `yaml:"name"`
+	Type     string `yaml:"type"`
+	Server   string `yaml:"server"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password,omitempty"`
+	UDP      bool   `yaml:"udp"`
+}
+
 type settingsUpdateRequest struct {
 	PortRangeStart      *int     `json:"port_range_start"`
 	PortRangeEnd        *int     `json:"port_range_end"`
@@ -189,6 +214,14 @@ func decodeStrictJSON(c *gin.Context, dst interface{}) bool {
 	}
 
 	return true
+}
+
+func generateURLToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate url token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func (s *Server) handleAPIClients(c *gin.Context) {
@@ -391,6 +424,174 @@ func (s *Server) handleAPIListTunnels(c *gin.Context) {
 		"tunnels": tunnels,
 		"total":   len(tunnels),
 	})
+}
+
+func (s *Server) handleAPICreateProxy(c *gin.Context) {
+	if s.proxyManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "proxy is not enabled"})
+		return
+	}
+
+	var req ProxyRequest
+	if !decodeStrictJSON(c, &req) {
+		return
+	}
+	if req.ClientID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "client_id is required"})
+		return
+	}
+	if req.PublicPort < 0 || req.PublicPort > 65535 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "public_port must be in range 1-65535, or 0 for auto allocation"})
+		return
+	}
+
+	client, ok := s.clients.Get(req.ClientID)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "client not found or offline"})
+		return
+	}
+
+	proxy, err := s.proxyManager.CreateProxy(req.ClientID, client, req.PublicPort, req.Exposure, req.Username, req.Password)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	serverHost := s.advertisedTunnelHost(c.Request.Host)
+	if proxy.Exposure == TunnelExposureServerLocal {
+		serverHost = TunnelBindServerLocal
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"proxy_id":     proxy.ProxyID,
+		"protocol":     proxy.Protocol,
+		"public_port":  proxy.PublicPort,
+		"server":       serverHost,
+		"access_addr":  tunnelAccessAddr(s.advertisedTunnelHost(c.Request.Host), proxy.PublicPort, proxy.Exposure),
+		"exposure":     proxy.Exposure,
+		"bind_addr":    proxy.BindAddr,
+		"auth_enabled": proxy.AuthEnabled,
+		"username":     proxy.Username,
+		"status":       proxy.Status,
+		"clash": gin.H{
+			"type":     "socks5",
+			"server":   serverHost,
+			"port":     proxy.PublicPort,
+			"username": proxy.Username,
+			"password": req.Password,
+			"udp":      false,
+		},
+	})
+}
+
+func (s *Server) handleAPIListProxies(c *gin.Context) {
+	if s.proxyManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "proxy is not enabled"})
+		return
+	}
+
+	clientID := strings.TrimSpace(c.Query("client_id"))
+	var proxies []*Proxy
+	if clientID != "" {
+		proxies = s.proxyManager.ListProxiesByClient(clientID)
+	} else {
+		proxies = s.proxyManager.ListProxies()
+	}
+	c.JSON(http.StatusOK, gin.H{"proxies": proxies, "total": len(proxies)})
+}
+
+func (s *Server) handleAPIDeleteProxy(c *gin.Context) {
+	if s.proxyManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "proxy is not enabled"})
+		return
+	}
+
+	proxyID := c.Param("proxy_id")
+	if _, ok := s.proxyManager.GetProxy(proxyID); !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "proxy not found"})
+		return
+	}
+	if err := s.proxyManager.CloseProxy(proxyID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+func (s *Server) handleAPIGetProxySubscription(c *gin.Context) {
+	settings := s.stateStore.GetSettings()
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":          settings.ProxySubscribeToken != "",
+		"subscription_url": s.proxySubscriptionURL(c, settings.ProxySubscribeToken),
+	})
+}
+
+func (s *Server) handleAPIResetProxySubscription(c *gin.Context) {
+	token, err := generateURLToken()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate subscription token"})
+		return
+	}
+
+	s.stateStore.UpdateSettings(func(st *ServerSettings) {
+		st.ProxySubscribeToken = token
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":          true,
+		"subscription_url": s.proxySubscriptionURL(c, token),
+	})
+}
+
+func (s *Server) handleProxySubscription(c *gin.Context) {
+	settings := s.stateStore.GetSettings()
+	if settings.ProxySubscribeToken == "" || c.Param("token") != settings.ProxySubscribeToken {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if s.proxyManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "proxy is not enabled"})
+		return
+	}
+
+	data, err := yaml.Marshal(s.buildClashSubscription(s.advertisedTunnelHost(c.Request.Host)))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to render subscription"})
+		return
+	}
+	c.Data(http.StatusOK, "text/yaml; charset=utf-8", data)
+}
+
+func (s *Server) proxySubscriptionURL(c *gin.Context, token string) string {
+	if token == "" {
+		return ""
+	}
+	scheme := "http"
+	if s.tlsEnabled || c.Request.TLS != nil {
+		scheme = "https"
+	}
+	host := c.Request.Host
+	if host == "" {
+		host = tunnelPublicAddr(s.advertisedTunnelHost(""), s.config.Server.Port)
+	}
+	return fmt.Sprintf("%s://%s/proxy-subscription/%s", scheme, host, token)
+}
+
+func (s *Server) buildClashSubscription(serverHost string) clashSubscription {
+	items := clashSubscription{Proxies: []clashProxy{}}
+	for _, proxy := range s.proxyManager.ListProxies() {
+		if proxy.Status != "active" || proxy.Exposure != TunnelExposurePublic || !proxy.AuthEnabled || proxy.Username == "" || proxy.password == "" {
+			continue
+		}
+		items.Proxies = append(items.Proxies, clashProxy{
+			Name:     fmt.Sprintf("goremote-%s-%d", proxy.ClientID, proxy.PublicPort),
+			Type:     ProxyProtocolSOCKS5,
+			Server:   serverHost,
+			Port:     proxy.PublicPort,
+			Username: proxy.Username,
+			Password: proxy.password,
+			UDP:      false,
+		})
+	}
+	return items
 }
 
 func (s *Server) handleAPIGetTunnel(c *gin.Context) {
@@ -888,6 +1089,7 @@ func (s *Server) handleAPIRegenKey(c *gin.Context) {
 
 func (s *Server) handleAPIGetSettings(c *gin.Context) {
 	settings := s.stateStore.GetSettings()
+	settings.ProxySubscribeToken = ""
 	c.JSON(http.StatusOK, settings)
 }
 
@@ -985,5 +1187,7 @@ func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 	})
 	s.applyRuntimeSettings(settings)
 
-	c.JSON(http.StatusOK, s.stateStore.GetSettings())
+	settings = s.stateStore.GetSettings()
+	settings.ProxySubscribeToken = ""
+	c.JSON(http.StatusOK, settings)
 }

@@ -92,6 +92,7 @@ go vet ./internal/...
 | `internal/server/state_crypto.go` | `server-state.json` 敏感字段 AES-256-GCM 落盘加密 |
 | `internal/server/device_mgr.go` | `DeviceManager` pending/authorized 审批状态机 |
 | `internal/server/tunnel.go` | 隧道管理，`bufPool` sync.Pool 复用 256KB chunk，支持 WebSocket Binary 隧道数据帧 |
+| `internal/server/proxy.go` | SOCKS5 代理入口管理，动态目标连接通过 Agent 网络出站访问 |
 | `internal/server/client.go` | `ClientManager`+`DeviceQuerier` 接口，支持设备级 IP 白名单查询；`LastPing` 同时承载最近有效活动时间 |
 | `internal/agent/identity.go` | Agent 本地 `~/.goremote/identity` 管理，ECDH 解密 enc_key |
 | `internal/agent/agent.go` | Agent 主循环（pending 等待审批 → reauth 重连，含 pendingApproval 标志） |
@@ -115,6 +116,7 @@ go vet ./internal/...
 | 服务端重启恢复流程 | [workflow/zero-config-deploy-verify.md#8b-验证服务端重启后的设备恢复](workflow/zero-config-deploy-verify.md) | [experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移](experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移) |
 | pending 连接超时排查 | [experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境已修复](experience/multi-platform-testing.md#13-agent-pending-状态-60-秒超时困境已修复) | [experience/zero-config-testing-lessons.md#6-pending-连接的生命周期](experience/zero-config-testing-lessons.md#6-pending-连接的生命周期) |
 | 隧道协议/二进制帧理解 | [references/tunnel-design.md#2-消息协议](references/tunnel-design.md#2-消息协议) | [experience/multi-platform-testing.md#16-2026-05-15-稳定性性能完整性优化复盘](experience/multi-platform-testing.md#16-2026-05-15-稳定性性能完整性优化复盘) |
+| 代理功能设计 | [references/proxy-design.md](references/proxy-design.md) | [references/tunnel-design.md](references/tunnel-design.md) |
 | 编译/部署报错排查 | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) | [experience/encrypted-tunnel-lessons.md](experience/encrypted-tunnel-lessons.md) |
 | 部署环境运维坑 | [experience/remote-deployment-pitfalls.md](experience/remote-deployment-pitfalls.md) | — |
 | Gin 路由/认证问题 | [experience/gin-auth-route-tips.md](experience/gin-auth-route-tips.md) | — |
@@ -194,6 +196,15 @@ go vet ./internal/...
 | GET/PUT/DELETE | `/api/tunnels/:id` | 详情 / 编辑 / 删除 |
 | GET | `/api/client-tunnels/:client_id` | 指定设备的所有隧道 |
 | GET | `/api/port-status` | 端口范围使用状况 |
+
+### 代理
+| Method | Path | 说明 |
+|--------|------|------|
+| GET/POST | `/api/proxies` | SOCKS5 代理列表 / 创建 |
+| DELETE | `/api/proxies/:proxy_id` | 删除 SOCKS5 代理 |
+| GET | `/api/proxy-subscription` | 查看 Clash 代理订阅链接状态 |
+| POST | `/api/proxy-subscription/reset` | 生成或重置 Clash 代理订阅 token |
+| GET | `/proxy-subscription/:token` | 公开 Clash YAML 订阅拉取入口 |
 
 ### 安全
 | Method | Path | 说明 |

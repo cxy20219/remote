@@ -65,6 +65,8 @@ plink -batch -hostkey $hostkey -pw "PASSWORD" root@YOUR_SERVER 'kill -9 $(pgrep 
 > **坑点**：PowerShell 双引号中 `$(...)` 会被展开为子表达式。必须用**单引号**包裹远程命令，或把命令存入变量再传给 plink。
 > 
 > **坑点**：`echo y \| plink ...` 管道方式不可用——plink 直接从控制台读取，不从 stdin。必须用 `-hostkey` 参数。
+>
+> **坑点**：如果旧数据目录曾启用状态加密，未提供原 `--state-key` 会报 `state encryption key is required`。生产升级必须带原 key；临时验证可使用独立 `--data /root/goremote/data-test`，避免误动旧状态。
 
 ### 3. 上传并启动服务端
 

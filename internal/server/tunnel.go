@@ -150,6 +150,21 @@ func (tm *TunnelManager) ReleasePort(port int) {
 	delete(tm.unavailablePorts, port)
 }
 
+// ReservePort marks a manually selected port as used when it belongs to the managed range.
+func (tm *TunnelManager) ReservePort(port int, owner string) (bool, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if port < tm.portStart || port > tm.portEnd {
+		return false, nil
+	}
+	if existing, used := tm.publicPorts[port]; used {
+		return false, fmt.Errorf("public port %d already in use by %s", port, existing)
+	}
+	tm.publicPorts[port] = owner
+	delete(tm.unavailablePorts, port)
+	return true, nil
+}
+
 // CreateTunnel 创建隧道
 func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client, protocol, localAddr string, localPort, publicPort int, exposure string) error {
 	tm.mu.Lock()
@@ -569,15 +584,14 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 			slog.Debug("external connection from localhost, bypassing rate limit",
 				"tunnel_id", tunnelID)
 		} else {
-			if tm.server.blacklist.IsBlacklisted(remoteIP) {
+			if tm.server.IsGloballyWhitelisted(remoteIP) {
+				slog.Debug("external connection globally whitelisted, bypassing rate limit",
+					"remote_ip", remoteIP, "tunnel_id", tunnelID)
+			} else if tm.server.blacklist.IsBlacklisted(remoteIP) {
 				slog.Warn("external connection from blacklisted IP, rejecting",
 					"remote_ip", remoteIP, "tunnel_id", tunnelID)
 				conn.Close()
 				continue
-			}
-			if tm.server.IsGloballyWhitelisted(remoteIP) {
-				slog.Debug("external connection globally whitelisted, bypassing rate limit",
-					"remote_ip", remoteIP, "tunnel_id", tunnelID)
 			} else if tm.server.clients != nil && tunnel.ClientID != "" {
 				whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID)
 				if isIPWhitelisted(remoteIP, whitelist) {

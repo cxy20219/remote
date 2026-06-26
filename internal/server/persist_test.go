@@ -98,6 +98,9 @@ func TestStateStoreEncryptsSensitiveFields(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	store.AddDevice(&DeviceState{ID: "client-1", EncKey: "secret-device-key"})
+	store.UpdateSettings(func(settings *ServerSettings) {
+		settings.ProxySubscribeToken = "secret-subscription-token"
+	})
 	if err := store.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -108,6 +111,9 @@ func TestStateStoreEncryptsSensitiveFields(t *testing.T) {
 	}
 	if strings.Contains(string(data), "secret-device-key") {
 		t.Fatal("sensitive state leaked in persisted JSON")
+	}
+	if strings.Contains(string(data), "secret-subscription-token") {
+		t.Fatal("subscription token leaked in persisted JSON")
 	}
 	var raw ServerState
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -127,6 +133,9 @@ func TestStateStoreEncryptsSensitiveFields(t *testing.T) {
 	device := loaded.GetDeviceByID("client-1")
 	if device == nil || device.EncKey != "secret-device-key" {
 		t.Fatalf("decrypted device key = %+v", device)
+	}
+	if got := loaded.GetSettings().ProxySubscribeToken; got != "secret-subscription-token" {
+		t.Fatalf("decrypted subscription token = %q", got)
 	}
 }
 

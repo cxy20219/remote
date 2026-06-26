@@ -38,6 +38,10 @@ func (h *Handler) Handle(msg *common.Message) error {
 		return h.handleTunnelDataBinary(msg)
 	case "tunnel_error":
 		return h.handleTunnelError(msg)
+	case "proxy_open":
+		return h.handleProxyOpen(msg)
+	case "proxy_close":
+		return h.handleProxyClose(msg)
 	default:
 		return fmt.Errorf("unknown message type: %s", msg.Type)
 	}
@@ -200,6 +204,18 @@ func (h *Handler) handleTunnelDataBinary(msg *common.Message) error {
 		return fmt.Errorf("missing binary tunnel payload")
 	}
 
+	if h.agent.proxyManager != nil && h.agent.proxyManager.HasProxy(payload.TunnelID) {
+		if payload.IsEOF && len(payload.Data) == 0 {
+			h.agent.proxyManager.CloseProxyConn(payload.TunnelID, payload.ConnID)
+			return nil
+		}
+		data, err := h.agent.decryptTunnelBytes(payload.Data)
+		if err != nil {
+			return fmt.Errorf("decrypt failed: %w", err)
+		}
+		return h.agent.proxyManager.HandleServerData(payload.TunnelID, payload.ConnID, data, payload.IsEOF)
+	}
+
 	if payload.IsEOF && len(payload.Data) == 0 {
 		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
 		return nil
@@ -231,6 +247,29 @@ func (h *Handler) handleTunnelDataBinary(msg *common.Message) error {
 		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
 	}
 
+	return nil
+}
+
+func (h *Handler) handleProxyOpen(msg *common.Message) error {
+	var payload common.ProxyOpenPayload
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
+		return err
+	}
+
+	slog.Info("proxy open request", "proxy_id", payload.ProxyID, "conn_id", payload.ConnID, "host", payload.Host, "port", payload.Port)
+	return h.agent.proxyManager.OpenProxyConn(payload.ProxyID, payload.ConnID, payload.Host, payload.Port)
+}
+
+func (h *Handler) handleProxyClose(msg *common.Message) error {
+	var payload common.ProxyClosePayload
+	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
+		return err
+	}
+	if payload.ConnID != "" {
+		h.agent.proxyManager.CloseProxyConn(payload.ProxyID, payload.ConnID)
+		return nil
+	}
+	h.agent.proxyManager.CloseProxy(payload.ProxyID)
 	return nil
 }
 

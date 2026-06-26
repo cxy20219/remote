@@ -1,12 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"gopkg.in/yaml.v3"
 )
 
 func TestAdvertisedTunnelHost(t *testing.T) {
@@ -242,5 +244,132 @@ func TestHandleAPIChangeAdminPassword(t *testing.T) {
 	}
 	if !store.VerifyAdminPassword("NewPassword1!") {
 		t.Fatal("new password should verify")
+	}
+}
+
+func TestHandleAPIGetSettingsRedactsProxySubscriptionToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	settings := defaultSettings()
+	settings.ProxySubscribeToken = "secret-token"
+	srv := &Server{stateStore: NewStateStoreWithSettings(settings)}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+
+	srv.handleAPIGetSettings(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp ServerSettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	if resp.ProxySubscribeToken != "" || strings.Contains(rec.Body.String(), "secret-token") {
+		t.Fatalf("subscription token leaked in settings response: %s", rec.Body.String())
+	}
+	if got := srv.stateStore.GetSettings().ProxySubscribeToken; got != "secret-token" {
+		t.Fatalf("stored token changed to %q", got)
+	}
+}
+
+func TestHandleAPIResetProxySubscriptionGeneratesToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := NewStateStoreWithSettings(defaultSettings())
+	srv := &Server{stateStore: store, config: &Config{Server: ServerConfig{Host: "0.0.0.0", Port: 8080}}}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/proxy-subscription/reset", nil)
+	ctx.Request.Host = "admin.example.com:8080"
+
+	srv.handleAPIResetProxySubscription(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	settings := store.GetSettings()
+	if settings.ProxySubscribeToken == "" {
+		t.Fatal("subscription token should be stored")
+	}
+	var resp struct {
+		Enabled         bool   `json:"enabled"`
+		SubscriptionURL string `json:"subscription_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Enabled || !strings.Contains(resp.SubscriptionURL, settings.ProxySubscribeToken) {
+		t.Fatalf("response = %+v, token = %q", resp, settings.ProxySubscribeToken)
+	}
+}
+
+func TestProxySubscriptionRendersOnlyPublicAuthenticatedProxies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	settings := defaultSettings()
+	settings.ProxySubscribeToken = "token-1"
+	srv := &Server{stateStore: NewStateStoreWithSettings(settings), config: &Config{Server: ServerConfig{Host: "0.0.0.0", Port: 8080}}}
+	srv.proxyManager = NewProxyManager(srv)
+	srv.proxyManager.proxies["public"] = &Proxy{
+		ProxyID:     "public",
+		ClientID:    "client-1",
+		Protocol:    ProxyProtocolSOCKS5,
+		PublicPort:  10000,
+		Exposure:    TunnelExposurePublic,
+		Username:    "user",
+		AuthEnabled: true,
+		Status:      "active",
+		password:    "pass",
+	}
+	srv.proxyManager.proxies["local"] = &Proxy{
+		ProxyID:    "local",
+		ClientID:   "client-2",
+		Protocol:   ProxyProtocolSOCKS5,
+		PublicPort: 10001,
+		Exposure:   TunnelExposureServerLocal,
+		Status:     "active",
+	}
+
+	router := gin.New()
+	router.GET("/proxy-subscription/:token", srv.handleProxySubscription)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/proxy-subscription/token-1", nil)
+	req.Host = "admin.example.com:8080"
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var sub clashSubscription
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &sub); err != nil {
+		t.Fatalf("decode yaml: %v", err)
+	}
+	if len(sub.Proxies) != 1 {
+		t.Fatalf("proxy count = %d, want 1: %s", len(sub.Proxies), rec.Body.String())
+	}
+	proxy := sub.Proxies[0]
+	if proxy.Server != "admin.example.com" || proxy.Port != 10000 || proxy.Username != "user" || proxy.Password != "pass" || proxy.UDP {
+		t.Fatalf("proxy = %+v", proxy)
+	}
+}
+
+func TestProxySubscriptionRejectsInvalidToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	settings := defaultSettings()
+	settings.ProxySubscribeToken = "token-1"
+	srv := &Server{stateStore: NewStateStoreWithSettings(settings), proxyManager: NewProxyManager(nil), config: &Config{Server: ServerConfig{Host: "0.0.0.0", Port: 8080}}}
+	router := gin.New()
+	router.GET("/proxy-subscription/:token", srv.handleProxySubscription)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy-subscription/bad", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }

@@ -30,9 +30,10 @@ type EncryptedState struct {
 }
 
 type sensitiveStatePlain struct {
-	ServerSignPrivkey string            `json:"server_sign_privkey"`
-	AdminPasswordHash string            `json:"admin_password_hash"`
-	DeviceEncKeys     map[string]string `json:"device_enc_keys"`
+	ServerSignPrivkey   string            `json:"server_sign_privkey"`
+	AdminPasswordHash   string            `json:"admin_password_hash"`
+	DeviceEncKeys       map[string]string `json:"device_enc_keys"`
+	ProxySubscribeToken string            `json:"proxy_subscribe_token,omitempty"`
 }
 
 func (s *StateStore) SetEncryptionKey(rawKey string) error {
@@ -77,9 +78,10 @@ func (s *StateStore) encryptSensitiveState(state *ServerState) error {
 	}
 
 	plain := sensitiveStatePlain{
-		ServerSignPrivkey: state.ServerSignPrivkey,
-		AdminPasswordHash: state.AdminPasswordHash,
-		DeviceEncKeys:     make(map[string]string),
+		ServerSignPrivkey:   state.ServerSignPrivkey,
+		AdminPasswordHash:   state.AdminPasswordHash,
+		DeviceEncKeys:       make(map[string]string),
+		ProxySubscribeToken: state.Settings.ProxySubscribeToken,
 	}
 	for _, device := range state.Devices {
 		if device.EncKey != "" {
@@ -107,6 +109,7 @@ func (s *StateStore) encryptSensitiveState(state *ServerState) error {
 
 	state.ServerSignPrivkey = ""
 	state.AdminPasswordHash = ""
+	state.Settings.ProxySubscribeToken = ""
 	for i := range state.Devices {
 		state.Devices[i].EncKey = ""
 	}
@@ -157,6 +160,7 @@ func (s *StateStore) decryptSensitiveState(state *ServerState) error {
 	}
 	state.ServerSignPrivkey = plain.ServerSignPrivkey
 	state.AdminPasswordHash = plain.AdminPasswordHash
+	state.Settings.ProxySubscribeToken = plain.ProxySubscribeToken
 	for i := range state.Devices {
 		if encKey, ok := plain.DeviceEncKeys[state.Devices[i].ID]; ok {
 			state.Devices[i].EncKey = encKey

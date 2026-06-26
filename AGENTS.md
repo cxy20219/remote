@@ -23,6 +23,7 @@
 - [服务端设计文档](harness/references/server-design.md)：服务端架构、消息协议、接口设计
 - [客户端设计文档](harness/references/agent-design.md)：Agent 架构、重连机制、生命周期
 - [隧道设计文档](harness/references/tunnel-design.md)：端口映射、二进制隧道数据帧、端口防扫描
+- [代理功能设计方案](harness/references/proxy-design.md)：通过 Server 借用 Agent 网络出站访问的 SOCKS5 代理设计
 - [项目结构文档](harness/references/project-structure.md)：项目目录结构、架构设计
 - [服务端测试方案](harness/references/server-test.md)：服务端单元、集成和端到端测试方案
 - [客户端测试方案](harness/references/agent-test.md)：Agent 单元、集成和端到端测试方案
