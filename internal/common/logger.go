@@ -1,36 +1,31 @@
-package server
+package common
 
 import (
 	"log/slog"
 	"os"
-
-	"goremote/internal/common"
 )
 
-// InitLogger initializes the slog logger
+// InitLogger initializes the process-wide slog logger.
 func InitLogger(level, file string, maxSizeMB, maxBackups int) {
+	opts := &slog.HandlerOptions{Level: parseLogLevel(level)}
+
 	var handler slog.Handler
-
-	opts := &slog.HandlerOptions{
-		Level: parseLevel(level),
-	}
-
 	if file == "" {
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	} else {
-		w, err := common.NewRotatingFileWriter(file, maxSizeMB, maxBackups)
+		writer, err := NewRotatingFileWriter(file, maxSizeMB, maxBackups)
 		if err != nil {
 			slog.Warn("failed to open log file, using stdout", "error", err)
 			handler = slog.NewJSONHandler(os.Stdout, opts)
 		} else {
-			handler = slog.NewJSONHandler(w, opts)
+			handler = slog.NewJSONHandler(writer, opts)
 		}
 	}
 
 	slog.SetDefault(slog.New(handler))
 }
 
-func parseLevel(level string) slog.Level {
+func parseLogLevel(level string) slog.Level {
 	switch level {
 	case "debug":
 		return slog.LevelDebug

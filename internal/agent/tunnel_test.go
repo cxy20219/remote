@@ -28,22 +28,53 @@ func TestLocalServiceAddr(t *testing.T) {
 	}
 }
 
-func TestAgentTunnelBytesAllowPlaintextWhenEncryptionDisabled(t *testing.T) {
-	a := &Agent{
-		clientID:  "client-plain",
-		identity:  &AgentIdentity{ClientID: "client-plain", EncEnabled: false},
-		cryptoMgr: common.NewCryptoManager(),
+func TestAgentEncodeTunnelFrameEncryptedRoundTrip(t *testing.T) {
+	cryptoMgr := common.NewCryptoManager()
+	if err := cryptoMgr.SetKey("client-enc", make([]byte, 32)); err != nil {
+		t.Fatalf("SetKey: %v", err)
 	}
+	a := &Agent{cryptoMgr: cryptoMgr}
+	a.SetClientID("client-enc")
+	a.encEnabled.Store(true)
+
+	data := []byte("agent encrypted payload")
+	frame, err := a.encodeTunnelFrame("tunnel-1", "conn-1", data, false)
+	if err != nil {
+		t.Fatalf("encodeTunnelFrame: %v", err)
+	}
+	payload, err := common.DecodeBinaryTunnelDataFrame(frame)
+	if err != nil {
+		t.Fatalf("DecodeBinaryTunnelDataFrame: %v", err)
+	}
+	if string(payload.Data) == string(data) {
+		t.Fatal("expected ciphertext when encryption is enabled")
+	}
+	decrypted, err := a.decryptTunnelBytes(payload.Data)
+	if err != nil {
+		t.Fatalf("decryptTunnelBytes: %v", err)
+	}
+	if string(decrypted) != string(data) {
+		t.Fatalf("round-trip mismatch: %q", decrypted)
+	}
+}
+
+func TestAgentTunnelBytesAllowPlaintextWhenEncryptionDisabled(t *testing.T) {
+	a := &Agent{cryptoMgr: common.NewCryptoManager()}
+	a.SetClientID("client-plain")
 
 	data := []byte("plain")
-	encrypted, err := a.encryptTunnelBytes(data)
+	frame, err := a.encodeTunnelFrame("tunnel-1", "conn-1", data, false)
 	if err != nil {
-		t.Fatalf("encryptTunnelBytes: %v", err)
+		t.Fatalf("encodeTunnelFrame: %v", err)
 	}
-	if string(encrypted) != string(data) {
-		t.Fatalf("disabled encryption should pass plaintext through, got %q", encrypted)
+	payload, err := common.DecodeBinaryTunnelDataFrame(frame)
+	if err != nil {
+		t.Fatalf("DecodeBinaryTunnelDataFrame: %v", err)
 	}
-	decrypted, err := a.decryptTunnelBytes(encrypted)
+	if string(payload.Data) != string(data) {
+		t.Fatalf("disabled encryption should pass plaintext through, got %q", payload.Data)
+	}
+	decrypted, err := a.decryptTunnelBytes(payload.Data)
 	if err != nil {
 		t.Fatalf("decryptTunnelBytes: %v", err)
 	}

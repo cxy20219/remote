@@ -46,7 +46,7 @@ func TestClientManagerStaleConnectionCannotRemoveReplacement(t *testing.T) {
 	}
 }
 
-func TestClientManagerStalePingCannotRefreshReplacement(t *testing.T) {
+func TestClientManagerStaleActivityCannotRefreshReplacement(t *testing.T) {
 	m := NewClientManager()
 	oldClient := &Client{ClientID: "client-test"}
 	newClient := &Client{ClientID: "client-test"}
@@ -57,7 +57,7 @@ func TestClientManagerStalePingCannotRefreshReplacement(t *testing.T) {
 	newClient.LastPing = time.Unix(1, 0)
 	newPing := newClient.LastPing
 
-	if m.UpdatePingIfMatch("client-test", oldClient) {
+	if m.TouchIfMatch("client-test", oldClient) {
 		t.Fatal("stale client should not update replacement heartbeat")
 	}
 	if !newClient.LastPing.Equal(newPing) {
@@ -66,7 +66,7 @@ func TestClientManagerStalePingCannotRefreshReplacement(t *testing.T) {
 	if oldClient.LastPing != oldPing {
 		t.Fatal("old client heartbeat should not change after replacement")
 	}
-	if !m.UpdatePingIfMatch("client-test", newClient) {
+	if !m.TouchIfMatch("client-test", newClient) {
 		t.Fatal("current client should update heartbeat")
 	}
 	if newClient.LastPing.Equal(newPing) {
@@ -85,7 +85,7 @@ func TestClientManagerActivityRefreshesCurrentClientOnly(t *testing.T) {
 	newClient.LastPing = time.Unix(1, 0)
 	newPing := newClient.LastPing
 
-	if m.UpdateActivityIfMatch("client-test", oldClient) {
+	if m.TouchIfMatch("client-test", oldClient) {
 		t.Fatal("stale client should not update replacement activity")
 	}
 	if !newClient.LastPing.Equal(newPing) {
@@ -94,7 +94,7 @@ func TestClientManagerActivityRefreshesCurrentClientOnly(t *testing.T) {
 	if oldClient.LastPing != oldPing {
 		t.Fatal("old client activity should not change after replacement")
 	}
-	if !m.UpdateActivityIfMatch("client-test", newClient) {
+	if !m.TouchIfMatch("client-test", newClient) {
 		t.Fatal("current client should update activity")
 	}
 	if newClient.LastPing.Equal(newPing) {

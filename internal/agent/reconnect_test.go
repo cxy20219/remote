@@ -8,12 +8,12 @@ import (
 func TestReconnectBeforeRetryIncrementsAttempts(t *testing.T) {
 	r := NewReconnect(0, 3, 0)
 
-	r.beforeRetry()
+	r.wait(nil)
 	if r.attempts != 1 {
 		t.Fatalf("expected attempts to be 1 after first retry, got %d", r.attempts)
 	}
 
-	r.beforeRetry()
+	r.wait(nil)
 	if r.attempts != 2 {
 		t.Fatalf("expected attempts to be 2 after second retry, got %d", r.attempts)
 	}
@@ -22,8 +22,8 @@ func TestReconnectBeforeRetryIncrementsAttempts(t *testing.T) {
 func TestReconnectResetClearsAttempts(t *testing.T) {
 	r := NewReconnect(0, 2, 0)
 
-	r.beforeRetry()
-	r.beforeRetry()
+	r.wait(nil)
+	r.wait(nil)
 	if r.shouldRetry() {
 		t.Fatal("expected retry budget to be exhausted before reset")
 	}

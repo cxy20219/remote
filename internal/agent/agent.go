@@ -1,28 +1,35 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goremote/internal/common"
 )
 
+var errAgentStopped = errors.New("agent stopped")
+
 type Agent struct {
-	config          *Config
-	connector       *Connector
-	handler         *Handler
-	reconnect       *Reconnect
-	tunnelManager   *TunnelManager
-	cryptoMgr       *common.CryptoManager
-	hostname        string
-	os              string
-	clientID        string
-	identity        *AgentIdentity
-	mu              sync.RWMutex
-	stopped         bool
-	pendingApproval bool
+	config        *Config
+	connector     *Connector
+	handler       *Handler
+	reconnect     *Reconnect
+	tunnelManager *TunnelManager
+	cryptoMgr     *common.CryptoManager
+	hostname      string
+	os            string
+	identity      *AgentIdentity
+
+	stopped         atomic.Bool
+	pendingApproval atomic.Bool
+	encEnabled      atomic.Bool
+	clientID        atomic.Value // string
+	stopCh          chan struct{}
+	stopOnce        sync.Once
 }
 
 func NewAgent(config *Config, identity *AgentIdentity) *Agent {
@@ -49,15 +56,16 @@ func NewAgent(config *Config, identity *AgentIdentity) *Agent {
 	agent := &Agent{
 		config:        config,
 		connector:     connector,
-		handler:       nil,
 		reconnect:     NewReconnect(config.Reconnect.Interval, config.Reconnect.MaxAttempts, config.Reconnect.MaxInterval),
 		tunnelManager: NewTunnelManager(nil),
 		cryptoMgr:     cryptoMgr,
 		hostname:      hostname,
 		os:            osName,
 		identity:      identity,
+		stopCh:        make(chan struct{}),
 	}
 
+	agent.clientID.Store("")
 	agent.tunnelManager.agent = agent
 	agent.handler = NewHandler(agent)
 
@@ -65,13 +73,11 @@ func NewAgent(config *Config, identity *AgentIdentity) *Agent {
 		encKeyBytes, err := common.DecodeBytes(identity.EncKey)
 		if err != nil {
 			slog.Error("failed to decode enc_key from identity", "error", err)
-		} else if len(encKeyBytes) > 0 {
-			err = cryptoMgr.SetKey(identity.ClientID, encKeyBytes)
-			if err != nil {
-				slog.Error("failed to set enc_key", "error", err)
-			} else {
-				slog.Info("tunnel data encryption enabled (AES-256-GCM)")
-			}
+		} else if err := cryptoMgr.SetKey(identity.ClientID, encKeyBytes); err != nil {
+			slog.Error("failed to set enc_key", "error", err)
+		} else {
+			agent.encEnabled.Store(true)
+			slog.Info("tunnel data encryption enabled (AES-256-GCM)")
 		}
 	}
 
@@ -90,55 +96,64 @@ func (a *Agent) Run() error {
 		}
 
 		if err := a.connect(); err != nil {
+			if errors.Is(err, errAgentStopped) || a.isStopped() {
+				return nil
+			}
 			slog.Warn("connection failed", "error", err)
 
 			if !a.reconnect.shouldRetry() {
 				slog.Error("max reconnect attempts reached")
 				return fmt.Errorf("max reconnect attempts reached")
 			}
-
-			a.reconnect.beforeRetry()
+			if !a.reconnect.wait(a.stopCh) {
+				return nil
+			}
 			continue
 		}
 
 		a.reconnect.reset()
 
-		if err := a.handleConnection(); err != nil {
+		if err := a.handleConnection(); err != nil && !a.isStopped() {
 			slog.Warn("connection error", "error", err)
 		}
 
 		a.connector.Close()
 		a.tunnelManager.Cleanup()
-		a.reconnect.beforeRetry()
 
 		if a.isStopped() {
+			return nil
+		}
+		if !a.reconnect.wait(a.stopCh) {
 			return nil
 		}
 	}
 }
 
 func (a *Agent) Stop() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.stopped = true
-	a.connector.Close()
+	a.stopOnce.Do(func() {
+		a.stopped.Store(true)
+		close(a.stopCh)
+		a.connector.Close()
+		a.tunnelManager.Cleanup()
+	})
 }
 
 func (a *Agent) isStopped() bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.stopped
+	return a.stopped.Load()
 }
 
 func (a *Agent) connect() error {
 	if err := a.connector.Connect(); err != nil {
 		return err
 	}
+	if a.isStopped() {
+		a.connector.Close()
+		return errAgentStopped
+	}
 
 	identity := a.identity
 	if identity != nil && identity.ClientID != "" {
-		timestamp := time.Now().UnixNano()
-		if err := a.connector.RegisterReauth(identity.ClientID, timestamp, a.hostname, a.os); err != nil {
+		if err := a.connector.RegisterReauth(identity.ClientID, time.Now().UnixNano(), a.hostname, a.os); err != nil {
 			a.connector.Close()
 			return err
 		}
@@ -184,7 +199,7 @@ func (a *Agent) connect() error {
 				a.identity.ClientID = payload.ClientID
 				a.identity.Save(a.config.IdentityDir)
 			}
-			a.setPendingApproval(true)
+			a.pendingApproval.Store(true)
 			slog.Info("waiting for admin approval", "client_id", payload.ClientID)
 			return nil
 
@@ -194,23 +209,41 @@ func (a *Agent) connect() error {
 				a.connector.Close()
 				return err
 			}
-
 			if a.identity != nil && a.identity.ClientID != "" {
 				slog.Warn("reauth failed, clearing identity for re-registration", "reason", payload.Reason)
-				a.identity.ClientID = ""
-				a.identity.EncKey = ""
-				a.identity.Save(a.config.IdentityDir)
+				a.clearRegistration()
 			}
-
 			a.connector.Close()
 			return fmt.Errorf("registration failed: %s", payload.Reason)
 
 		case "ping":
-			// Continue waiting while pending
 			continue
 
 		default:
 			slog.Debug("unexpected message during registration", "type", msg.Type)
+		}
+	}
+}
+
+// clearRegistration forgets the server-side device identity while keeping the
+// local key pairs and the pinned server signing key.
+func (a *Agent) clearRegistration() {
+	clientID := a.GetClientID()
+	if a.identity != nil && a.identity.ClientID != "" {
+		clientID = a.identity.ClientID
+	}
+	if clientID != "" {
+		a.cryptoMgr.RemoveKey(clientID)
+	}
+	a.encEnabled.Store(false)
+	a.SetClientID("")
+	a.pendingApproval.Store(false)
+	if a.identity != nil {
+		a.identity.ClientID = ""
+		a.identity.EncKey = ""
+		a.identity.EncEnabled = false
+		if err := a.identity.Save(a.config.IdentityDir); err != nil {
+			slog.Error("failed to save identity", "error", err)
 		}
 	}
 }
@@ -233,23 +266,26 @@ func (a *Agent) processRegisterOK(payload *common.RegisterOKPayload) error {
 		identity.EncEnabled = false
 		identity.EncKey = ""
 		a.cryptoMgr.RemoveKey(payload.ClientID)
+		a.encEnabled.Store(false)
 	} else if payload.EncKeyEncrypted != "" && payload.ServerDHPubkey != "" && identity.DeviceDHPrivkey != "" {
 		encKey, err := identity.DecryptEncKey(payload.EncKeyEncrypted, payload.ServerDHPubkey)
 		if err != nil {
-			slog.Error("failed to decrypt enc_key", "error", err)
-			identity.EncEnabled = false
-		} else {
-			identity.EncKey = common.EncodeBytes(encKey)
-			identity.EncEnabled = payload.EncEnabled
-
-			if err := a.cryptoMgr.SetKey(payload.ClientID, encKey); err != nil {
-				slog.Error("failed to set encryption key", "error", err)
-			} else {
-				slog.Info("tunnel data encryption enabled (AES-256-GCM)")
-			}
+			return fmt.Errorf("decrypt enc_key: %w", err)
 		}
+		identity.EncKey = common.EncodeBytes(encKey)
+		identity.EncEnabled = true
+		if err := a.cryptoMgr.SetKey(payload.ClientID, encKey); err != nil {
+			return fmt.Errorf("set encryption key: %w", err)
+		}
+		a.encEnabled.Store(true)
+		slog.Info("tunnel data encryption enabled (AES-256-GCM)")
+	} else if payload.EncKeyEncrypted != "" || payload.ServerDHPubkey != "" {
+		return fmt.Errorf("cannot decrypt enc_key: missing device DH private key")
+	} else if a.cryptoMgr.HasKey(payload.ClientID) {
+		identity.EncEnabled = true
+		a.encEnabled.Store(true)
 	} else {
-		identity.EncEnabled = payload.EncEnabled
+		return fmt.Errorf("server enabled encryption but sent no key")
 	}
 
 	if err := identity.Save(a.config.IdentityDir); err != nil {
@@ -296,7 +332,7 @@ func (a *Agent) verifyServerKeySignature(clientID string, encEnabled bool, serve
 }
 
 func (a *Agent) handleConnection() error {
-	if a.isPendingApproval() {
+	if a.pendingApproval.Load() {
 		if err := a.handlePending(); err != nil {
 			return err
 		}
@@ -345,7 +381,7 @@ func (a *Agent) handlePending() error {
 				return err
 			}
 			a.SetClientID(payload.ClientID)
-			a.setPendingApproval(false)
+			a.pendingApproval.Store(false)
 			slog.Info("approved, entering work state", "client_id", payload.ClientID)
 			if err := a.connector.SendPing(); err != nil {
 				slog.Warn("failed to notify server after approval", "client_id", payload.ClientID, "error", err)
@@ -358,44 +394,22 @@ func (a *Agent) handlePending() error {
 				a.connector.Close()
 				return err
 			}
-
-			if a.identity != nil {
-				a.identity.ClientID = ""
-				a.identity.EncKey = ""
-				a.identity.Save(a.config.IdentityDir)
-			}
-
+			a.clearRegistration()
 			a.connector.Close()
 			return fmt.Errorf("registration denied: %s", payload.Reason)
 
 		case "device_deleted":
-			if a.identity != nil {
-				a.identity.ClientID = ""
-				a.identity.EncKey = ""
-				a.identity.Save(a.config.IdentityDir)
-			}
+			a.clearRegistration()
 			a.connector.Close()
 			return fmt.Errorf("device deleted by admin")
 
-		case "ping":
+		case "ping", "pong":
 			continue
 
 		default:
 			slog.Debug("unexpected message while pending", "type", msg.Type)
 		}
 	}
-}
-
-func (a *Agent) isPendingApproval() bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.pendingApproval
-}
-
-func (a *Agent) setPendingApproval(pending bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.pendingApproval = pending
 }
 
 func (a *Agent) startHeartbeat(done chan struct{}) {
@@ -415,34 +429,26 @@ func (a *Agent) startHeartbeat(done chan struct{}) {
 			}
 		case <-done:
 			return
+		case <-a.stopCh:
+			return
 		}
 	}
 }
 
 func (a *Agent) SetClientID(clientID string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.clientID = clientID
+	a.clientID.Store(clientID)
 }
 
 func (a *Agent) GetClientID() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.clientID
+	value := a.clientID.Load()
+	if value == nil {
+		return ""
+	}
+	return value.(string)
 }
 
 func (a *Agent) isEncryptionEnabled() bool {
-	if a == nil || a.identity == nil {
-		return true
-	}
-	return a.identity.EncEnabled
-}
-
-func (a *Agent) encryptTunnelBytes(data []byte) ([]byte, error) {
-	if !a.isEncryptionEnabled() {
-		return data, nil
-	}
-	return a.cryptoMgr.EncryptBytes(a.GetClientID(), data)
+	return a != nil && a.encEnabled.Load()
 }
 
 func (a *Agent) decryptTunnelBytes(data []byte) ([]byte, error) {

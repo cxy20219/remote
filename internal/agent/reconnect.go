@@ -5,16 +5,16 @@ import (
 	"time"
 )
 
-// Reconnect handles reconnection logic
+// Reconnect handles reconnection backoff.
 type Reconnect struct {
-	interval    time.Duration // initial reconnect interval
-	maxAttempts int           // max attempts, 0 = infinite
-	maxInterval time.Duration // max interval
+	interval    time.Duration
+	maxAttempts int
+	maxInterval time.Duration
 	attempts    int
 	mu          sync.Mutex
 }
 
-// NewReconnect creates a new Reconnect handler
+// NewReconnect creates a new Reconnect handler.
 func NewReconnect(interval, maxAttempts, maxInterval int) *Reconnect {
 	return &Reconnect{
 		interval:    time.Duration(interval) * time.Second,
@@ -23,7 +23,7 @@ func NewReconnect(interval, maxAttempts, maxInterval int) *Reconnect {
 	}
 }
 
-// shouldRetry returns true if another attempt should be made
+// shouldRetry returns true if another attempt should be made.
 func (r *Reconnect) shouldRetry() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -62,17 +62,24 @@ func (r *Reconnect) nextBackoff() time.Duration {
 	return interval
 }
 
-// wait sleeps for the current backoff interval
-func (r *Reconnect) wait() {
-	time.Sleep(r.nextBackoff())
+// wait sleeps for the next backoff interval. It returns false when stop is
+// closed, allowing prompt shutdown instead of sleeping up to maxInterval.
+func (r *Reconnect) wait(stop <-chan struct{}) bool {
+	delay := r.nextBackoff()
+	if delay <= 0 {
+		return true
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-stop:
+		return false
+	}
 }
 
-// beforeRetry is called before a new connection attempt
-func (r *Reconnect) beforeRetry() {
-	time.Sleep(r.nextBackoff())
-}
-
-// reset resets the reconnect state
+// reset resets the reconnect state.
 func (r *Reconnect) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()

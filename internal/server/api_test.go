@@ -58,7 +58,7 @@ func TestAdvertisedTunnelHost(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := &Server{
 				config:     tc.config,
-				stateStore: NewStateStoreWithSettings(tc.settings),
+				stateStore: newTestStateStore(tc.settings),
 			}
 			got := srv.advertisedTunnelHost(tc.reqHost)
 			if got != tc.want {
@@ -130,6 +130,9 @@ func TestNormalizeTunnelTarget(t *testing.T) {
 		{name: "reject port above range", localAddr: "127.0.0.1", localPort: 70000, protocol: "tcp", wantErr: true},
 		{name: "reject addr with embedded port", localAddr: "127.0.0.1:22", localPort: 22, protocol: "tcp", wantErr: true},
 		{name: "allow ipv6 host", localAddr: "::1", localPort: 22, protocol: "tcp", wantAddr: "::1", wantProto: "tcp"},
+		{name: "reject url scheme", localAddr: "http://example.com", localPort: 80, protocol: "tcp", wantErr: true},
+		{name: "reject path characters", localAddr: "host/path", localPort: 80, protocol: "tcp", wantErr: true},
+		{name: "reject invalid ipv6 literal", localAddr: "::zz", localPort: 80, protocol: "tcp", wantErr: true},
 	}
 
 	for _, tc := range tests {
@@ -154,7 +157,7 @@ func TestNormalizeTunnelTarget(t *testing.T) {
 func TestUpdateBlacklistThresholdPersistsSettings(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	store := NewStateStoreWithSettings(defaultSettings())
+	store := newTestStateStore(defaultSettings())
 	srv := &Server{
 		stateStore: store,
 		blacklist:  NewBlacklistManager(100),
@@ -221,7 +224,7 @@ func TestDecodeStrictJSONRejectsUnknownFieldsAndWrongContentType(t *testing.T) {
 func TestHandleAPIChangeAdminPassword(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	store := NewStateStoreWithSettings(defaultSettings())
+	store := newTestStateStore(defaultSettings())
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatalf("SetAdminPassword: %v", err)
 	}

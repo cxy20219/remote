@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -30,6 +33,8 @@ const (
 	httpWriteTimeout      = 30 * time.Second
 	httpIdleTimeout       = 2 * time.Minute
 	httpMaxHeaderBytes    = 32 * 1024
+
+	minConnectionReadTimeout = 60 * time.Second
 )
 
 type Server struct {
@@ -53,11 +58,19 @@ type Server struct {
 	portLimiter   *RateLimiter
 	blacklist     *BlacklistManager
 
-	upgrader websocket.Upgrader
-	engine   *gin.Engine
-	httpSrv  *http.Server
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	globalWhitelist  atomic.Pointer[ipMatcher]
+	heartbeatTimeout atomic.Int64
+	heartbeatPeriod  atomic.Int64
+
+	upgrader    websocket.Upgrader
+	engine      *gin.Engine
+	httpSrv     *http.Server
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	stopErr     error
+	wg          sync.WaitGroup
+	lifecycleMu sync.Mutex
+	stopped     bool
 
 	maxBodyBytes atomic.Int64
 }
@@ -73,13 +86,9 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 		slog.Error("failed to load server state", "error", err)
 		panic(err)
 	}
-
-	state := stateStore.GetState()
-	if state.AdminPassword != "" {
-		slog.Info("========================================")
-		slog.Info("Admin password (first run only)", "password", state.AdminPassword)
-		slog.Info("========================================")
-		stateStore.ClearAdminPassword()
+	if len(stateStore.GetServerSignPrivkey()) != ed25519.PrivateKeySize || len(stateStore.GetServerSignPubkey()) != ed25519.PublicKeySize {
+		slog.Error("server signing keys are missing or corrupted")
+		panic("server signing keys are missing or corrupted")
 	}
 
 	adminAuth := NewAdminAuth(stateStore)
@@ -87,12 +96,6 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	deviceMgr := NewDeviceManager(stateStore, cryptoMgr)
 
 	settings := stateStore.GetSettings()
-
-	blacklist := NewBlacklistManager(settings.BlacklistThreshold)
-
-	globalWhitelist := make([]string, len(settings.GlobalWhitelist))
-	copy(globalWhitelist, settings.GlobalWhitelist)
-
 	s := &Server{
 		Addr:         config.Addr(),
 		tlsEnabled:   config.Server.TLS.Enabled,
@@ -101,12 +104,11 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 		config:       config,
 		staticFS:     staticFS,
 		clients:      NewClientManager(),
-		handler:      nil,
 		stateStore:   stateStore,
 		adminAuth:    adminAuth,
 		cryptoMgr:    cryptoMgr,
 		deviceMgr:    deviceMgr,
-		blacklist:    blacklist,
+		blacklist:    NewBlacklistManager(settings.BlacklistThreshold),
 		loginLimiter: NewRateLimiter(settings.LoginRateLimit, time.Minute),
 		connLimiter:  NewRateLimiter(settings.MaxConnPerMin, time.Minute),
 		portLimiter:  NewRateLimiter(settings.MaxConnPerMin, time.Minute),
@@ -119,7 +121,8 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	if config.Tunnel.Enabled {
 		s.tunnelManager = NewTunnelManager(s, settings.PortRangeStart, settings.PortRangeEnd)
 	}
-	s.maxBodyBytes.Store(maxBodySizeBytes(settings.MaxBodySizeMB))
+	s.globalWhitelist.Store(newIPMatcher(settings.GlobalWhitelist))
+	s.applyRuntimeSettings(settings)
 
 	s.upgrader = websocket.Upgrader{
 		CheckOrigin:     s.buildOriginChecker(config.Security.AllowedOrigins),
@@ -131,16 +134,33 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 }
 
 func (s *Server) Start() error {
+	s.lifecycleMu.Lock()
+	if s.stopped {
+		s.lifecycleMu.Unlock()
+		return nil
+	}
 	slog.Info("server starting", "addr", s.Addr)
 
-	stateStore := s.stateStore
-	stateStore.StartSyncLoop()
-
+	// 代理配置必须在启动时校验：解析失败还继续跑，会静默退化成「不信任任何代理」，
+	// 反代部署下所有请求塌成一个 IP——按 IP 的限流、失败池、自动拉黑全部打在代理上，
+	// challenge 的 IP 绑定也同时失效。所以这里直接中止启动。
 	gin.SetMode(gin.ReleaseMode)
 	s.engine = gin.New()
-	if err := s.engine.SetTrustedProxies(nil); err != nil {
-		slog.Error("failed to disable trusted proxies", "error", err)
+	effectiveProxies, perr := configureTrustedProxies(s.engine, s.config.Security.TrustedProxies)
+	if perr != nil {
+		s.lifecycleMu.Unlock()
+		return perr
 	}
+	if len(effectiveProxies) > 0 {
+		slog.Info("trusted proxies configured", "proxies", effectiveProxies)
+	}
+
+	if !s.tlsEnabled && !isLoopbackHost(s.config.Server.Host) {
+		slog.Warn("server listens on a non-loopback interface without TLS; admin cookies and control traffic are sent in plaintext")
+	}
+
+	s.stateStore.StartSyncLoop()
+
 	s.engine.Use(gin.Recovery())
 	s.engine.Use(SecurityHeadersMiddleware())
 	s.engine.Use(DynamicBodySizeLimitMiddleware(func() int64 {
@@ -153,7 +173,11 @@ func (s *Server) Start() error {
 	s.engine.POST("/api/logout", s.handleLogout)
 	s.engine.GET("/api/check-auth", s.handleCheckAuth)
 
-	staticSub, _ := fs.Sub(s.staticFS, "static")
+	staticSub, subErr := fs.Sub(s.staticFS, "static")
+	if subErr != nil {
+		slog.Error("failed to open embedded static assets", "error", subErr)
+		staticSub = embed.FS{}
+	}
 	s.engine.GET("/login.html", func(c *gin.Context) {
 		data, _ := fs.ReadFile(staticSub, "login.html")
 		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
@@ -175,8 +199,8 @@ func (s *Server) Start() error {
 		protected.POST("/api/security/blacklist", s.handleAPIAddBlacklist)
 		protected.DELETE("/api/security/blacklist/:ip", s.handleAPIRemoveBlacklist)
 		protected.GET("/api/security/blacklist-threshold", s.handleAPIGetBlacklistThreshold)
-		protected.PUT("/api/security/blacklist-threshold", s.handleAPIUpdateBlacklistThreshold)
 		protected.PUT("/api/admin/password", s.handleAPIChangeAdminPassword)
+		protected.PUT("/api/security/blacklist-threshold", s.handleAPIUpdateBlacklistThreshold)
 		protected.GET("/api/tunnels", s.handleAPIListTunnels)
 		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
@@ -203,16 +227,70 @@ func (s *Server) Start() error {
 		}
 	}
 
+	s.wg.Add(1)
 	go s.startHeartbeatChecker()
 
 	s.httpSrv = s.newHTTPServer()
+	s.lifecycleMu.Unlock()
 
+	var err error
 	if s.tlsEnabled {
 		slog.Info("server starting with TLS", "cert", s.tlsCert)
-		return s.httpSrv.ListenAndServeTLS(s.tlsCert, s.tlsKey)
+		err = s.httpSrv.ListenAndServeTLS(s.tlsCert, s.tlsKey)
+	} else {
+		err = s.httpSrv.ListenAndServe()
 	}
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
 
-	return s.httpSrv.ListenAndServe()
+// configureTrustedProxies 校验并应用 --trusted-proxies；空列表等于不信任任何代理。
+// 解析失败必须让启动失败——静默降级会毁掉按 IP 的限流、失败池和 challenge 绑定。
+func configureTrustedProxies(engine *gin.Engine, proxies []string) ([]string, error) {
+	cleaned := make([]string, 0, len(proxies))
+	for _, proxy := range proxies {
+		if trimmed := strings.TrimSpace(proxy); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
+	}
+	if len(cleaned) == 0 {
+		cleaned = nil
+	}
+	if err := engine.SetTrustedProxies(cleaned); err != nil {
+		return nil, fmt.Errorf("invalid --trusted-proxies %q: %w", strings.Join(cleaned, ","), err)
+	}
+	return normalizedProxyList(cleaned), nil
+}
+
+// normalizedProxyList 按 gin 的口径展示生效的代理地址：裸 IP 补 /32 或 /128，
+// CIDR 用网络地址（10.1.2.3/8 → 10.0.0.0/8），日志里看到的就是实际匹配用的网段。
+func normalizedProxyList(proxies []string) []string {
+	if len(proxies) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(proxies))
+	for _, proxy := range proxies {
+		if !strings.Contains(proxy, "/") {
+			if ip := net.ParseIP(proxy); ip != nil {
+				if ip.To4() != nil {
+					out = append(out, proxy+"/32")
+				} else {
+					out = append(out, proxy+"/128")
+				}
+				continue
+			}
+			out = append(out, proxy)
+			continue
+		}
+		if _, network, err := net.ParseCIDR(proxy); err == nil {
+			out = append(out, network.String())
+			continue
+		}
+		out = append(out, proxy)
+	}
+	return out
 }
 
 func (s *Server) newHTTPServer() *http.Server {
@@ -232,34 +310,45 @@ func (s *Server) newHTTPServer() *http.Server {
 }
 
 func (s *Server) Stop() error {
-	slog.Info("server stopping")
 	s.stopOnce.Do(func() {
-		if s.stopCh != nil {
-			close(s.stopCh)
+		s.lifecycleMu.Lock()
+		s.stopped = true
+		slog.Info("server stopping")
+		close(s.stopCh)
+
+		if s.tunnelManager != nil {
+			s.tunnelManager.CloseAll()
 		}
+		for _, client := range s.clients.List() {
+			closeClientConn(client)
+		}
+		s.clients.RemoveAll()
+		if s.deviceMgr != nil {
+			s.deviceMgr.CloseAllPendingConns()
+		}
+		s.stateStore.Stop()
+		s.wg.Wait()
+
+		if s.loginLimiter != nil {
+			s.loginLimiter.Stop()
+		}
+		if s.connLimiter != nil {
+			s.connLimiter.Stop()
+		}
+		if s.portLimiter != nil {
+			s.portLimiter.Stop()
+		}
+		if s.blacklist != nil {
+			s.blacklist.Stop()
+		}
+		if s.httpSrv != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			s.stopErr = s.httpSrv.Shutdown(ctx)
+			cancel()
+		}
+		s.lifecycleMu.Unlock()
 	})
-	s.stateStore.Stop()
-	if s.tunnelManager != nil {
-		s.tunnelManager.CloseAll()
-	}
-	if s.loginLimiter != nil {
-		s.loginLimiter.Stop()
-	}
-	if s.connLimiter != nil {
-		s.connLimiter.Stop()
-	}
-	if s.portLimiter != nil {
-		s.portLimiter.Stop()
-	}
-	if s.blacklist != nil {
-		s.blacklist.Stop()
-	}
-	if s.httpSrv != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return s.httpSrv.Shutdown(ctx)
-	}
-	return nil
+	return s.stopErr
 }
 
 func (s *Server) handleConn(c *gin.Context) {
@@ -297,10 +386,10 @@ func (s *Server) handleConn(c *gin.Context) {
 
 		if msg.Type == "register" && client.ClientID != "" {
 			var payload common.RegisterPayload
-			if err := jsonUnmarshal(msg.Payload, &payload); err == nil {
+			if err := common.DecodeStrictJSON(msg.Payload, &payload); err == nil {
 				if payload.ReAuth {
 					device := s.stateStore.GetDeviceByID(client.ClientID)
-					if device != nil && device.Status == "authorized" {
+					if device != nil && device.Status == deviceStatusAuthorized {
 						go s.readLoop(client)
 						return
 					}
@@ -308,7 +397,7 @@ func (s *Server) handleConn(c *gin.Context) {
 			}
 
 			pendingConn, ok := s.deviceMgr.GetPendingConn(client.ClientID)
-			if ok && pendingConn.Conn != nil {
+			if ok && pendingConn.Client == client {
 				go s.pendingLoop(client)
 				return
 			}
@@ -324,26 +413,14 @@ func (s *Server) handleConn(c *gin.Context) {
 	slog.Debug("connection closed", "remote", remoteAddr)
 }
 
-func jsonUnmarshal(data []byte, v interface{}) error {
-	return common.DecodeStrictJSON(data, v)
-}
-
 func (s *Server) pendingLoop(client *Client) {
 	defer func() {
 		s.deviceMgr.RemovePendingConnIfMatch(client.ClientID, client)
 		client.Conn.Close()
 	}()
 
-	settings := s.stateStore.GetSettings()
-	timeout := time.Duration(settings.HeartbeatTimeout) * time.Second
-	if timeout <= 0 {
-		timeout = 90 * time.Second
-	} else if timeout < 60*time.Second {
-		timeout = 60 * time.Second
-	}
-
 	for {
-		client.Conn.SetReadDeadline(time.Now().Add(timeout))
+		client.Conn.SetReadDeadline(time.Now().Add(s.connectionReadTimeout()))
 		msg, err := readWSMessage(client.Conn)
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -357,12 +434,21 @@ func (s *Server) pendingLoop(client *Client) {
 		}
 
 		device := s.stateStore.GetDeviceByID(client.ClientID)
-		if device != nil && device.Status == "authorized" {
+		if device != nil && device.Status == deviceStatusAuthorized {
 			slog.Info("device approved, transition to working state",
 				"client_id", client.ClientID)
 			s.deviceMgr.DetachPendingConnIfMatch(client.ClientID, client)
 			if s.tunnelManager != nil {
 				s.tunnelManager.CloseTunnelsByClient(client.ClientID)
+			}
+			okPayload, err := s.handler.registerOKPayloadForDevice(device)
+			if err != nil {
+				slog.Error("failed to prepare register_ok", "client_id", client.ClientID, "error", err)
+				return
+			}
+			client.SetEncryptionEnabled(s.deviceEncryptionActive(device))
+			if err := s.sendRegisterOK(client, okPayload); err != nil {
+				slog.Warn("failed to send register_ok on approval", "client_id", client.ClientID, "error", err)
 			}
 			s.clients.Add(client)
 			s.readLoop(client)
@@ -384,7 +470,6 @@ func (s *Server) readLoop(client *Client) {
 			}
 			if current {
 				s.clients.RemoveIfMatch(client.ClientID, client)
-				s.deviceMgr.RemoveAuthorizedConn(client.ClientID)
 				slog.Info("client disconnected", "client_id", client.ClientID)
 			} else {
 				slog.Debug("stale client connection closed", "client_id", client.ClientID)
@@ -393,14 +478,8 @@ func (s *Server) readLoop(client *Client) {
 		client.Conn.Close()
 	}()
 
-	settings := s.stateStore.GetSettings()
-	timeout := time.Duration(settings.HeartbeatTimeout) * time.Second
-	if timeout <= 0 {
-		timeout = 90 * time.Second
-	}
-
 	for {
-		client.Conn.SetReadDeadline(time.Now().Add(timeout))
+		client.Conn.SetReadDeadline(time.Now().Add(s.connectionReadTimeout()))
 		msg, err := readWSMessage(client.Conn)
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -409,7 +488,10 @@ func (s *Server) readLoop(client *Client) {
 			return
 		}
 
-		s.clients.UpdateActivityIfMatch(client.ClientID, client)
+		if !s.clients.TouchIfMatch(client.ClientID, client) {
+			slog.Debug("stale client connection dropped", "client_id", client.ClientID)
+			return
+		}
 
 		if err := s.handler.Handle(client, msg); err != nil {
 			slog.Error("failed to handle message",
@@ -449,28 +531,44 @@ func (s *Server) handleHealth(c *gin.Context) {
 }
 
 func (s *Server) startHeartbeatChecker() {
-	settings := s.stateStore.GetSettings()
-	interval := time.Duration(settings.HeartbeatInterval) * time.Second
-	timeout := time.Duration(settings.HeartbeatTimeout) * time.Second
+	defer s.wg.Done()
 
-	if interval <= 0 {
-		interval = 30 * time.Second
-	}
-	if timeout <= 0 {
-		timeout = 90 * time.Second
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(s.heartbeatPeriodDuration())
+	defer timer.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
-			s.checkClientsTimeout(timeout)
+		case <-timer.C:
+			s.checkClientsTimeout(s.heartbeatTimeoutDuration())
+			timer.Reset(s.heartbeatPeriodDuration())
 		case <-s.stopCh:
 			return
 		}
 	}
+}
+
+func (s *Server) heartbeatPeriodDuration() time.Duration {
+	ns := s.heartbeatPeriod.Load()
+	if ns <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(ns)
+}
+
+func (s *Server) heartbeatTimeoutDuration() time.Duration {
+	ns := s.heartbeatTimeout.Load()
+	if ns <= 0 {
+		return 90 * time.Second
+	}
+	return time.Duration(ns)
+}
+
+func (s *Server) connectionReadTimeout() time.Duration {
+	timeout := s.heartbeatTimeoutDuration()
+	if timeout < minConnectionReadTimeout {
+		return minConnectionReadTimeout
+	}
+	return timeout
 }
 
 func (s *Server) checkClientsTimeout(timeout time.Duration) {
@@ -490,10 +588,6 @@ func (s *Server) checkClientsTimeout(timeout time.Duration) {
 	}
 }
 
-func (s *Server) GetClients() []*Client {
-	return s.clients.List()
-}
-
 func (s *Server) GetGlobalWhitelist() []string {
 	settings := s.stateStore.GetSettings()
 	return settings.GlobalWhitelist
@@ -501,7 +595,7 @@ func (s *Server) GetGlobalWhitelist() []string {
 
 func (s *Server) SetGlobalWhitelist(ips []string) {
 	deduped := deduplicateIPs(ips)
-	s.stateStore.UpdateSettings(func(st *ServerSettings) {
+	s.UpdateSettings(func(st *ServerSettings) {
 		st.GlobalWhitelist = deduped
 	})
 }
@@ -528,33 +622,39 @@ func (s *Server) applyRuntimeSettings(settings ServerSettings) {
 		s.blacklist.SetThreshold(settings.BlacklistThreshold)
 	}
 	s.maxBodyBytes.Store(maxBodySizeBytes(settings.MaxBodySizeMB))
-}
+	s.globalWhitelist.Store(newIPMatcher(settings.GlobalWhitelist))
 
-func (s *Server) isDeviceEncryptionEnabled(clientID string) bool {
-	if s == nil || s.stateStore == nil {
-		return true
+	heartbeatPeriod := time.Duration(settings.HeartbeatInterval) * time.Second
+	if heartbeatPeriod <= 0 {
+		heartbeatPeriod = 30 * time.Second
 	}
-	device := s.stateStore.GetDeviceByID(clientID)
-	return device == nil || device.EncEnabled
+	heartbeatTimeout := time.Duration(settings.HeartbeatTimeout) * time.Second
+	if heartbeatTimeout <= 0 {
+		heartbeatTimeout = 90 * time.Second
+	}
+	s.heartbeatPeriod.Store(int64(heartbeatPeriod))
+	s.heartbeatTimeout.Store(int64(heartbeatTimeout))
 }
 
-func (s *Server) encryptTunnelBytes(clientID string, data []byte) ([]byte, error) {
-	if !s.isDeviceEncryptionEnabled(clientID) {
+func (s *Server) deviceEncryptionActive(device *DeviceState) bool {
+	if device == nil || !device.EncEnabled || device.EncKey == "" || device.DeviceDHPubkey == "" {
+		return false
+	}
+	return s.cryptoMgr != nil && s.cryptoMgr.HasKey(device.ID)
+}
+
+func (s *Server) decryptTunnelBytes(client *Client, data []byte) ([]byte, error) {
+	if client == nil || !client.EncryptionEnabled() {
 		return data, nil
 	}
-	return s.cryptoMgr.EncryptBytes(clientID, data)
-}
-
-func (s *Server) decryptTunnelBytes(clientID string, data []byte) ([]byte, error) {
-	if !s.isDeviceEncryptionEnabled(clientID) {
-		return data, nil
+	if s.cryptoMgr == nil {
+		return nil, fmt.Errorf("encryption manager is not initialized")
 	}
-	return s.cryptoMgr.DecryptBytes(clientID, data)
+	return s.cryptoMgr.DecryptBytes(client.ClientID, data)
 }
 
 func (s *Server) IsGloballyWhitelisted(ip string) bool {
-	whitelist := s.GetGlobalWhitelist()
-	return isIPWhitelisted(ip, whitelist)
+	return s.globalWhitelist.Load().Match(ip)
 }
 
 func (s *Server) buildOriginChecker(allowedOrigins []string) func(r *http.Request) bool {
@@ -568,9 +668,11 @@ func (s *Server) buildOriginChecker(allowedOrigins []string) func(r *http.Reques
 	originSet := make(map[string]bool, len(allowedOrigins))
 	for _, o := range allowedOrigins {
 		normalized, ok := normalizeOrigin(o)
-		if ok {
-			originSet[normalized] = true
+		if !ok {
+			slog.Warn("ignoring invalid allowed origin", "origin", o)
+			continue
 		}
+		originSet[normalized] = true
 	}
 
 	return func(r *http.Request) bool {
@@ -592,6 +694,15 @@ func (s *Server) buildOriginChecker(allowedOrigins []string) func(r *http.Reques
 		slog.Warn("WebSocket origin denied", "origin", origin)
 		return false
 	}
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func normalizeOrigin(raw string) (string, bool) {

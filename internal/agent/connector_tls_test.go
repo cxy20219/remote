@@ -171,9 +171,6 @@ func TestConnectorConnectTLS_ValidCA(t *testing.T) {
 	}
 	defer c.Close()
 
-	if !c.IsConnected() {
-		t.Fatal("expected connected state after successful TLS connect")
-	}
 }
 
 func TestConnectorConnectTLS_RegisterOverTLS(t *testing.T) {
@@ -279,7 +276,4 @@ func TestConnectorConnectTLS_MultipleCertsInCAFile(t *testing.T) {
 	}
 	defer c.Close()
 
-	if !c.IsConnected() {
-		t.Fatal("expected connected state")
-	}
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -9,19 +10,10 @@ import (
 	"goremote/internal/common"
 )
 
-type fakePendingConn struct {
-	closed bool
-}
-
 const (
 	testSignPubkeyHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	testDHPubkeyHex   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
-
-func (f *fakePendingConn) Close() error {
-	f.closed = true
-	return nil
-}
 
 func TestSetPortRange_UpdatesPortStatus(t *testing.T) {
 	cryptoMgr := common.NewCryptoManager()
@@ -33,7 +25,7 @@ func TestSetPortRange_UpdatesPortStatus(t *testing.T) {
 		t.Fatalf("initial range: expected 10000-20000, got %d-%d", status.RangeStart, status.RangeEnd)
 	}
 
-	port, ln, err := tm.AllocatePort()
+	port, ln, err := tm.AllocatePortForExposure(TunnelExposurePublic)
 	if err != nil {
 		t.Fatalf("AllocatePort: %v", err)
 	}
@@ -53,7 +45,7 @@ func TestSetPortRange_UpdatesPortStatus(t *testing.T) {
 func TestSetPortRange_PortAllocationInNewRange(t *testing.T) {
 	tm := NewTunnelManager(nil, 100, 200)
 
-	p1, ln1, err := tm.AllocatePort()
+	p1, ln1, err := tm.AllocatePortForExposure(TunnelExposurePublic)
 	if err != nil {
 		t.Fatalf("first allocate: %v", err)
 	}
@@ -67,7 +59,7 @@ func TestSetPortRange_PortAllocationInNewRange(t *testing.T) {
 
 	tm.SetPortRange(5000, 6000)
 
-	p2, ln2, err := tm.AllocatePort()
+	p2, ln2, err := tm.AllocatePortForExposure(TunnelExposurePublic)
 	if err != nil {
 		t.Fatalf("allocate after range change: %v", err)
 	}
@@ -82,8 +74,8 @@ func TestSetPortRange_PortAllocationInNewRange(t *testing.T) {
 func TestSetPortRange_TracksAllocatedCount(t *testing.T) {
 	tm := NewTunnelManager(nil, 1000, 2000)
 
-	p1, ln1, _ := tm.AllocatePort()
-	p2, ln2, _ := tm.AllocatePort()
+	p1, ln1, _ := tm.AllocatePortForExposure(TunnelExposurePublic)
+	p2, ln2, _ := tm.AllocatePortForExposure(TunnelExposurePublic)
 	if ln1 != nil {
 		ln1.Close()
 	}
@@ -155,6 +147,32 @@ func TestAllocatePortForExposure_ServerLocalBindsLoopback(t *testing.T) {
 	}
 }
 
+func TestUpdateTunnelClosesConnectionsWhenTargetChanges(t *testing.T) {
+	tm := NewTunnelManager(nil, 30000, 30100)
+	tm.tunnels["t1"] = &Tunnel{
+		TunnelID:   "t1",
+		ClientID:   "client-1",
+		Protocol:   "tcp",
+		PublicPort: 30000,
+		Exposure:   TunnelExposurePublic,
+		BindAddr:   TunnelBindAll,
+		LocalAddr:  "127.0.0.1",
+		LocalPort:  22,
+	}
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	if err := tm.AddExternalConn("conn-1", "t1", serverConn); err != nil {
+		t.Fatalf("AddExternalConn: %v", err)
+	}
+
+	if _, err := tm.UpdateTunnel("t1", "127.0.0.1", 8080, 0, "tcp", ""); err != nil {
+		t.Fatalf("UpdateTunnel: %v", err)
+	}
+	if externalConnPresent(tm, "conn-1") {
+		t.Fatal("expected target change to close existing public connections")
+	}
+}
+
 func TestUpdateTunnel_EmptyExposurePreservesCurrentMode(t *testing.T) {
 	tm := NewTunnelManager(nil, 30000, 30100)
 	tm.tunnels["t1"] = &Tunnel{
@@ -166,7 +184,6 @@ func TestUpdateTunnel_EmptyExposurePreservesCurrentMode(t *testing.T) {
 		BindAddr:   TunnelBindServerLocal,
 		LocalAddr:  "127.0.0.1",
 		LocalPort:  22,
-		Status:     "active",
 	}
 	tm.publicPorts[30000] = "t1"
 
@@ -273,11 +290,7 @@ func TestDenyDevice_RemovesFromStore(t *testing.T) {
 	dm := NewDeviceManager(stateStore, cryptoMgr)
 
 	deviceID, _ := dm.RegisterNewClient(testSignPubkeyHex, testDHPubkeyHex, "test", "linux", "10.0.0.2")
-	fakeConn := &fakePendingConn{}
-	dm.pendingConns[deviceID] = &PendingConnInfo{
-		Client: &Client{ClientID: deviceID},
-		Conn:   fakeConn,
-	}
+	dm.pendingConns[deviceID] = &PendingConn{Client: &Client{ClientID: deviceID}}
 
 	if err := dm.DenyDevice(deviceID); err != nil {
 		t.Fatalf("DenyDevice: %v", err)
@@ -289,8 +302,30 @@ func TestDenyDevice_RemovesFromStore(t *testing.T) {
 	if _, ok := dm.GetPendingConn(deviceID); ok {
 		t.Fatal("pending connection should be removed after deny")
 	}
-	if !fakeConn.closed {
-		t.Fatal("pending connection should be closed after deny")
+}
+
+func TestDenyDeviceRejectsAuthorizedDevice(t *testing.T) {
+	_, stateStore := newTestConfig(t)
+	cryptoMgr := common.NewCryptoManager()
+	dm := NewDeviceManager(stateStore, cryptoMgr)
+
+	deviceID, err := dm.RegisterNewClient(testSignPubkeyHex, testDHPubkeyHex, "test", "linux", "10.0.0.2")
+	if err != nil {
+		t.Fatalf("RegisterNewClient: %v", err)
+	}
+	if _, _, _, err := dm.ApproveDevice(deviceID); err != nil {
+		t.Fatalf("ApproveDevice: %v", err)
+	}
+
+	if err := dm.DenyDevice(deviceID); err == nil {
+		t.Fatal("expected deny to reject an authorized device")
+	}
+	device := stateStore.GetDeviceByID(deviceID)
+	if device == nil || device.Status != deviceStatusAuthorized {
+		t.Fatalf("authorized device was removed by deny: %+v", device)
+	}
+	if !cryptoMgr.HasKey(deviceID) {
+		t.Fatal("authorized device encryption key was removed by deny")
 	}
 }
 
@@ -330,25 +365,19 @@ func TestRegisterNewClient_ReusesExistingPendingDevice(t *testing.T) {
 
 func TestPendingConnReplacementDoesNotLetOldCleanupDeleteNew(t *testing.T) {
 	dm := &DeviceManager{
-		pendingConns: make(map[string]*PendingConnInfo),
+		pendingConns: make(map[string]*PendingConn),
 	}
 
 	deviceID := "client-test"
 	oldClient := &Client{ClientID: deviceID}
 	newClient := &Client{ClientID: deviceID}
-	oldConn := &fakePendingConn{}
 
-	dm.pendingConns[deviceID] = &PendingConnInfo{
+	dm.pendingConns[deviceID] = &PendingConn{
 		Client:   oldClient,
-		Conn:     oldConn,
 		RemoteIP: "10.0.0.1",
 	}
 
 	dm.AddPendingConn(deviceID, newClient, "10.0.0.2")
-
-	if !oldConn.closed {
-		t.Fatal("old pending connection should be closed when replaced")
-	}
 
 	info, ok := dm.GetPendingConn(deviceID)
 	if !ok {
@@ -407,6 +436,7 @@ func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
 		stateStore: stateStore,
 		deviceMgr:  dm,
 		clients:    NewClientManager(),
+		cryptoMgr:  cryptoMgr,
 	}
 	handler := NewHandler(srv)
 
@@ -436,6 +466,34 @@ func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
 	}
 	if device.DeviceDHPubkey != dhPubHex {
 		t.Fatal("expected device DH public key to refresh")
+	}
+
+	// An administrator-defined alias must survive later reconnects.
+	stateStore.UpdateDevice(deviceID, func(d *DeviceState) { d.Name = "custom-alias" })
+	timestamp = time.Now().Add(2 * time.Second).Unix()
+	signature, err = common.SignTimestamp(priv, deviceID, timestamp)
+	if err != nil {
+		t.Fatalf("SignTimestamp second: %v", err)
+	}
+	err = handler.handleReconnect(&Client{}, &common.RegisterPayload{
+		ReAuth:         true,
+		ClientID:       deviceID,
+		DevicePubkey:   pubHex,
+		DeviceDHPubkey: dhPubHex,
+		Timestamp:      timestamp,
+		Signature:      common.EncodeBytes(signature),
+		Hostname:       "another-host",
+		OS:             "linux",
+	})
+	if err == nil {
+		t.Fatal("expected nil websocket client to fail while sending register_ok")
+	}
+	device = stateStore.GetDeviceByID(deviceID)
+	if device.Name != "custom-alias" {
+		t.Fatalf("custom alias was overwritten on reconnect: %q", device.Name)
+	}
+	if device.Hostname != "another-host" {
+		t.Fatalf("expected hostname to refresh, got %q", device.Hostname)
 	}
 }
 
@@ -475,6 +533,7 @@ func TestHandleReconnectRejectsInvalidStoredDHPubkey(t *testing.T) {
 		stateStore: stateStore,
 		deviceMgr:  dm,
 		clients:    NewClientManager(),
+		cryptoMgr:  cryptoMgr,
 	}
 	handler := NewHandler(srv)
 
@@ -636,40 +695,47 @@ func TestHandleAgentData_MissingExternalConnIsNonFatal(t *testing.T) {
 
 func TestHandleAgentData_RejectsConnFromDifferentTunnel(t *testing.T) {
 	tm := NewTunnelManager(nil, 10000, 20000)
+	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a"}
+	tm.tunnels["tunnel-b"] = &Tunnel{TunnelID: "tunnel-b"}
 	serverConn, clientConn := net.Pipe()
 	defer serverConn.Close()
 	defer clientConn.Close()
 
-	tm.AddExternalConn("conn-1", "tunnel-a", serverConn)
+	if err := tm.AddExternalConn("conn-1", "tunnel-a", serverConn); err != nil {
+		t.Fatalf("AddExternalConn: %v", err)
+	}
 
 	if err := tm.HandleAgentData("tunnel-b", "conn-1", nil, true); err == nil {
 		t.Fatal("expected mismatched tunnel/conn to be rejected")
 	}
-	if _, ok := tm.GetExternalConn("conn-1"); !ok {
+	if !externalConnPresent(tm, "conn-1") {
 		t.Fatal("mismatched EOF should not remove another tunnel's connection")
 	}
 }
 
 func TestHandleAgentData_EOFRemovesMatchingConn(t *testing.T) {
 	tm := NewTunnelManager(nil, 10000, 20000)
+	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a"}
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
 
-	tm.AddExternalConn("conn-1", "tunnel-a", serverConn)
+	if err := tm.AddExternalConn("conn-1", "tunnel-a", serverConn); err != nil {
+		t.Fatalf("AddExternalConn: %v", err)
+	}
 
 	if err := tm.HandleAgentData("tunnel-a", "conn-1", nil, true); err != nil {
 		t.Fatalf("expected matching EOF to close connection, got %v", err)
 	}
-	if _, ok := tm.GetExternalConn("conn-1"); ok {
-		t.Fatal("expected matching EOF to remove connection")
-	}
+	waitForCondition(t, time.Second, func() bool {
+		return !externalConnPresent(tm, "conn-1")
+	}, "expected matching EOF to remove connection")
 }
 
 func TestCloseTunnelsByClient_RemovesOnlyThatClientTunnels(t *testing.T) {
 	tm := NewTunnelManager(nil, 10000, 20000)
-	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a", ClientID: "client-1", PublicPort: 10001, Status: "active"}
-	tm.tunnels["tunnel-b"] = &Tunnel{TunnelID: "tunnel-b", ClientID: "client-1", PublicPort: 10002, Status: "active"}
-	tm.tunnels["tunnel-c"] = &Tunnel{TunnelID: "tunnel-c", ClientID: "client-2", PublicPort: 10003, Status: "active"}
+	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a", ClientID: "client-1", PublicPort: 10001}
+	tm.tunnels["tunnel-b"] = &Tunnel{TunnelID: "tunnel-b", ClientID: "client-1", PublicPort: 10002}
+	tm.tunnels["tunnel-c"] = &Tunnel{TunnelID: "tunnel-c", ClientID: "client-2", PublicPort: 10003}
 	tm.publicPorts[10001] = "tunnel-a"
 	tm.publicPorts[10002] = "tunnel-b"
 	tm.publicPorts[10003] = "tunnel-c"
@@ -699,7 +765,7 @@ func TestCloseTunnelsByClient_RemovesOnlyThatClientTunnels(t *testing.T) {
 func TestCreateTunnelUsesRuntimeMaxTunnelsSetting(t *testing.T) {
 	settings := defaultSettings()
 	settings.MaxTunnelsPerClient = 1
-	stateStore := NewStateStoreWithSettings(settings)
+	stateStore := newTestStateStore(settings)
 	srv := &Server{stateStore: stateStore}
 	tm := NewTunnelManager(srv, 10000, 20000)
 
@@ -757,21 +823,106 @@ func TestUpdateDeviceConfigTogglesEncryptionRuntimeKey(t *testing.T) {
 	}
 }
 
+func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool, message string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal(message)
+}
+
+func TestHandleAgentDataPreservesOrder(t *testing.T) {
+	tm := NewTunnelManager(nil, 10000, 20000)
+	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a"}
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	if err := tm.AddExternalConn("conn-1", "tunnel-a", serverConn); err != nil {
+		t.Fatalf("AddExternalConn: %v", err)
+	}
+
+	if err := tm.HandleAgentData("tunnel-a", "conn-1", []byte("first-"), false); err != nil {
+		t.Fatalf("HandleAgentData first: %v", err)
+	}
+	if err := tm.HandleAgentData("tunnel-a", "conn-1", []byte("second"), false); err != nil {
+		t.Fatalf("HandleAgentData second: %v", err)
+	}
+	if err := tm.HandleAgentData("tunnel-a", "conn-1", nil, true); err != nil {
+		t.Fatalf("HandleAgentData EOF: %v", err)
+	}
+
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	received, err := io.ReadAll(clientConn)
+	if err != nil {
+		t.Fatalf("read all: %v", err)
+	}
+	if string(received) != "first-second" {
+		t.Fatalf("received %q, want ordered payload", received)
+	}
+	waitForCondition(t, time.Second, func() bool {
+		return !externalConnPresent(tm, "conn-1")
+	}, "expected EOF to remove the external connection")
+}
+
+func externalConnPresent(tm *TunnelManager, connID string) bool {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	_, ok := tm.extConns[connID]
+	return ok
+}
+
+func TestServerTunnelBytesRoundTripWhenEncryptionEnabled(t *testing.T) {
+	cryptoMgr := common.NewCryptoManager()
+	if err := cryptoMgr.SetKey("client-enc", make([]byte, 32)); err != nil {
+		t.Fatalf("SetKey: %v", err)
+	}
+	srv := &Server{cryptoMgr: cryptoMgr}
+	client := &Client{ClientID: "client-enc"}
+	client.SetEncryptionEnabled(true)
+
+	data := []byte("secret tunnel payload")
+	frame, err := srv.encodeTunnelFrame(client, "tunnel-1", "conn-1", data, false)
+	if err != nil {
+		t.Fatalf("encodeTunnelFrame: %v", err)
+	}
+	payload, err := common.DecodeBinaryTunnelDataFrame(frame)
+	if err != nil {
+		t.Fatalf("DecodeBinaryTunnelDataFrame: %v", err)
+	}
+	if string(payload.Data) == string(data) {
+		t.Fatal("expected ciphertext when encryption is enabled")
+	}
+	decrypted, err := srv.decryptTunnelBytes(client, payload.Data)
+	if err != nil {
+		t.Fatalf("decryptTunnelBytes: %v", err)
+	}
+	if string(decrypted) != string(data) {
+		t.Fatalf("round-trip mismatch: %q", decrypted)
+	}
+}
+
 func TestServerTunnelBytesAllowPlaintextWhenEncryptionDisabled(t *testing.T) {
-	settings := defaultSettings()
-	stateStore := NewStateStoreWithSettings(settings)
-	stateStore.AddDevice(&DeviceState{ID: "client-plain", EncEnabled: false})
-	srv := &Server{stateStore: stateStore, cryptoMgr: common.NewCryptoManager()}
+	srv := &Server{cryptoMgr: common.NewCryptoManager()}
+	client := &Client{ClientID: "client-plain"}
+	client.SetEncryptionEnabled(false)
 
 	data := []byte("plain")
-	encrypted, err := srv.encryptTunnelBytes("client-plain", data)
+	frame, err := srv.encodeTunnelFrame(client, "tunnel-1", "conn-1", data, false)
 	if err != nil {
-		t.Fatalf("encryptTunnelBytes: %v", err)
+		t.Fatalf("encodeTunnelFrame: %v", err)
 	}
-	if string(encrypted) != string(data) {
-		t.Fatalf("disabled encryption should pass plaintext through, got %q", encrypted)
+	payload, err := common.DecodeBinaryTunnelDataFrame(frame)
+	if err != nil {
+		t.Fatalf("DecodeBinaryTunnelDataFrame: %v", err)
 	}
-	decrypted, err := srv.decryptTunnelBytes("client-plain", encrypted)
+	if string(payload.Data) != string(data) {
+		t.Fatalf("disabled encryption should pass plaintext through, got %q", payload.Data)
+	}
+	decrypted, err := srv.decryptTunnelBytes(client, payload.Data)
 	if err != nil {
 		t.Fatalf("decryptTunnelBytes: %v", err)
 	}

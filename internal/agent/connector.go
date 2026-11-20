@@ -30,7 +30,6 @@ type Connector struct {
 
 	conn   *websocket.Conn
 	mu     sync.Mutex
-	done   chan struct{}
 	closed bool
 }
 
@@ -41,7 +40,6 @@ func NewConnector(serverAddr string, tlsEnabled bool, tlsCA string, insecureSkip
 		tlsCA:              tlsCA,
 		insecureSkipVerify: insecureSkipVerify,
 		identity:           identity,
-		done:               make(chan struct{}),
 	}
 }
 
@@ -75,25 +73,19 @@ func (c *Connector) Connect() error {
 	if err != nil {
 		return fmt.Errorf("failed to dial: %w", err)
 	}
+	conn.SetReadLimit(common.MaxWebSocketMessageSize)
 
-	c.resetConnectionState(conn)
+	c.conn = conn
+	c.closed = false
 
 	slog.Info("connected to server", "addr", c.serverAddr)
 	return nil
 }
 
-func (c *Connector) resetConnectionState(conn *websocket.Conn) {
-	if conn != nil {
-		conn.SetReadLimit(common.MaxWebSocketMessageSize)
-	}
-	c.conn = conn
-	c.done = make(chan struct{})
-	c.closed = false
-}
-
 func (c *Connector) buildTLSConfig() (*tls.Config, error) {
 	cfg := common.SecureTLSConfig()
-	if c.tlsCA == "" && c.insecureSkipVerify {
+	if c.insecureSkipVerify {
+		slog.Warn("TLS certificate verification is disabled; the connection is vulnerable to man-in-the-middle attacks")
 		cfg.InsecureSkipVerify = true
 		return cfg, nil
 	}
@@ -126,9 +118,7 @@ func (c *Connector) Close() error {
 	if c.closed {
 		return nil
 	}
-
 	c.closed = true
-	close(c.done)
 
 	if c.conn != nil {
 		err := c.conn.Close()
@@ -202,17 +192,10 @@ func (c *Connector) Receive() (*common.Message, error) {
 	}
 }
 
-func (c *Connector) Done() <-chan struct{} {
-	return c.done
-}
-
-func (c *Connector) IsConnected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.conn != nil && !c.closed
-}
-
 func (c *Connector) RegisterNew(hostname, osName string) error {
+	if c.identity == nil {
+		return fmt.Errorf("agent identity is not initialized")
+	}
 	payload := common.RegisterPayload{
 		DevicePubkey:   c.identity.DeviceSignPubkey,
 		DeviceDHPubkey: c.identity.DeviceDHPubkey,
@@ -241,6 +224,9 @@ func (c *Connector) RegisterReauth(clientID string, timestamp int64, hostname, o
 }
 
 func (c *Connector) buildRegisterReauthPayload(clientID string, timestamp int64, hostname, osName string) (common.RegisterPayload, error) {
+	if c.identity == nil {
+		return common.RegisterPayload{}, fmt.Errorf("agent identity is not initialized")
+	}
 	privKey, err := c.identity.GetSignPrivKey()
 	if err != nil {
 		return common.RegisterPayload{}, fmt.Errorf("get sign privkey: %w", err)

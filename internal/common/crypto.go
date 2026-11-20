@@ -4,11 +4,15 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"sync"
+)
+
+const (
+	// TunnelEncryptionOverhead is the number of extra bytes added to a
+	// plaintext chunk by tunnel encryption: the AES-GCM nonce plus tag.
+	TunnelEncryptionOverhead = 12 + 16
 )
 
 type CryptoContext struct {
@@ -33,65 +37,53 @@ func NewCryptoContextFromKey(key []byte) (*CryptoContext, error) {
 	return &CryptoContext{gcm: gcm}, nil
 }
 
-func NewCryptoContext(sharedKey string) (*CryptoContext, error) {
-	if sharedKey == "" {
-		return nil, fmt.Errorf("shared key is empty, cannot initialize encryption")
-	}
-
-	hash := sha256.Sum256([]byte(sharedKey + "goremote-tunnel-v1"))
-	key := hash[:]
-
-	return NewCryptoContextFromKey(key)
-}
-
-func (cc *CryptoContext) Encrypt(plaintext []byte) (string, error) {
-	ciphertext, err := cc.EncryptBytes(plaintext)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
-}
-
-func (cc *CryptoContext) EncryptBytes(plaintext []byte) ([]byte, error) {
+// EncryptTo seals plaintext into dst's spare capacity and returns the
+// nonce-prefixed ciphertext. Reusing the destination buffer avoids one full
+// copy of every tunnel chunk.
+func (cc *CryptoContext) EncryptTo(dst, plaintext []byte) ([]byte, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("crypto context is nil")
 	}
 
 	nonceSize := cc.gcm.NonceSize()
-	out := make([]byte, nonceSize, nonceSize+len(plaintext)+cc.gcm.Overhead())
-	nonce := out[:nonceSize]
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+	need := nonceSize + len(plaintext) + cc.gcm.Overhead()
+	if cap(dst) < need {
+		dst = make([]byte, nonceSize, need)
+	} else {
+		dst = dst[:nonceSize]
+	}
+
+	if _, err := io.ReadFull(rand.Reader, dst); err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
 	}
 
-	return cc.gcm.Seal(out, nonce, plaintext, nil), nil
-}
-
-func (cc *CryptoContext) Decrypt(encoded string) ([]byte, error) {
-	if cc == nil {
-		return nil, fmt.Errorf("crypto context is nil")
-	}
-
-	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, fmt.Errorf("base64 decode: %w", err)
-	}
-
-	return cc.DecryptBytes(ciphertext)
+	return cc.gcm.Seal(dst, dst, plaintext, nil), nil
 }
 
 func (cc *CryptoContext) DecryptBytes(ciphertext []byte) ([]byte, error) {
+	return cc.DecryptTo(nil, ciphertext)
+}
+
+// DecryptTo opens ciphertext into dst's spare capacity.
+func (cc *CryptoContext) DecryptTo(dst, ciphertext []byte) ([]byte, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("crypto context is nil")
 	}
 
 	nonceSize := cc.gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short: %d bytes (min %d)", len(ciphertext), nonceSize)
+	if len(ciphertext) < nonceSize+cc.gcm.Overhead() {
+		return nil, fmt.Errorf("ciphertext too short: %d bytes", len(ciphertext))
+	}
+
+	plaintextLen := len(ciphertext) - nonceSize - cc.gcm.Overhead()
+	if cap(dst) < plaintextLen {
+		dst = make([]byte, 0, plaintextLen)
+	} else {
+		dst = dst[:0]
 	}
 
 	nonce, encrypted := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := cc.gcm.Open(nil, nonce, encrypted, nil)
+	plaintext, err := cc.gcm.Open(dst, nonce, encrypted, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}
@@ -128,43 +120,24 @@ func (cm *CryptoManager) RemoveKey(clientID string) {
 	delete(cm.keys, clientID)
 }
 
-func (cm *CryptoManager) Encrypt(clientID string, plaintext []byte) (string, error) {
-	cm.mu.RLock()
-	ctx, ok := cm.keys[clientID]
-	cm.mu.RUnlock()
-
-	if !ok || ctx == nil {
-		return "", fmt.Errorf("encryption key not found for client: %s", clientID)
+// EncryptTo encrypts plaintext into dst's spare capacity.
+func (cm *CryptoManager) EncryptTo(clientID string, dst, plaintext []byte) ([]byte, error) {
+	ctx, err := cm.context(clientID)
+	if err != nil {
+		return nil, err
 	}
-
-	return ctx.Encrypt(plaintext)
-}
-
-func (cm *CryptoManager) EncryptBytes(clientID string, plaintext []byte) ([]byte, error) {
-	cm.mu.RLock()
-	ctx, ok := cm.keys[clientID]
-	cm.mu.RUnlock()
-
-	if !ok || ctx == nil {
-		return nil, fmt.Errorf("encryption key not found for client: %s", clientID)
-	}
-
-	return ctx.EncryptBytes(plaintext)
-}
-
-func (cm *CryptoManager) Decrypt(clientID string, encoded string) ([]byte, error) {
-	cm.mu.RLock()
-	ctx, ok := cm.keys[clientID]
-	cm.mu.RUnlock()
-
-	if !ok || ctx == nil {
-		return nil, fmt.Errorf("encryption key not found for client: %s", clientID)
-	}
-
-	return ctx.Decrypt(encoded)
+	return ctx.EncryptTo(dst, plaintext)
 }
 
 func (cm *CryptoManager) DecryptBytes(clientID string, ciphertext []byte) ([]byte, error) {
+	ctx, err := cm.context(clientID)
+	if err != nil {
+		return nil, err
+	}
+	return ctx.DecryptBytes(ciphertext)
+}
+
+func (cm *CryptoManager) context(clientID string) (*CryptoContext, error) {
 	cm.mu.RLock()
 	ctx, ok := cm.keys[clientID]
 	cm.mu.RUnlock()
@@ -172,8 +145,7 @@ func (cm *CryptoManager) DecryptBytes(clientID string, ciphertext []byte) ([]byt
 	if !ok || ctx == nil {
 		return nil, fmt.Errorf("encryption key not found for client: %s", clientID)
 	}
-
-	return ctx.DecryptBytes(ciphertext)
+	return ctx, nil
 }
 
 func (cm *CryptoManager) HasKey(clientID string) bool {

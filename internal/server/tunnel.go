@@ -23,6 +23,11 @@ const (
 
 	TunnelBindAll         = "0.0.0.0"
 	TunnelBindServerLocal = "127.0.0.1"
+
+	externalConnQueueSize  = 32
+	externalQueueWaitLimit = 15 * time.Second
+	externalReadTimeout    = 15 * time.Minute
+	externalWriteTimeout   = 30 * time.Second
 )
 
 var bufPool = sync.Pool{
@@ -34,24 +39,79 @@ var bufPool = sync.Pool{
 
 // Tunnel 隧道信息
 type Tunnel struct {
-	TunnelID   string
-	ClientID   string
-	Client     *Client `json:"-"` // WebSocket 连接 (not serialized)
-	Protocol   string
-	PublicPort int    // 服务端监听端口（公网映射或服务端本机代理）
-	Exposure   string // "public" / "server_local"
-	BindAddr   string // 监听地址，public 默认为 0.0.0.0，server_local 为 127.0.0.1
-	LocalAddr  string // 客户端本地地址
-	LocalPort  int
-	CreatedAt  time.Time
-	Status     string // "active" / "closing"
+	TunnelID   string    `json:"tunnel_id"`
+	ClientID   string    `json:"client_id"`
+	Client     *Client   `json:"-"` // WebSocket 连接 (not serialized)
+	Protocol   string    `json:"protocol"`
+	PublicPort int       `json:"public_port"`
+	Exposure   string    `json:"exposure"`
+	BindAddr   string    `json:"bind_addr"`
+	LocalAddr  string    `json:"local_addr"`
+	LocalPort  int       `json:"local_port"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
-// ExternalConn 外部连接信息
+type extChunk struct {
+	data []byte
+	eof  bool
+}
+
+// ExternalConn tracks one public-side TCP connection. A dedicated writer
+// goroutine drains the queue so transient slow writes do not stall the shared
+// WebSocket receive loop; sustained backpressure is bounded by queue wait.
 type ExternalConn struct {
 	ConnID   string
 	TunnelID string
-	Conn     net.Conn // TCP 连接
+	Conn     net.Conn
+
+	queue     chan extChunk
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func newExternalConn(connID, tunnelID string, conn net.Conn) *ExternalConn {
+	return &ExternalConn{
+		ConnID:   connID,
+		TunnelID: tunnelID,
+		Conn:     conn,
+		queue:    make(chan extChunk, externalConnQueueSize),
+		done:     make(chan struct{}),
+	}
+}
+
+func (ec *ExternalConn) push(chunk extChunk) bool {
+	select {
+	case <-ec.done:
+		return false
+	default:
+	}
+	select {
+	case <-ec.done:
+		return false
+	case ec.queue <- chunk:
+		return true
+	default:
+	}
+
+	// The queue is a burst buffer. When it fills, apply backpressure to the
+	// shared WebSocket for a bounded time instead of dropping live TCP data.
+	timer := time.NewTimer(externalQueueWaitLimit)
+	defer timer.Stop()
+	select {
+	case <-ec.done:
+		return false
+	case ec.queue <- chunk:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (ec *ExternalConn) stop() {
+	ec.closeOnce.Do(func() {
+		close(ec.done)
+		_ = ec.Conn.Close()
+	})
 }
 
 // TunnelManager 隧道管理器
@@ -65,6 +125,7 @@ type TunnelManager struct {
 	portEnd          int
 	listeners        map[int]net.Listener // publicPort -> 监听器
 	server           *Server
+	closed           bool
 }
 
 // NewTunnelManager creates a new TunnelManager
@@ -105,11 +166,6 @@ func listenAddrForBind(bindAddr string, port int) string {
 	return net.JoinHostPort(bindAddr, fmt.Sprintf("%d", port))
 }
 
-// AllocatePort 分配一个可用端口并创建监听器（原子操作，避免 TOCTOU 竞态）
-func (tm *TunnelManager) AllocatePort() (int, net.Listener, error) {
-	return tm.AllocatePortForExposure(TunnelExposurePublic)
-}
-
 // AllocatePortForExposure 按入口类型分配端口并创建监听器。
 func (tm *TunnelManager) AllocatePortForExposure(exposure string) (int, net.Listener, error) {
 	_, bindAddr, err := normalizeTunnelExposure(exposure)
@@ -123,6 +179,9 @@ func (tm *TunnelManager) allocatePortForBind(bindAddr string) (int, net.Listener
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
+	if tm.closed {
+		return 0, nil, fmt.Errorf("tunnel manager is shutting down")
+	}
 	for port := tm.portStart; port <= tm.portEnd; port++ {
 		if _, used := tm.publicPorts[port]; used {
 			continue
@@ -152,25 +211,34 @@ func (tm *TunnelManager) ReleasePort(port int) {
 
 // CreateTunnel 创建隧道
 func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client, protocol, localAddr string, localPort, publicPort int, exposure string) error {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-
 	normalizedExposure, bindAddr, err := normalizeTunnelExposure(exposure)
 	if err != nil {
 		return err
 	}
+	maxTunnels := tm.maxTunnelsPerClient()
 
-	// 检查客户端隧道数量限制
-	if maxTunnels := tm.maxTunnelsPerClient(); maxTunnels > 0 {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if tm.closed {
+		return fmt.Errorf("tunnel manager is shutting down")
+	}
+	if _, exists := tm.tunnels[tunnelID]; exists {
+		return fmt.Errorf("tunnel already exists: %s", tunnelID)
+	}
+	if maxTunnels > 0 {
 		count := 0
 		for _, t := range tm.tunnels {
-			if t.ClientID == clientID && t.Status == "active" {
+			if t.ClientID == clientID {
 				count++
 			}
 		}
 		if count >= maxTunnels {
 			return fmt.Errorf("max tunnels per client reached: %d", maxTunnels)
 		}
+	}
+	if existingID, used := tm.publicPorts[publicPort]; used && existingID != "" {
+		return fmt.Errorf("public port %d already in use", publicPort)
 	}
 
 	tunnel := &Tunnel{
@@ -184,7 +252,6 @@ func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client,
 		LocalAddr:  localAddr,
 		LocalPort:  localPort,
 		CreatedAt:  time.Now(),
-		Status:     "active",
 	}
 
 	tm.tunnels[tunnelID] = tunnel
@@ -202,33 +269,23 @@ func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client,
 	return nil
 }
 
-// GetTunnel 获取隧道
-func (tm *TunnelManager) GetTunnel(tunnelID string) (*Tunnel, bool) {
+func (tm *TunnelManager) GetTunnel(tunnelID string) (Tunnel, bool) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 	tunnel, ok := tm.tunnels[tunnelID]
-	return tunnel, ok
-}
-
-// GetTunnelByPort 根据公网端口获取隧道
-func (tm *TunnelManager) GetTunnelByPort(publicPort int) (*Tunnel, bool) {
-	tm.mu.RLock()
-	defer tm.mu.RUnlock()
-	tunnelID, ok := tm.publicPorts[publicPort]
 	if !ok {
-		return nil, false
+		return Tunnel{}, false
 	}
-	tunnel, ok := tm.tunnels[tunnelID]
-	return tunnel, ok
+	return *tunnel, true
 }
 
 // ListTunnels 返回所有隧道
-func (tm *TunnelManager) ListTunnels() []*Tunnel {
+func (tm *TunnelManager) ListTunnels() []Tunnel {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
-	tunnels := make([]*Tunnel, 0, len(tm.tunnels))
+	tunnels := make([]Tunnel, 0, len(tm.tunnels))
 	for _, t := range tm.tunnels {
-		tunnels = append(tunnels, t)
+		tunnels = append(tunnels, *t)
 	}
 	sort.Slice(tunnels, func(i, j int) bool {
 		return tunnels[i].CreatedAt.Before(tunnels[j].CreatedAt)
@@ -237,13 +294,13 @@ func (tm *TunnelManager) ListTunnels() []*Tunnel {
 }
 
 // ListTunnelsByClient 返回指定客户端的隧道
-func (tm *TunnelManager) ListTunnelsByClient(clientID string) []*Tunnel {
+func (tm *TunnelManager) ListTunnelsByClient(clientID string) []Tunnel {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
-	var tunnels []*Tunnel
+	var tunnels []Tunnel
 	for _, t := range tm.tunnels {
 		if t.ClientID == clientID {
-			tunnels = append(tunnels, t)
+			tunnels = append(tunnels, *t)
 		}
 	}
 	sort.Slice(tunnels, func(i, j int) bool {
@@ -262,18 +319,13 @@ func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
 
-	tunnel.Status = "closing"
+	tm.closeTunnelConnectionsLocked(tunnelID)
 
-	// 关闭所有外部连接
-	tm.closeTunnelConnections(tunnelID)
-
-	// 关闭监听器
 	if listener, ok := tm.listeners[tunnel.PublicPort]; ok {
 		listener.Close()
 		delete(tm.listeners, tunnel.PublicPort)
 	}
 
-	// 释放端口
 	delete(tm.publicPorts, tunnel.PublicPort)
 	delete(tm.tunnels, tunnelID)
 
@@ -282,16 +334,10 @@ func (tm *TunnelManager) CloseTunnel(tunnelID string) error {
 }
 
 func (tm *TunnelManager) maxTunnelsPerClient() int {
-	if tm.server == nil {
+	if tm.server == nil || tm.server.stateStore == nil {
 		return 0
 	}
-	if tm.server.stateStore != nil {
-		return tm.server.stateStore.GetSettings().MaxTunnelsPerClient
-	}
-	if tm.server.config != nil {
-		return tm.server.config.Tunnel.MaxTunnelsPerClient
-	}
-	return 0
+	return tm.server.stateStore.GetSettings().MaxTunnelsPerClient
 }
 
 func (tm *TunnelManager) CloseTunnelsByClient(clientID string) {
@@ -314,9 +360,10 @@ func (tm *TunnelManager) CloseTunnelsByClient(clientID string) {
 func (tm *TunnelManager) CloseAll() {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+	tm.closed = true
 
 	for _, ec := range tm.extConns {
-		ec.Conn.Close()
+		ec.stop()
 	}
 	for _, listener := range tm.listeners {
 		listener.Close()
@@ -330,17 +377,18 @@ func (tm *TunnelManager) CloseAll() {
 	slog.Info("all tunnels closed")
 }
 
+// UpdateTunnel updates a tunnel target, exposure and/or public port.
 func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPort int, newPublicPort int, protocol string, exposure string) (*Tunnel, error) {
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
 
+	if tm.closed {
+		tm.mu.Unlock()
+		return nil, fmt.Errorf("tunnel manager is shutting down")
+	}
 	tunnel, ok := tm.tunnels[tunnelID]
 	if !ok {
+		tm.mu.Unlock()
 		return nil, fmt.Errorf("tunnel not found: %s", tunnelID)
-	}
-
-	if tunnel.Status != "active" {
-		return nil, fmt.Errorf("tunnel is not active, current status: %s", tunnel.Status)
 	}
 
 	if tunnel.Exposure == "" {
@@ -354,10 +402,12 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 	}
 	normalizedExposure, bindAddr, err := normalizeTunnelExposure(exposure)
 	if err != nil {
+		tm.mu.Unlock()
 		return nil, err
 	}
 	portChanged := newPublicPort > 0 && newPublicPort != tunnel.PublicPort
 	bindChanged := bindAddr != tunnel.BindAddr
+	var client *Client
 
 	if portChanged || bindChanged {
 		targetPort := tunnel.PublicPort
@@ -365,9 +415,11 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 			targetPort = newPublicPort
 		}
 		if targetPort < tm.portStart || targetPort > tm.portEnd {
+			tm.mu.Unlock()
 			return nil, fmt.Errorf("public port %d out of range [%d, %d]", targetPort, tm.portStart, tm.portEnd)
 		}
 		if existingID, used := tm.publicPorts[targetPort]; used && existingID != "" && existingID != tunnelID {
+			tm.mu.Unlock()
 			return nil, fmt.Errorf("public port %d already in use", targetPort)
 		}
 
@@ -383,16 +435,18 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 					tm.listeners[tunnel.PublicPort] = rollback
 					go tm.acceptLoop(tunnel.PublicPort, tunnelID)
 				}
+				tm.mu.Unlock()
 				return nil, fmt.Errorf("failed to bind port %d on %s: %w", targetPort, bindAddr, err)
 			}
 		} else {
 			ln, err = net.Listen("tcp", listenAddrForBind(bindAddr, targetPort))
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to bind port %d on %s: %w", targetPort, bindAddr, err)
+			if err != nil {
+				tm.mu.Unlock()
+				return nil, fmt.Errorf("failed to bind port %d on %s: %w", targetPort, bindAddr, err)
+			}
 		}
 
-		tm.closeTunnelConnections(tunnelID)
+		tm.closeTunnelConnectionsLocked(tunnelID)
 		if oldListener, ok := tm.listeners[tunnel.PublicPort]; ok && targetPort != tunnel.PublicPort {
 			oldListener.Close()
 			delete(tm.listeners, tunnel.PublicPort)
@@ -420,46 +474,45 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 		go tm.acceptLoop(targetPort, tunnelID)
 	}
 
-	// 通知 Agent 更新目标地址
 	targetChanged := localAddr != tunnel.LocalAddr || localPort != tunnel.LocalPort || protocol != tunnel.Protocol
 	if targetChanged {
-		payloadJSON, _ := json.Marshal(common.TunnelClosePayload{TunnelID: tunnelID})
-		tunnel.Client.WriteJSON(common.Message{
-			Type:    "tunnel_close",
-			Payload: payloadJSON,
-		})
+		// The agent will drop every local connection when the target changes;
+		// existing public connections must not be silently re-dialed against
+		// the new target.
+		tm.closeTunnelConnectionsLocked(tunnelID)
 	}
-
+	client = tunnel.Client
 	tunnel.LocalAddr = localAddr
 	tunnel.LocalPort = localPort
 	tunnel.Protocol = protocol
 	tunnel.Exposure = normalizedExposure
 	tunnel.BindAddr = bindAddr
-
-	if targetChanged {
-		openPayload := common.TunnelOpenPayload{
-			TunnelID:  tunnelID,
-			LocalAddr: localAddr,
-			LocalPort: localPort,
-			Protocol:  protocol,
-		}
-		payloadJSON, _ := json.Marshal(openPayload)
-		tunnel.Client.WriteJSON(common.Message{
-			Type:    "tunnel_open",
-			Payload: payloadJSON,
-		})
-	}
+	tunnelCopy := *tunnel
 
 	slog.Info("tunnel updated", "tunnel_id", tunnelID, "public_port", tunnel.PublicPort, "exposure", tunnel.Exposure, "bind_addr", tunnel.BindAddr, "local_addr", localAddr, "local_port", localPort, "protocol", protocol)
-	return tunnel, nil
+	tm.mu.Unlock()
+
+	// Notify the agent outside the manager lock: a slow WebSocket write must
+	// not block tunnel administration for every other client.
+	if (targetChanged || portChanged || bindChanged) && client != nil {
+		if err := sendTunnelClose(client, tunnelID); err != nil {
+			slog.Warn("failed to notify agent about tunnel target change", "tunnel_id", tunnelID, "error", err)
+		}
+		if err := sendTunnelOpen(client, tunnelID, localAddr, localPort, protocol); err != nil {
+			slog.Warn("failed to send updated tunnel target to agent", "tunnel_id", tunnelID, "error", err)
+		}
+	}
+
+	return &tunnelCopy, nil
 }
 
-// closeTunnelConnections 关闭隧道的所有外部连接
-func (tm *TunnelManager) closeTunnelConnections(tunnelID string) {
+// closeTunnelConnectionsLocked closes all external connections of a tunnel.
+// The caller must hold tm.mu.
+func (tm *TunnelManager) closeTunnelConnectionsLocked(tunnelID string) {
 	var connIDs []string
 	for connID, ec := range tm.extConns {
 		if ec.TunnelID == tunnelID {
-			ec.Conn.Close()
+			ec.stop()
 			connIDs = append(connIDs, connID)
 		}
 	}
@@ -468,68 +521,83 @@ func (tm *TunnelManager) closeTunnelConnections(tunnelID string) {
 	}
 }
 
-// AddExternalConn 添加外部连接
-func (tm *TunnelManager) AddExternalConn(connID, tunnelID string, conn net.Conn) {
+// AddExternalConn registers a public-side connection. It fails when the
+// tunnel disappeared between accept and registration.
+func (tm *TunnelManager) AddExternalConn(connID, tunnelID string, conn net.Conn) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	tm.extConns[connID] = &ExternalConn{
-		ConnID:   connID,
-		TunnelID: tunnelID,
-		Conn:     conn,
-	}
-}
-
-// GetExternalConn 获取外部连接
-func (tm *TunnelManager) GetExternalConn(connID string) (*ExternalConn, bool) {
-	tm.mu.RLock()
-	defer tm.mu.RUnlock()
-	ec, ok := tm.extConns[connID]
-	return ec, ok
-}
-
-// RemoveExternalConn 移除外部连接
-func (tm *TunnelManager) RemoveExternalConn(connID string) {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	if ec, ok := tm.extConns[connID]; ok {
-		ec.Conn.Close()
-		delete(tm.extConns, connID)
-	}
-}
-
-// Listen 开始监听服务端端口（创建新 listener，外部调用）
-func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	tunnel, ok := tm.tunnels[tunnelID]
-	if !ok {
+	if _, ok := tm.tunnels[tunnelID]; !ok {
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
-	return tm.startListener(publicPort, tunnelID, tunnel.BindAddr)
+	ec := newExternalConn(connID, tunnelID, conn)
+	tm.extConns[connID] = ec
+	go tm.runExternalWriter(connID, ec)
+	return nil
+}
+
+// RemoveExternalConn removes and closes an external connection.
+func (tm *TunnelManager) RemoveExternalConn(connID string) {
+	tm.mu.Lock()
+	ec := tm.extConns[connID]
+	delete(tm.extConns, connID)
+	tm.mu.Unlock()
+	if ec != nil {
+		ec.stop()
+	}
+}
+
+func (tm *TunnelManager) removeExternalConnIfMatch(connID string, ec *ExternalConn) {
+	tm.mu.Lock()
+	if tm.extConns[connID] == ec {
+		delete(tm.extConns, connID)
+	}
+	tm.mu.Unlock()
+}
+
+func (tm *TunnelManager) runExternalWriter(connID string, ec *ExternalConn) {
+	for {
+		select {
+		case <-ec.done:
+			return
+		case chunk := <-ec.queue:
+			if len(chunk.data) > 0 {
+				ec.Conn.SetWriteDeadline(time.Now().Add(externalWriteTimeout))
+				err := writeFull(ec.Conn, chunk.data)
+				ec.Conn.SetWriteDeadline(time.Time{})
+				if err != nil {
+					slog.Debug("external connection write failed", "conn_id", connID, "error", err)
+					ec.stop()
+					tm.removeExternalConnIfMatch(connID, ec)
+					tm.sendTunnelEOFToTunnel(ec.TunnelID, connID)
+					return
+				}
+			}
+			if chunk.eof {
+				ec.stop()
+				tm.removeExternalConnIfMatch(connID, ec)
+				return
+			}
+		}
+	}
 }
 
 // AcceptOnListener 使用已分配的 listener 开始监听（避免 TOCTOU 竞态）
 func (tm *TunnelManager) AcceptOnListener(publicPort int, tunnelID string, ln net.Listener) error {
 	tm.mu.Lock()
+	if tm.closed {
+		tm.mu.Unlock()
+		_ = ln.Close()
+		return fmt.Errorf("tunnel manager is shutting down")
+	}
+	if _, ok := tm.tunnels[tunnelID]; !ok {
+		tm.mu.Unlock()
+		_ = ln.Close()
+		return fmt.Errorf("tunnel not found: %s", tunnelID)
+	}
 	tm.listeners[publicPort] = ln
 	tm.mu.Unlock()
 
 	slog.Info("tunnel listener started", "public_port", publicPort, "tunnel_id", tunnelID, "listen_addr", ln.Addr().String())
-
-	go tm.acceptLoop(publicPort, tunnelID)
-	return nil
-}
-
-// startListener 启动监听器（不加锁，由调用方保证线程安全）
-func (tm *TunnelManager) startListener(publicPort int, tunnelID string, bindAddr string) error {
-	addr := listenAddrForBind(bindAddr, publicPort)
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on port %d: %w", publicPort, err)
-	}
-
-	tm.listeners[publicPort] = listener
-	slog.Info("tunnel listener started", "public_port", publicPort, "tunnel_id", tunnelID, "listen_addr", listener.Addr().String())
 
 	go tm.acceptLoop(publicPort, tunnelID)
 	return nil
@@ -552,7 +620,6 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			// 检查监听器是否已关闭
 			tm.mu.RLock()
 			currentListener, stillOk := tm.listeners[publicPort]
 			tm.mu.RUnlock()
@@ -565,22 +632,23 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 
 		remoteIP := extractIP(conn.RemoteAddr().String())
 
-		if remoteIP == "127.0.0.1" || remoteIP == "::1" {
+		if isLoopbackIP(remoteIP) {
 			slog.Debug("external connection from localhost, bypassing rate limit",
 				"tunnel_id", tunnelID)
-		} else {
+		} else if tm.server != nil {
 			if tm.server.blacklist.IsBlacklisted(remoteIP) {
 				slog.Warn("external connection from blacklisted IP, rejecting",
 					"remote_ip", remoteIP, "tunnel_id", tunnelID)
 				conn.Close()
 				continue
 			}
-			if tm.server.IsGloballyWhitelisted(remoteIP) {
-				slog.Debug("external connection globally whitelisted, bypassing rate limit",
-					"remote_ip", remoteIP, "tunnel_id", tunnelID)
-			} else if tm.server.clients != nil && tunnel.ClientID != "" {
-				whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID)
-				if isIPWhitelisted(remoteIP, whitelist) {
+			if !tm.server.IsGloballyWhitelisted(remoteIP) {
+				whitelisted := false
+				if tm.server.clients != nil && tunnel.ClientID != "" {
+					whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID)
+					whitelisted = isIPWhitelisted(remoteIP, whitelist)
+				}
+				if whitelisted {
 					slog.Debug("external connection whitelisted, bypassing rate limit",
 						"remote_ip", remoteIP, "tunnel_id", tunnelID, "client_id", tunnel.ClientID)
 				} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
@@ -590,95 +658,114 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 					conn.Close()
 					continue
 				}
-			} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
-				slog.Warn("external connection rate limited (anti-scanning)",
-					"remote_ip", remoteIP, "tunnel_id", tunnelID)
-				tm.server.blacklist.AddViolation(remoteIP)
-				conn.Close()
-				continue
 			}
 		}
 
-		// 生成 connID 并处理连接
-		connID := fmt.Sprintf("%s-%s", tunnelID, uuid.New().String()[:8])
+		connID := tunnelID + "-" + uuid.NewString()
 		go tm.handleExternalConn(connID, tunnel, conn)
 	}
 }
 
-// handleExternalConn 处理外部连接
+// handleExternalConn reads from the public connection and forwards frames to
+// the agent.
 func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, extConn net.Conn) {
 	common.TuneTCPConn(extConn)
 
 	tunnelID := tunnel.TunnelID
-	clientID := tunnel.ClientID
 	client := tunnel.Client
-
-	tm.AddExternalConn(connID, tunnelID, extConn)
-	defer tm.RemoveExternalConn(connID)
+	if client == nil || tm.server == nil {
+		extConn.Close()
+		return
+	}
+	if err := tm.AddExternalConn(connID, tunnelID, extConn); err != nil {
+		extConn.Close()
+		return
+	}
+	defer func() {
+		tm.RemoveExternalConn(connID)
+		tm.sendTunnelEOF(tunnelID, connID, client)
+	}()
 
 	slog.Debug("external connection accepted",
 		"conn_id", connID,
 		"tunnel_id", tunnelID,
 		"remote", extConn.RemoteAddr())
 
-	readDeadline := 15 * time.Minute
-	extConn.SetReadDeadline(time.Now().Add(readDeadline))
-
 	bufPtr := bufPool.Get().(*[]byte)
 	buf := *bufPtr
 	defer bufPool.Put(bufPtr)
 
 	for {
+		extConn.SetReadDeadline(time.Now().Add(externalReadTimeout))
 		n, err := extConn.Read(buf)
 		if n > 0 {
-			extConn.SetReadDeadline(time.Now().Add(readDeadline))
-		}
-		if n > 0 {
-			encrypted, encErr := tm.server.encryptTunnelBytes(clientID, buf[:n])
-			if encErr != nil {
-				slog.Error("failed to encrypt tunnel data",
-					"conn_id", connID,
-					"error", encErr)
-				return
-			}
-			frame, frameErr := common.EncodeBinaryTunnelDataFrame(tunnelID, connID, encrypted, false)
+			frame, frameErr := tm.server.encodeTunnelFrame(client, tunnelID, connID, buf[:n], false)
 			if frameErr != nil {
-				slog.Error("failed to encode tunnel data frame",
-					"conn_id", connID,
-					"error", frameErr)
+				slog.Error("failed to encode tunnel data frame", "conn_id", connID, "error", frameErr)
 				return
 			}
-			if client == nil {
-				slog.Warn("tunnel client disconnected, dropping data",
-					"tunnel_id", tunnelID)
-				return
-			}
-			err := client.WriteMessage(websocket.BinaryMessage, frame)
-			if err != nil {
-				slog.Warn("failed to send tunnel_data_bin to agent",
-					"conn_id", connID,
-					"error", err)
+			if err := client.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+				slog.Warn("failed to send tunnel_data_bin to agent", "conn_id", connID, "error", err)
 				return
 			}
 		}
 		if err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
-				slog.Warn("external conn read error",
-					"conn_id", connID,
-					"error", err)
+				slog.Warn("external conn read error", "conn_id", connID, "error", err)
 			} else {
-				slog.Debug("external conn closed",
-					"conn_id", connID,
-					"error", err)
-			}
-			if client != nil {
-				if frame, frameErr := common.EncodeBinaryTunnelDataFrame(tunnelID, connID, nil, true); frameErr == nil {
-					client.WriteMessage(websocket.BinaryMessage, frame)
-				}
+				slog.Debug("external conn closed", "conn_id", connID, "error", err)
 			}
 			return
 		}
 	}
+}
+
+func (tm *TunnelManager) sendTunnelEOF(tunnelID, connID string, client *Client) {
+	if client == nil {
+		return
+	}
+	frame, err := common.EncodeBinaryTunnelDataFrame(tunnelID, connID, nil, true)
+	if err != nil {
+		return
+	}
+	if err := client.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+		slog.Debug("failed to send tunnel EOF frame", "tunnel_id", tunnelID, "conn_id", connID, "error", err)
+	}
+}
+
+func (tm *TunnelManager) sendTunnelEOFToTunnel(tunnelID, connID string) {
+	tm.mu.RLock()
+	tunnel, ok := tm.tunnels[tunnelID]
+	var client *Client
+	if ok {
+		client = tunnel.Client
+	}
+	tm.mu.RUnlock()
+	tm.sendTunnelEOF(tunnelID, connID, client)
+}
+
+// encodeTunnelFrame encrypts (when enabled) and encodes one tunnel data frame
+// without copying the ciphertext a second time.
+func (s *Server) encodeTunnelFrame(client *Client, tunnelID, connID string, data []byte, isEOF bool) ([]byte, error) {
+	if client == nil {
+		return nil, fmt.Errorf("tunnel client is not connected")
+	}
+	if !client.EncryptionEnabled() {
+		return common.EncodeBinaryTunnelDataFrame(tunnelID, connID, data, isEOF)
+	}
+	if s.cryptoMgr == nil {
+		return nil, fmt.Errorf("encryption manager is not initialized")
+	}
+
+	frame, payload, err := common.NewBinaryTunnelDataFrame(tunnelID, connID, len(data)+common.TunnelEncryptionOverhead, isEOF)
+	if err != nil {
+		return nil, err
+	}
+	encrypted, err := s.cryptoMgr.EncryptTo(client.ClientID, payload, data)
+	if err != nil {
+		return nil, err
+	}
+	return frame[:len(frame)+len(encrypted)], nil
 }
 
 // PortStatus 端口范围状态摘要
@@ -705,57 +792,41 @@ func (tm *TunnelManager) GetPortStatus() PortStatus {
 	defer tm.mu.RUnlock()
 
 	total := tm.portEnd - tm.portStart + 1
+	if total < 0 {
+		total = 0
+	}
 	unavailable := make([]int, 0, len(tm.unavailablePorts))
 	for port := range tm.unavailablePorts {
-		unavailable = append(unavailable, port)
+		if port >= tm.portStart && port <= tm.portEnd {
+			unavailable = append(unavailable, port)
+		}
 	}
 	sort.Ints(unavailable)
+
+	allocated := 0
+	for port := range tm.publicPorts {
+		if port >= tm.portStart && port <= tm.portEnd {
+			allocated++
+		}
+	}
+	available := total - allocated - len(unavailable)
+	if available < 0 {
+		available = 0
+	}
 
 	return PortStatus{
 		RangeStart:     tm.portStart,
 		RangeEnd:       tm.portEnd,
 		TotalPorts:     total,
-		Allocated:      len(tm.publicPorts),
+		Allocated:      allocated,
 		Unavailable:    unavailable,
-		AvailableCount: total - len(tm.publicPorts) - len(tm.unavailablePorts),
+		AvailableCount: available,
 	}
 }
 
-// SendToClient 向客户端发送隧道数据
-func (tm *TunnelManager) SendToClient(tunnelID, connID string, data []byte, isEOF bool) error {
-	tm.mu.RLock()
-	tunnel, ok := tm.tunnels[tunnelID]
-	tm.mu.RUnlock()
-
-	if !ok || tunnel.Client == nil {
-		return fmt.Errorf("tunnel or client not found: %s", tunnelID)
-	}
-
-	if tm.server.cryptoMgr == nil {
-		return fmt.Errorf("encryption not available")
-	}
-
-	if isEOF && len(data) == 0 {
-		frame, err := common.EncodeBinaryTunnelDataFrame(tunnelID, connID, nil, true)
-		if err != nil {
-			return err
-		}
-		return tunnel.Client.WriteMessage(websocket.BinaryMessage, frame)
-	}
-
-	encrypted, err := tm.server.encryptTunnelBytes(tunnel.ClientID, data)
-	if err != nil {
-		return fmt.Errorf("encrypt failed: %w", err)
-	}
-
-	frame, err := common.EncodeBinaryTunnelDataFrame(tunnelID, connID, encrypted, isEOF)
-	if err != nil {
-		return err
-	}
-	return tunnel.Client.WriteMessage(websocket.BinaryMessage, frame)
-}
-
-// HandleAgentData 处理来自 Agent 的隧道数据，转发到外部连接
+// HandleAgentData enqueues data from the agent for the public connection. The
+// per-connection writer drains the queue asynchronously so a slow external
+// client cannot stall the shared WebSocket receive loop.
 func (tm *TunnelManager) HandleAgentData(tunnelID, connID string, data []byte, isEOF bool) error {
 	tm.mu.RLock()
 	ec, ok := tm.extConns[connID]
@@ -773,48 +844,55 @@ func (tm *TunnelManager) HandleAgentData(tunnelID, connID string, data []byte, i
 		return fmt.Errorf("conn %s does not belong to tunnel %s", connID, tunnelID)
 	}
 
-	if len(data) > 0 {
-		ec.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		if _, err := ec.Conn.Write(data); err != nil {
-			tm.RemoveExternalConn(connID)
-			if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "use of closed network connection") {
-				slog.Debug("external connection closed while writing tunnel data",
-					"tunnel_id", tunnelID,
-					"conn_id", connID,
-					"error", err)
-				return nil
-			}
-			return err
-		}
-		ec.Conn.SetWriteDeadline(time.Time{})
-	}
-
-	if isEOF {
+	if !ec.push(extChunk{data: data, eof: isEOF}) {
+		slog.Warn("external connection queue stalled, closing connection",
+			"tunnel_id", tunnelID,
+			"conn_id", connID)
 		tm.RemoveExternalConn(connID)
+		tm.sendTunnelEOFToTunnel(tunnelID, connID)
 	}
-
 	return nil
 }
 
-// SendTunnelError 发送隧道错误到 Agent
-func (tm *TunnelManager) SendTunnelError(tunnelID, connID, errMsg string) error {
-	tm.mu.RLock()
-	tunnel, ok := tm.tunnels[tunnelID]
-	tm.mu.RUnlock()
-
-	if !ok || tunnel.Client == nil {
-		return fmt.Errorf("tunnel or client not found: %s", tunnelID)
+func writeFull(conn net.Conn, data []byte) error {
+	for len(data) > 0 {
+		n, err := conn.Write(data)
+		if n > 0 {
+			data = data[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrUnexpectedEOF
+		}
 	}
+	return nil
+}
 
-	payload := common.TunnelErrorPayload{
-		TunnelID: tunnelID,
-		ConnID:   connID,
-		Error:    errMsg,
+func sendTunnelOpen(client *Client, tunnelID, localAddr string, localPort int, protocol string) error {
+	if client == nil {
+		return fmt.Errorf("tunnel client is not connected")
 	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	return tunnel.Client.WriteJSON(common.Message{
-		Type:    "tunnel_error",
-		Payload: payloadJSON,
+	payloadJSON, err := json.Marshal(common.TunnelOpenPayload{
+		TunnelID:  tunnelID,
+		LocalAddr: localAddr,
+		LocalPort: localPort,
+		Protocol:  protocol,
 	})
+	if err != nil {
+		return err
+	}
+	return client.WriteJSON(common.Message{Type: "tunnel_open", Payload: payloadJSON})
+}
+
+func sendTunnelClose(client *Client, tunnelID string) error {
+	if client == nil {
+		return fmt.Errorf("tunnel client is not connected")
+	}
+	payloadJSON, err := json.Marshal(common.TunnelClosePayload{TunnelID: tunnelID})
+	if err != nil {
+		return err
+	}
+	return client.WriteJSON(common.Message{Type: "tunnel_close", Payload: payloadJSON})
 }

@@ -7,90 +7,52 @@ import (
 	"time"
 )
 
-func TestNewCryptoContext_ValidKey(t *testing.T) {
-	cc, err := NewCryptoContext("test-secret-key")
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+func testKey(fill byte) []byte {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = fill
 	}
-	if cc == nil {
-		t.Fatal("expected non-nil CryptoContext")
-	}
-	if cc.gcm == nil {
-		t.Fatal("expected non-nil gcm cipher")
+	return key
+}
+
+func TestNewCryptoContextFromKeyRejectsInvalidSize(t *testing.T) {
+	if _, err := NewCryptoContextFromKey([]byte("short")); err == nil {
+		t.Fatal("expected invalid key size to be rejected")
 	}
 }
 
-func TestNewCryptoContext_EmptyKey(t *testing.T) {
-	cc, err := NewCryptoContext("")
-	if err == nil {
-		t.Fatal("expected error for empty key")
-	}
-	if cc != nil {
-		t.Fatal("expected nil CryptoContext for empty key")
-	}
-}
-
-func TestNewCryptoContext_DifferentKeys(t *testing.T) {
-	cc1, _ := NewCryptoContext("key-A")
-	cc2, _ := NewCryptoContext("key-B")
-
-	if cc1 == nil || cc2 == nil {
-		t.Fatal("expected non-nil contexts")
-	}
-
-	plaintext := []byte("test data")
-
-	encoded, err := cc1.Encrypt(plaintext)
+func TestCryptoContextWrongKeyCannotDecrypt(t *testing.T) {
+	cc1, err := NewCryptoContextFromKey(testKey(1))
 	if err != nil {
-		t.Fatalf("encrypt failed: %v", err)
+		t.Fatalf("NewCryptoContextFromKey: %v", err)
+	}
+	cc2, err := NewCryptoContextFromKey(testKey(2))
+	if err != nil {
+		t.Fatalf("NewCryptoContextFromKey: %v", err)
 	}
 
-	_, err = cc2.Decrypt(encoded)
-	if err == nil {
+	ciphertext, err := cc1.EncryptTo(nil, []byte("test data"))
+	if err != nil {
+		t.Fatalf("EncryptBytes: %v", err)
+	}
+	if _, err := cc2.DecryptBytes(ciphertext); err == nil {
 		t.Fatal("expected decryption to fail with wrong key")
 	}
 }
 
-func TestEncryptDecrypt_RoundTrip(t *testing.T) {
-	cc, err := NewCryptoContext("my-secret-key")
+func TestEncryptDecryptBytesRoundTrip(t *testing.T) {
+	cc, err := NewCryptoContextFromKey(testKey(3))
 	if err != nil {
-		t.Fatalf("NewCryptoContext failed: %v", err)
-	}
-
-	plaintext := []byte("Hello, this is tunnel data flowing through the encrypted channel")
-
-	encoded, err := cc.Encrypt(plaintext)
-	if err != nil {
-		t.Fatalf("encrypt failed: %v", err)
-	}
-
-	if encoded == "" {
-		t.Fatal("expected non-empty encoded string")
-	}
-
-	decoded, err := cc.Decrypt(encoded)
-	if err != nil {
-		t.Fatalf("decrypt failed: %v", err)
-	}
-
-	if !bytes.Equal(decoded, plaintext) {
-		t.Fatalf("round-trip mismatch: got %q, want %q", decoded, plaintext)
-	}
-}
-
-func TestEncryptDecryptBytes_RoundTrip(t *testing.T) {
-	cc, err := NewCryptoContext("my-secret-key")
-	if err != nil {
-		t.Fatalf("NewCryptoContext failed: %v", err)
+		t.Fatalf("NewCryptoContextFromKey: %v", err)
 	}
 
 	plaintext := []byte("binary tunnel payload")
-	ciphertext, err := cc.EncryptBytes(plaintext)
+	ciphertext, err := cc.EncryptTo(nil, plaintext)
 	if err != nil {
 		t.Fatalf("EncryptBytes failed: %v", err)
 	}
-	if len(ciphertext) == 0 {
-		t.Fatal("expected non-empty ciphertext")
+	if len(ciphertext) != len(plaintext)+TunnelEncryptionOverhead {
+		t.Fatalf("ciphertext length = %d, want %d", len(ciphertext), len(plaintext)+TunnelEncryptionOverhead)
 	}
 
 	decoded, err := cc.DecryptBytes(ciphertext)
@@ -102,7 +64,66 @@ func TestEncryptDecryptBytes_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestBinaryTunnelDataFrame_RoundTrip(t *testing.T) {
+func TestTunnelEncryptionOverheadMatchesGCM(t *testing.T) {
+	cc, err := NewCryptoContextFromKey(testKey(9))
+	if err != nil {
+		t.Fatalf("NewCryptoContextFromKey: %v", err)
+	}
+	for _, size := range []int{0, 1, 1024, TunnelChunkSize} {
+		plaintext := make([]byte, size)
+		ciphertext, err := cc.EncryptTo(nil, plaintext)
+		if err != nil {
+			t.Fatalf("EncryptTo(%d): %v", size, err)
+		}
+		if len(ciphertext) != size+TunnelEncryptionOverhead {
+			t.Fatalf("size %d: ciphertext length %d, want %d", size, len(ciphertext), size+TunnelEncryptionOverhead)
+		}
+	}
+}
+
+func TestEncryptToUsesProvidedBuffer(t *testing.T) {
+	cc, err := NewCryptoContextFromKey(testKey(4))
+	if err != nil {
+		t.Fatalf("NewCryptoContextFromKey: %v", err)
+	}
+
+	plaintext := bytes.Repeat([]byte("chunk"), 1024)
+	dst := make([]byte, 0, len(plaintext)+TunnelEncryptionOverhead)
+	ciphertext, err := cc.EncryptTo(dst, plaintext)
+	if err != nil {
+		t.Fatalf("EncryptTo: %v", err)
+	}
+	if &ciphertext[0] != &dst[:1][0] {
+		t.Fatal("EncryptTo should reuse the provided buffer")
+	}
+
+	decoded, err := cc.DecryptBytes(ciphertext)
+	if err != nil {
+		t.Fatalf("DecryptBytes: %v", err)
+	}
+	if !bytes.Equal(decoded, plaintext) {
+		t.Fatal("round-trip mismatch")
+	}
+}
+
+func TestNewBinaryTunnelDataFrameWritesIntoPayloadArea(t *testing.T) {
+	frame, payload, err := NewBinaryTunnelDataFrame("tun-1", "conn-2", 4, false)
+	if err != nil {
+		t.Fatalf("NewBinaryTunnelDataFrame: %v", err)
+	}
+	copy(payload[:4], "data")
+	frame = frame[:len(frame)+4]
+
+	decoded, err := DecodeBinaryTunnelDataFrame(frame)
+	if err != nil {
+		t.Fatalf("DecodeBinaryTunnelDataFrame: %v", err)
+	}
+	if decoded.TunnelID != "tun-1" || decoded.ConnID != "conn-2" || string(decoded.Data) != "data" {
+		t.Fatalf("unexpected decoded frame: %+v", decoded)
+	}
+}
+
+func TestBinaryTunnelDataFrameRoundTrip(t *testing.T) {
 	data := []byte("encrypted bytes")
 	frame, err := EncodeBinaryTunnelDataFrame("tun-1", "conn-2", data, true)
 	if err != nil {
@@ -186,77 +207,49 @@ func TestIsTimestampValidAcceptsUnixNano(t *testing.T) {
 	}
 }
 
-func TestEncryptDecrypt_EmptyData(t *testing.T) {
-	cc, _ := NewCryptoContext("key")
-	encoded, err := cc.Encrypt([]byte{})
+func TestEncryptDecryptEmptyData(t *testing.T) {
+	cc, _ := NewCryptoContextFromKey(testKey(5))
+	encoded, err := cc.EncryptTo(nil, []byte{})
 	if err != nil {
 		t.Fatalf("encrypt empty failed: %v", err)
 	}
 
-	decoded, err := cc.Decrypt(encoded)
+	decoded, err := cc.DecryptBytes(encoded)
 	if err != nil {
 		t.Fatalf("decrypt empty failed: %v", err)
 	}
-
 	if len(decoded) != 0 {
 		t.Fatalf("expected empty result, got %d bytes", len(decoded))
 	}
 }
 
-func TestEncryptDecrypt_LargeData(t *testing.T) {
-	cc, _ := NewCryptoContext("key")
-	plaintext := bytes.Repeat([]byte("A"), 64*1024)
+func TestDecryptCorruptedData(t *testing.T) {
+	cc, _ := NewCryptoContextFromKey(testKey(6))
 
-	encoded, err := cc.Encrypt(plaintext)
-	if err != nil {
-		t.Fatalf("encrypt large failed: %v", err)
+	if _, err := cc.DecryptBytes([]byte("short")); err == nil {
+		t.Fatal("expected error for short ciphertext")
 	}
 
-	decoded, err := cc.Decrypt(encoded)
-	if err != nil {
-		t.Fatalf("decrypt large failed: %v", err)
-	}
-
-	if !bytes.Equal(decoded, plaintext) {
-		t.Fatal("large data round-trip mismatch")
-	}
-}
-
-func TestDecrypt_CorruptedData(t *testing.T) {
-	cc, _ := NewCryptoContext("key")
-
-	_, err := cc.Decrypt("!!!not-valid-base64!!!")
-	if err == nil {
-		t.Fatal("expected error for invalid base64")
-	}
-
-	_, err = cc.Decrypt("")
-	if err == nil {
-		t.Fatal("expected error for empty input")
-	}
-
-	encoded, _ := cc.Encrypt([]byte("data"))
-	corrupted := encoded[:len(encoded)-4] + "AAAA"
-	_, err = cc.Decrypt(corrupted)
-	if err == nil {
+	ciphertext, _ := cc.EncryptTo(nil, []byte("data"))
+	corrupted := append([]byte(nil), ciphertext...)
+	corrupted[len(corrupted)-1] ^= 0xff
+	if _, err := cc.DecryptBytes(corrupted); err == nil {
 		t.Fatal("expected error for corrupted ciphertext")
 	}
 }
 
-func TestEncrypt_DifferentNonces(t *testing.T) {
-	cc, _ := NewCryptoContext("key")
+func TestEncryptUsesDifferentNonces(t *testing.T) {
+	cc, _ := NewCryptoContextFromKey(testKey(7))
 	plaintext := []byte("same plaintext")
 
-	encoded1, _ := cc.Encrypt(plaintext)
-	encoded2, _ := cc.Encrypt(plaintext)
-
-	if encoded1 == encoded2 {
+	ciphertext1, _ := cc.EncryptTo(nil, plaintext)
+	ciphertext2, _ := cc.EncryptTo(nil, plaintext)
+	if bytes.Equal(ciphertext1, ciphertext2) {
 		t.Fatal("expected different ciphertexts due to random nonces")
 	}
 
-	decoded1, _ := cc.Decrypt(encoded1)
-	decoded2, _ := cc.Decrypt(encoded2)
-
+	decoded1, _ := cc.DecryptBytes(ciphertext1)
+	decoded2, _ := cc.DecryptBytes(ciphertext2)
 	if !bytes.Equal(decoded1, plaintext) || !bytes.Equal(decoded2, plaintext) {
 		t.Fatal("decrypt produced wrong result")
 	}
@@ -265,13 +258,27 @@ func TestEncrypt_DifferentNonces(t *testing.T) {
 func TestNilCryptoContext(t *testing.T) {
 	var cc *CryptoContext
 
-	_, err := cc.Encrypt([]byte("test"))
-	if err == nil {
+	if _, err := cc.EncryptTo(nil, []byte("test")); err == nil {
 		t.Fatal("expected error for nil context encrypt")
 	}
-
-	_, err = cc.Decrypt("dGVzdA==")
-	if err == nil {
+	if _, err := cc.DecryptBytes([]byte("test")); err == nil {
 		t.Fatal("expected error for nil context decrypt")
+	}
+}
+
+func TestCryptoManagerHasKey(t *testing.T) {
+	manager := NewCryptoManager()
+	if manager.HasKey("client-1") {
+		t.Fatal("expected no key initially")
+	}
+	if err := manager.SetKey("client-1", testKey(8)); err != nil {
+		t.Fatalf("SetKey: %v", err)
+	}
+	if !manager.HasKey("client-1") {
+		t.Fatal("expected key after SetKey")
+	}
+	manager.RemoveKey("client-1")
+	if manager.HasKey("client-1") {
+		t.Fatal("expected key to be removed")
 	}
 }

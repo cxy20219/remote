@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -105,7 +106,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		if c.GetHeader("Accept") == "application/json" || len(path) >= 4 && path[:4] == "/api" {
+		if strings.Contains(c.GetHeader("Accept"), "application/json") || strings.HasPrefix(path, "/api") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
@@ -145,11 +146,21 @@ func normalizeTunnelTarget(localAddr string, localPort int, protocol string, def
 	if localAddr == "" {
 		return "", "", fmt.Errorf("local_addr is required")
 	}
+	if len(localAddr) > 255 {
+		return "", "", fmt.Errorf("local_addr is too long")
+	}
 	if strings.ContainsAny(localAddr, "\x00\r\n\t ") {
 		return "", "", fmt.Errorf("local_addr contains invalid whitespace or control characters")
 	}
 	if host, port, err := net.SplitHostPort(localAddr); err == nil && host != "" && port != "" {
 		return "", "", fmt.Errorf("local_addr must not include a port")
+	}
+	if strings.Contains(localAddr, ":") {
+		if net.ParseIP(localAddr) == nil {
+			return "", "", fmt.Errorf("local_addr must be a valid IP literal when it contains ':'")
+		}
+	} else if strings.ContainsAny(localAddr, "/?#@[]\\") {
+		return "", "", fmt.Errorf("local_addr contains invalid characters")
 	}
 
 	if localPort < 1 || localPort > 65535 {
@@ -178,12 +189,22 @@ func decodeStrictJSON(c *gin.Context, dst interface{}) bool {
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return false
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
 		return false
 	}
 
 	var extra struct{}
 	if err := decoder.Decode(&extra); err != io.EOF {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return false
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON: multiple JSON values"})
 		return false
 	}
@@ -192,56 +213,24 @@ func decodeStrictJSON(c *gin.Context, dst interface{}) bool {
 }
 
 func (s *Server) handleAPIClients(c *gin.Context) {
-	type clientInfo struct {
-		ClientID string    `json:"client_id"`
-		Hostname string    `json:"hostname"`
-		OS       string    `json:"os"`
-		RegTime  time.Time `json:"reg_time"`
-		LastPing time.Time `json:"last_ping"`
-		Online   bool      `json:"online"`
-	}
-
-	clients := s.clients.List()
-	onlineClients := make([]clientInfo, 0, len(clients))
-	for _, cl := range clients {
-		device := s.stateStore.GetDeviceByID(cl.ClientID)
-		hostname := cl.Hostname
-		osName := cl.OS
-		if device != nil {
-			hostname = device.Hostname
-			osName = device.OS
-		}
-		onlineClients = append(onlineClients, clientInfo{
-			ClientID: cl.ClientID,
-			Hostname: hostname,
-			OS:       osName,
-			RegTime:  cl.RegTime,
-			LastPing: cl.LastPing,
-			Online:   true,
-		})
-	}
-
+	clients := s.clients.Snapshot()
 	c.JSON(http.StatusOK, gin.H{
-		"clients": onlineClients,
-		"total":   len(onlineClients),
+		"clients": clients,
+		"total":   len(clients),
 	})
 }
 
 func (s *Server) handleAPIClientDetail(c *gin.Context) {
-	clientID := c.Param("id")
-
-	client, ok := s.clients.Get(clientID)
+	client, ok := s.clients.SnapshotByID(c.Param("id"))
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "client not found"})
 		return
 	}
-
 	c.JSON(http.StatusOK, client)
 }
 
 func (s *Server) handleAPIListClientTunnels(c *gin.Context) {
-	if s.tunnelManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tunnel is not enabled"})
+	if !s.requireTunnel(c) {
 		return
 	}
 
@@ -253,9 +242,16 @@ func (s *Server) handleAPIListClientTunnels(c *gin.Context) {
 	})
 }
 
-func (s *Server) handleAPICreateTunnel(c *gin.Context) {
+func (s *Server) requireTunnel(c *gin.Context) bool {
 	if s.tunnelManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tunnel is not enabled"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleAPICreateTunnel(c *gin.Context) {
+	if !s.requireTunnel(c) {
 		return
 	}
 
@@ -320,17 +316,8 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		return
 	}
 
-	tunnelOpenPayload := common.TunnelOpenPayload{
-		TunnelID:  tunnelID,
-		LocalAddr: req.LocalAddr,
-		LocalPort: req.LocalPort,
-		Protocol:  req.Protocol,
-	}
-	payloadJSON, _ := json.Marshal(tunnelOpenPayload)
-	if err := client.WriteJSON(common.Message{
-		Type:    "tunnel_open",
-		Payload: payloadJSON,
-	}); err != nil {
+	if err := sendTunnelOpen(client, tunnelID, req.LocalAddr, req.LocalPort, req.Protocol); err != nil {
+		_ = sendTunnelClose(client, tunnelID)
 		s.tunnelManager.CloseTunnel(tunnelID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send tunnel_open to agent"})
 		return
@@ -339,12 +326,11 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"tunnel_id":   tunnelID,
 		"public_port": publicPort,
-		"public_addr": tunnelAccessAddr(s.advertisedTunnelHost(c.Request.Host), publicPort, exposure),
 		"access_addr": tunnelAccessAddr(s.advertisedTunnelHost(c.Request.Host), publicPort, exposure),
 		"exposure":    exposure,
-		"bind_addr":   ln.Addr().String(),
 		"local_addr":  req.LocalAddr,
-		"status":      "active",
+		"local_port":  req.LocalPort,
+		"protocol":    req.Protocol,
 	})
 }
 
@@ -381,8 +367,7 @@ func tunnelAccessAddr(host string, port int, exposure string) string {
 }
 
 func (s *Server) handleAPIListTunnels(c *gin.Context) {
-	if s.tunnelManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tunnel is not enabled"})
+	if !s.requireTunnel(c) {
 		return
 	}
 
@@ -394,8 +379,7 @@ func (s *Server) handleAPIListTunnels(c *gin.Context) {
 }
 
 func (s *Server) handleAPIGetTunnel(c *gin.Context) {
-	if s.tunnelManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tunnel is not enabled"})
+	if !s.requireTunnel(c) {
 		return
 	}
 
@@ -410,8 +394,7 @@ func (s *Server) handleAPIGetTunnel(c *gin.Context) {
 }
 
 func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
-	if s.tunnelManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tunnel is not enabled"})
+	if !s.requireTunnel(c) {
 		return
 	}
 
@@ -422,12 +405,7 @@ func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
 		return
 	}
 
-	tunnelClosePayload := common.TunnelClosePayload{TunnelID: tunnelID}
-	payloadJSON, _ := json.Marshal(tunnelClosePayload)
-	tunnel.Client.WriteJSON(common.Message{
-		Type:    "tunnel_close",
-		Payload: payloadJSON,
-	})
+	_ = sendTunnelClose(tunnel.Client, tunnelID)
 
 	if err := s.tunnelManager.CloseTunnel(tunnelID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -438,8 +416,7 @@ func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
 }
 
 func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
-	if s.tunnelManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tunnel is not enabled"})
+	if !s.requireTunnel(c) {
 		return
 	}
 
@@ -503,6 +480,10 @@ func (s *Server) handleAPIUpdateWhitelist(c *gin.Context) {
 	if !decodeStrictJSON(c, &req) {
 		return
 	}
+	if err := validateIPList(req.IPs); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	deduped := deduplicateIPs(req.IPs)
 	s.stateStore.UpdateDevice(clientID, func(d *DeviceState) {
@@ -527,6 +508,10 @@ func (s *Server) handleAPIUpdateGlobalWhitelist(c *gin.Context) {
 		IPs []string `json:"ips"`
 	}
 	if !decodeStrictJSON(c, &req) {
+		return
+	}
+	if err := validateIPList(req.IPs); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -562,10 +547,12 @@ func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 		return
 	}
 
-	if net.ParseIP(req.IP) == nil {
+	parsedIP := net.ParseIP(req.IP)
+	if parsedIP == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid IP address"})
 		return
 	}
+	req.IP = parsedIP.String()
 
 	reason := req.Reason
 	if reason == "" {
@@ -591,6 +578,9 @@ func (s *Server) handleAPIRemoveBlacklist(c *gin.Context) {
 	if ip == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ip is required"})
 		return
+	}
+	if parsed := net.ParseIP(ip); parsed != nil {
+		ip = parsed.String()
 	}
 
 	s.blacklist.Remove(ip)
@@ -627,8 +617,7 @@ func (s *Server) handleAPIUpdateBlacklistThreshold(c *gin.Context) {
 }
 
 func (s *Server) handleAPIPortStatus(c *gin.Context) {
-	if s.tunnelManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tunnel is not enabled"})
+	if !s.requireTunnel(c) {
 		return
 	}
 
@@ -639,30 +628,32 @@ func (s *Server) handleAPIPortStatus(c *gin.Context) {
 func (s *Server) handleAPIListDevices(c *gin.Context) {
 	devices := s.stateStore.GetAllDevices()
 	type deviceInfo struct {
-		ID         string     `json:"id"`
-		Name       string     `json:"name"`
-		Hostname   string     `json:"hostname"`
-		OS         string     `json:"os"`
-		Status     string     `json:"status"`
-		EncEnabled bool       `json:"enc_enabled"`
-		FirstSeen  time.Time  `json:"first_seen"`
-		ApprovedAt *time.Time `json:"approved_at,omitempty"`
-		Online     bool       `json:"online"`
+		ID          string     `json:"id"`
+		Name        string     `json:"name"`
+		Hostname    string     `json:"hostname"`
+		OS          string     `json:"os"`
+		Status      string     `json:"status"`
+		EncEnabled  bool       `json:"enc_enabled"`
+		IPWhitelist []string   `json:"ip_whitelist"`
+		FirstSeen   time.Time  `json:"first_seen"`
+		ApprovedAt  *time.Time `json:"approved_at,omitempty"`
+		Online      bool       `json:"online"`
 	}
 
 	result := make([]deviceInfo, 0, len(devices))
 	for _, d := range devices {
 		_, online := s.clients.Get(d.ID)
 		result = append(result, deviceInfo{
-			ID:         d.ID,
-			Name:       d.Name,
-			Hostname:   d.Hostname,
-			OS:         d.OS,
-			Status:     d.Status,
-			EncEnabled: d.EncEnabled,
-			FirstSeen:  d.FirstSeen,
-			ApprovedAt: d.ApprovedAt,
-			Online:     online,
+			ID:          d.ID,
+			Name:        d.Name,
+			Hostname:    d.Hostname,
+			OS:          d.OS,
+			Status:      d.Status,
+			EncEnabled:  d.EncEnabled,
+			IPWhitelist: d.IPWhitelist,
+			FirstSeen:   d.FirstSeen,
+			ApprovedAt:  d.ApprovedAt,
+			Online:      online,
 		})
 	}
 
@@ -708,24 +699,28 @@ func (s *Server) handleAPIListPendingDevices(c *gin.Context) {
 func (s *Server) handleAPIApproveDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 
-	device, _, _, err := s.deviceMgr.ApproveDevice(deviceID)
+	device, encKeyEncrypted, serverDHPubkey, err := s.deviceMgr.ApproveDevice(deviceID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	if conn, ok := s.deviceMgr.GetPendingConn(deviceID); ok {
-		okPayload, err := s.handler.registerOKPayloadForDevice(device)
-		if err != nil {
+		okPayload := common.RegisterOKPayload{
+			ClientID:        device.ID,
+			EncKeyEncrypted: encKeyEncrypted,
+			ServerDHPubkey:  serverDHPubkey,
+			EncEnabled:      s.deviceEncryptionActive(device),
+		}
+		if err := s.handler.signRegisterOKPayload(&okPayload); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		payloadJSON, _ := json.Marshal(okPayload)
 		if conn.Client != nil {
-			conn.Client.WriteJSON(common.Message{
-				Type:    "register_ok",
-				Payload: payloadJSON,
-			})
+			conn.Client.SetEncryptionEnabled(okPayload.EncEnabled)
+			if err := s.sendRegisterOK(conn.Client, okPayload); err != nil {
+				slog.Warn("failed to send register_ok", "device_id", deviceID, "error", err)
+			}
 		}
 	}
 
@@ -737,6 +732,15 @@ func (s *Server) handleAPIApproveDevice(c *gin.Context) {
 
 func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 	deviceID := c.Param("id")
+	device := s.stateStore.GetDeviceByID(deviceID)
+	if device == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
+		return
+	}
+	if device.Status != deviceStatusPending {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "device is not pending"})
+		return
+	}
 
 	if conn, ok := s.deviceMgr.GetPendingConn(deviceID); ok {
 		failPayload := common.RegisterFailPayload{Reason: "registration denied by admin"}
@@ -746,9 +750,7 @@ func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 				Type:    "register_fail",
 				Payload: payloadJSON,
 			})
-			if conn.Client.Conn != nil {
-				conn.Client.Conn.Close()
-			}
+			closeClientConn(conn.Client)
 		}
 	}
 
@@ -771,13 +773,8 @@ func (s *Server) handleAPIDeleteDevice(c *gin.Context) {
 	}
 
 	if client, ok := s.clients.Get(deviceID); ok {
-		delPayload := common.DeviceDeletedPayload{Reason: "device deleted by admin"}
-		payloadJSON, _ := json.Marshal(delPayload)
-		client.WriteJSON(common.Message{
-			Type:    "device_deleted",
-			Payload: payloadJSON,
-		})
-		client.Conn.Close()
+		_ = sendDeviceDeleted(client, "device deleted by admin")
+		closeClientConn(client)
 		s.clients.Remove(deviceID)
 	}
 
@@ -803,6 +800,10 @@ func (s *Server) handleAPIUpdateDeviceConfig(c *gin.Context) {
 	if !decodeStrictJSON(c, &req) {
 		return
 	}
+	if err := validateIPList(req.IPWhitelist); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	encEnabled := false
 	if req.EncEnabled != nil {
@@ -820,22 +821,13 @@ func (s *Server) handleAPIUpdateDeviceConfig(c *gin.Context) {
 		return
 	}
 	if client, ok := s.clients.Get(deviceID); ok && s.handler != nil {
+		client.SetEncryptionEnabled(s.deviceEncryptionActive(device))
 		okPayload, err := s.handler.registerOKPayloadForDevice(device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		updatePayload := common.RegisterUpdatePayload{
-			Type:             "enc_config_update",
-			ClientID:         okPayload.ClientID,
-			EncKeyEncrypted:  okPayload.EncKeyEncrypted,
-			ServerDHPubkey:   okPayload.ServerDHPubkey,
-			EncEnabled:       okPayload.EncEnabled,
-			ServerSignPubkey: okPayload.ServerSignPubkey,
-			ServerSignature:  okPayload.ServerSignature,
-		}
-		payloadJSON, _ := json.Marshal(updatePayload)
-		if err := client.WriteJSON(common.Message{Type: "register_update", Payload: payloadJSON}); err != nil {
+		if err := sendRegisterUpdate(client, "enc_config_update", okPayload); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -852,32 +844,28 @@ func (s *Server) handleAPIUpdateDeviceConfig(c *gin.Context) {
 func (s *Server) handleAPIRegenKey(c *gin.Context) {
 	deviceID := c.Param("id")
 
-	device, _, _, err := s.deviceMgr.RegenerateEncKey(deviceID)
+	device, encKeyEncrypted, serverDHPubkey, err := s.deviceMgr.RegenerateEncKey(deviceID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	if client, ok := s.clients.Get(deviceID); ok {
-		okPayload, err := s.handler.registerOKPayloadForDevice(device)
-		if err != nil {
+		okPayload := common.RegisterOKPayload{
+			ClientID:        device.ID,
+			EncKeyEncrypted: encKeyEncrypted,
+			ServerDHPubkey:  serverDHPubkey,
+			EncEnabled:      s.deviceEncryptionActive(device),
+		}
+		if err := s.handler.signRegisterOKPayload(&okPayload); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		updatePayload := common.RegisterUpdatePayload{
-			Type:             "enc_key_update",
-			ClientID:         okPayload.ClientID,
-			EncKeyEncrypted:  okPayload.EncKeyEncrypted,
-			ServerDHPubkey:   okPayload.ServerDHPubkey,
-			EncEnabled:       okPayload.EncEnabled,
-			ServerSignPubkey: okPayload.ServerSignPubkey,
-			ServerSignature:  okPayload.ServerSignature,
+		client.SetEncryptionEnabled(okPayload.EncEnabled)
+		if err := sendRegisterUpdate(client, "enc_key_update", okPayload); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
 		}
-		payloadJSON, _ := json.Marshal(updatePayload)
-		client.WriteJSON(common.Message{
-			Type:    "register_update",
-			Payload: payloadJSON,
-		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -897,28 +885,50 @@ func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 		return
 	}
 
-	settings := s.stateStore.GetSettings()
+	var validationErr error
+	s.UpdateSettings(func(settings *ServerSettings) {
+		candidate := cloneSettings(*settings)
+		applySettingsUpdate(&candidate, &req, &validationErr)
+		if validationErr == nil {
+			*settings = candidate
+		}
+	})
+	if validationErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": validationErr.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, s.stateStore.GetSettings())
+}
+
+func applySettingsUpdate(settings *ServerSettings, req *settingsUpdateRequest, validationErr *error) {
+	fail := func(message string) {
+		if *validationErr == nil {
+			*validationErr = fmt.Errorf("%s", message)
+		}
+	}
+
 	if req.PortRangeStart != nil {
 		if *req.PortRangeStart < 1 || *req.PortRangeStart > 65535 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "port_range_start must be in range 1-65535"})
+			fail("port_range_start must be in range 1-65535")
 			return
 		}
 		settings.PortRangeStart = *req.PortRangeStart
 	}
 	if req.PortRangeEnd != nil {
 		if *req.PortRangeEnd < 1 || *req.PortRangeEnd > 65535 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "port_range_end must be in range 1-65535"})
+			fail("port_range_end must be in range 1-65535")
 			return
 		}
 		settings.PortRangeEnd = *req.PortRangeEnd
 	}
 	if settings.PortRangeStart > settings.PortRangeEnd {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "port_range_start must be <= port_range_end"})
+		fail("port_range_start must be <= port_range_end")
 		return
 	}
 	if req.MaxTunnelsPerClient != nil {
-		if *req.MaxTunnelsPerClient < 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "max_tunnels_per_client must be >= 0"})
+		if *req.MaxTunnelsPerClient < 0 || *req.MaxTunnelsPerClient > 10000 {
+			fail("max_tunnels_per_client must be in range 0-10000")
 			return
 		}
 		settings.MaxTunnelsPerClient = *req.MaxTunnelsPerClient
@@ -926,64 +936,66 @@ func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 	if req.DefaultLocalAddr != nil {
 		addr := strings.TrimSpace(*req.DefaultLocalAddr)
 		if addr == "" || strings.ContainsAny(addr, "\x00\r\n\t ") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "default_local_addr is invalid"})
+			fail("default_local_addr is invalid")
 			return
 		}
 		settings.DefaultLocalAddr = addr
 	}
 	if req.PublicHost != nil {
-		settings.PublicHost = strings.TrimSpace(*req.PublicHost)
+		host := strings.TrimSpace(*req.PublicHost)
+		if len(host) > 255 || strings.ContainsAny(host, " \t\r\n/?#@") || strings.Contains(host, "://") {
+			fail("public_host must be a bare host name or IP address")
+			return
+		}
+		settings.PublicHost = host
 	}
 	if req.MaxConnPerMin != nil {
-		if *req.MaxConnPerMin < 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "max_conn_per_min must be >= 0"})
+		if *req.MaxConnPerMin < 0 || *req.MaxConnPerMin > 1000000 {
+			fail("max_conn_per_min must be in range 0-1000000")
 			return
 		}
 		settings.MaxConnPerMin = *req.MaxConnPerMin
 	}
 	if req.LoginRateLimit != nil {
-		if *req.LoginRateLimit < 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "login_rate_limit must be >= 0"})
+		if *req.LoginRateLimit < 0 || *req.LoginRateLimit > 1000000 {
+			fail("login_rate_limit must be in range 0-1000000")
 			return
 		}
 		settings.LoginRateLimit = *req.LoginRateLimit
 	}
 	if req.BlacklistThreshold != nil {
-		if *req.BlacklistThreshold < 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "blacklist_threshold must be >= 0"})
+		if *req.BlacklistThreshold < 0 || *req.BlacklistThreshold > 1000000 {
+			fail("blacklist_threshold must be in range 0-1000000")
 			return
 		}
 		settings.BlacklistThreshold = *req.BlacklistThreshold
 	}
 	if req.MaxBodySizeMB != nil {
-		if *req.MaxBodySizeMB < 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "max_body_size_mb must be >= 0"})
+		if *req.MaxBodySizeMB < 0 || *req.MaxBodySizeMB > 1024 {
+			fail("max_body_size_mb must be in range 0-1024")
 			return
 		}
 		settings.MaxBodySizeMB = *req.MaxBodySizeMB
 	}
 	if req.HeartbeatInterval != nil {
-		if *req.HeartbeatInterval < 1 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "heartbeat_interval must be >= 1"})
+		if *req.HeartbeatInterval < 1 || *req.HeartbeatInterval > 86400 {
+			fail("heartbeat_interval must be in range 1-86400")
 			return
 		}
 		settings.HeartbeatInterval = *req.HeartbeatInterval
 	}
 	if req.HeartbeatTimeout != nil {
-		if *req.HeartbeatTimeout < 1 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "heartbeat_timeout must be >= 1"})
+		if *req.HeartbeatTimeout < 1 || *req.HeartbeatTimeout > 86400 {
+			fail("heartbeat_timeout must be in range 1-86400")
 			return
 		}
 		settings.HeartbeatTimeout = *req.HeartbeatTimeout
 	}
 	if req.GlobalWhitelist != nil {
+		if err := validateIPList(req.GlobalWhitelist); err != nil {
+			fail(err.Error())
+			return
+		}
 		settings.GlobalWhitelist = deduplicateIPs(req.GlobalWhitelist)
 	}
-
-	s.stateStore.UpdateSettings(func(st *ServerSettings) {
-		*st = settings
-	})
-	s.applyRuntimeSettings(settings)
-
-	c.JSON(http.StatusOK, s.stateStore.GetSettings())
 }

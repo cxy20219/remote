@@ -80,7 +80,7 @@ func TestAdminAuthSessionLimitEvictsOldest(t *testing.T) {
 }
 
 func TestAdminAuthLocksAfterFailedLogins(t *testing.T) {
-	store := NewStateStoreWithSettings(defaultSettings())
+	store := newTestStateStore(defaultSettings())
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatalf("SetAdminPassword: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestAdminAuthLocksAfterFailedLogins(t *testing.T) {
 }
 
 func TestAdminAuthChangePasswordRevokesSessions(t *testing.T) {
-	store := NewStateStoreWithSettings(defaultSettings())
+	store := newTestStateStore(defaultSettings())
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatalf("SetAdminPassword: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestAdminAuthChangePasswordRevokesSessions(t *testing.T) {
 }
 
 func TestAdminAuthRejectsWeakPassword(t *testing.T) {
-	store := NewStateStoreWithSettings(defaultSettings())
+	store := newTestStateStore(defaultSettings())
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatalf("SetAdminPassword: %v", err)
 	}

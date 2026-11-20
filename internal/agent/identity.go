@@ -119,14 +119,6 @@ func (id *AgentIdentity) GetSignPrivKey() (ed25519.PrivateKey, error) {
 	return ed25519.PrivateKey(b), nil
 }
 
-func (id *AgentIdentity) GetSignPubKey() (ed25519.PublicKey, error) {
-	b, err := common.DecodePublicKey(id.DeviceSignPubkey)
-	if err != nil {
-		return nil, err
-	}
-	return ed25519.PublicKey(b), nil
-}
-
 func (id *AgentIdentity) GetDHPrivKey() (*[32]byte, error) {
 	b, err := common.DecodeBytes(id.DeviceDHPrivkey)
 	if err != nil {
@@ -134,19 +126,6 @@ func (id *AgentIdentity) GetDHPrivKey() (*[32]byte, error) {
 	}
 	if len(b) != 32 {
 		return nil, fmt.Errorf("invalid DH private key size: %d", len(b))
-	}
-	var key [32]byte
-	copy(key[:], b)
-	return &key, nil
-}
-
-func (id *AgentIdentity) GetDHPubKey() (*[32]byte, error) {
-	b, err := common.DecodeBytes(id.DeviceDHPubkey)
-	if err != nil {
-		return nil, err
-	}
-	if len(b) != 32 {
-		return nil, fmt.Errorf("invalid DH public key size: %d", len(b))
 	}
 	var key [32]byte
 	copy(key[:], b)

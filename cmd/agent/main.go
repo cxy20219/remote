@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -61,16 +60,11 @@ func main() {
 		agentCfg.Log.MaxBackups = *logMaxBackups
 	}
 
-	if agentCfg.Server.Address == "" {
-		fmt.Println("Usage: agent <server_address>")
-		fmt.Println("  e.g., agent YOUR_SERVER:8080")
-		fmt.Println()
-		fmt.Println("Options:")
-		flag.PrintDefaults()
-		os.Exit(1)
-	}
+	common.InitLogger(agentCfg.Log.Level, agentCfg.Log.File, agentCfg.Log.MaxSizeMB, agentCfg.Log.MaxBackups)
 
-	agent.InitLogger(agentCfg.Log.Level, agentCfg.Log.File, agentCfg.Log.MaxSizeMB, agentCfg.Log.MaxBackups)
+	if !agentCfg.Server.TLS.Enabled && (agentCfg.Server.TLS.CA != "" || agentCfg.Server.TLS.InsecureSkipVerify) {
+		slog.Warn("TLS options are ignored because TLS is disabled; start with --tls")
+	}
 
 	identityDirVal := *identityDir
 	agentCfg.IdentityDir = identityDirVal
@@ -90,46 +84,41 @@ func main() {
 	}
 
 	if identity.ServerURL != agentCfg.Server.Address {
-		slog.Info("server URL changed, updating identity",
+		slog.Info("server URL changed, resetting server-bound identity state",
 			"old", identity.ServerURL,
 			"new", agentCfg.Server.Address)
 		identity.ServerURL = agentCfg.Server.Address
 		identity.ClientID = ""
 		identity.EncKey = ""
+		identity.EncEnabled = false
+		identity.ServerSignPubkey = ""
 		if err := identity.Save(identityDirVal); err != nil {
 			slog.Error("failed to save identity", "error", err)
 		}
 	}
-
-	hostname := agentCfg.Agent.Hostname
-	if hostname == "" {
-		hostname = common.GetHostname()
-	}
-	osName := agentCfg.Agent.OS
-	if osName == "" {
-		osName = common.GetOS()
-	}
-
-	slog.Info("agent starting",
-		"server", agentCfg.Server.Address,
-		"hostname", hostname,
-		"os", osName,
-		"client_id", identity.ClientID)
 
 	ag := agent.NewAgent(agentCfg, identity)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	runErr := make(chan error, 1)
 	go func() {
-		<-sigCh
-		slog.Info("shutdown signal received")
-		ag.Stop()
-		os.Exit(0)
+		runErr <- ag.Run()
 	}()
 
-	if err := ag.Run(); err != nil {
-		slog.Error("agent error", "error", err)
-		os.Exit(1)
+	select {
+	case err := <-runErr:
+		if err != nil {
+			slog.Error("agent error", "error", err)
+			os.Exit(1)
+		}
+	case <-sigCh:
+		slog.Info("shutdown signal received")
+		ag.Stop()
+		if err := <-runErr; err != nil {
+			slog.Error("agent error", "error", err)
+			os.Exit(1)
+		}
 	}
 }

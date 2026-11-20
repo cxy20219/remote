@@ -3,7 +3,6 @@ package agent
 import (
 	"fmt"
 	"log/slog"
-	"time"
 
 	"goremote/internal/common"
 )
@@ -30,14 +29,10 @@ func (h *Handler) Handle(msg *common.Message) error {
 		return nil
 	case "tunnel_open":
 		return h.handleTunnelOpen(msg)
-	case "tunnel_open_ack":
-		return h.handleTunnelOpenAck(msg)
 	case "tunnel_close":
 		return h.handleTunnelClose(msg)
 	case "tunnel_data_bin":
 		return h.handleTunnelDataBinary(msg)
-	case "tunnel_error":
-		return h.handleTunnelError(msg)
 	default:
 		return fmt.Errorf("unknown message type: %s", msg.Type)
 	}
@@ -91,7 +86,8 @@ func (h *Handler) handleRegisterUpdate(msg *common.Message) error {
 	if !payload.EncEnabled {
 		identity.EncEnabled = false
 		identity.EncKey = ""
-		h.agent.cryptoMgr.RemoveKey(identity.ClientID)
+		h.agent.cryptoMgr.RemoveKey(clientID)
+		h.agent.encEnabled.Store(false)
 		if err := identity.Save(h.agent.config.IdentityDir); err != nil {
 			slog.Error("failed to save identity after update", "error", err)
 		}
@@ -101,22 +97,24 @@ func (h *Handler) handleRegisterUpdate(msg *common.Message) error {
 	if payload.EncKeyEncrypted != "" && payload.ServerDHPubkey != "" && identity.DeviceDHPrivkey != "" {
 		encKey, err := identity.DecryptEncKey(payload.EncKeyEncrypted, payload.ServerDHPubkey)
 		if err != nil {
-			slog.Error("failed to decrypt updated enc_key", "error", err)
-			return err
+			return fmt.Errorf("decrypt updated enc_key: %w", err)
 		}
-
 		identity.EncKey = common.EncodeBytes(encKey)
-		identity.EncEnabled = payload.EncEnabled
-
-		if err := h.agent.cryptoMgr.SetKey(identity.ClientID, encKey); err != nil {
-			slog.Error("failed to update encryption key", "error", err)
-			return err
+		identity.EncEnabled = true
+		if err := h.agent.cryptoMgr.SetKey(clientID, encKey); err != nil {
+			return fmt.Errorf("update encryption key: %w", err)
 		}
-
+		h.agent.encEnabled.Store(true)
 		slog.Info("encryption key updated")
+	} else if payload.EncKeyEncrypted != "" || payload.ServerDHPubkey != "" {
+		return fmt.Errorf("cannot decrypt updated enc_key: missing device DH private key")
+	} else if h.agent.cryptoMgr.HasKey(clientID) {
+		identity.EncEnabled = true
+		h.agent.encEnabled.Store(true)
+	} else {
+		return fmt.Errorf("server enabled encryption but sent no key")
 	}
 
-	identity.EncEnabled = payload.EncEnabled
 	if err := identity.Save(h.agent.config.IdentityDir); err != nil {
 		slog.Error("failed to save identity after update", "error", err)
 	}
@@ -125,12 +123,7 @@ func (h *Handler) handleRegisterUpdate(msg *common.Message) error {
 }
 
 func (h *Handler) handleDeviceDeleted(msg *common.Message) error {
-	identity := h.agent.identity
-	if identity != nil {
-		identity.ClientID = ""
-		identity.EncKey = ""
-		identity.Save(h.agent.config.IdentityDir)
-	}
+	h.agent.clearRegistration()
 	slog.Warn("device deleted by admin, will need to re-register")
 	return fmt.Errorf("device deleted by admin")
 }
@@ -152,35 +145,7 @@ func (h *Handler) handleTunnelOpen(msg *common.Message) error {
 		payload.LocalAddr,
 		payload.LocalPort,
 		payload.Protocol,
-		0,
 	)
-
-	return nil
-}
-
-func (h *Handler) handleTunnelOpenAck(msg *common.Message) error {
-	var payload common.TunnelOpenAckPayload
-	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
-		return err
-	}
-
-	if !payload.Success {
-		slog.Warn("tunnel open failed",
-			"tunnel_id", payload.TunnelID,
-			"error", payload.Error)
-		h.agent.tunnelManager.CloseTunnel(payload.TunnelID)
-		return nil
-	}
-
-	tunnel, ok := h.agent.tunnelManager.GetTunnel(payload.TunnelID)
-	if ok {
-		tunnel.PublicPort = payload.PublicPort
-	}
-
-	slog.Info("tunnel open ack",
-		"tunnel_id", payload.TunnelID,
-		"public_port", payload.PublicPort)
-
 	return nil
 }
 
@@ -199,6 +164,9 @@ func (h *Handler) handleTunnelDataBinary(msg *common.Message) error {
 	if payload == nil {
 		return fmt.Errorf("missing binary tunnel payload")
 	}
+	if len(payload.Data) > common.TunnelChunkSize+common.TunnelEncryptionOverhead {
+		return fmt.Errorf("tunnel payload too large: %d bytes", len(payload.Data))
+	}
 
 	if payload.IsEOF && len(payload.Data) == 0 {
 		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
@@ -207,47 +175,10 @@ func (h *Handler) handleTunnelDataBinary(msg *common.Message) error {
 
 	data, err := h.agent.decryptTunnelBytes(payload.Data)
 	if err != nil {
+		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
 		return fmt.Errorf("decrypt failed: %w", err)
 	}
 
-	conn, err := h.agent.tunnelManager.GetOrCreateLocalConn(payload.ConnID, payload.TunnelID)
-	if err != nil {
-		h.agent.tunnelManager.SendError(payload.TunnelID, payload.ConnID, err.Error())
-		return err
-	}
-
-	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	_, err = conn.Write(data)
-	conn.SetWriteDeadline(time.Time{})
-	if err != nil {
-		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
-		h.agent.tunnelManager.SendError(payload.TunnelID, payload.ConnID, err.Error())
-		return err
-	}
-
-	h.agent.tunnelManager.StartReadLoop(payload.ConnID, payload.TunnelID)
-
-	if payload.IsEOF {
-		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
-	}
-
-	return nil
-}
-
-func (h *Handler) handleTunnelError(msg *common.Message) error {
-	var payload common.TunnelErrorPayload
-	if err := common.DecodeStrictJSON(msg.Payload, &payload); err != nil {
-		return err
-	}
-
-	slog.Warn("tunnel error from server",
-		"tunnel_id", payload.TunnelID,
-		"conn_id", payload.ConnID,
-		"error", payload.Error)
-
-	if payload.ConnID != "" {
-		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
-	}
-
+	h.agent.tunnelManager.Dispatch(payload.ConnID, payload.TunnelID, data, payload.IsEOF)
 	return nil
 }

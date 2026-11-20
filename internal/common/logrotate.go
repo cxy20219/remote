@@ -33,12 +33,16 @@ func NewRotatingFileWriter(path string, maxSizeMB, maxBackups int) (*RotatingFil
 		maxBackups = DefaultLogBackups
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
 		return nil, err
 	}
 
@@ -115,7 +119,7 @@ func (w *RotatingFileWriter) rotateLocked() error {
 		_ = os.Remove(w.path)
 	}
 
-	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
@@ -172,7 +176,7 @@ func copyFileTail(src, dst string, limit int64) error {
 		return err
 	}
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}

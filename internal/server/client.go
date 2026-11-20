@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -10,6 +11,7 @@ import (
 
 type DeviceQuerier interface {
 	GetDeviceByID(id string) *DeviceState
+	AnyDeviceMatches(match func(*DeviceState) bool) bool
 }
 
 type Client struct {
@@ -21,7 +23,36 @@ type Client struct {
 	RegTime    time.Time
 	LastPing   time.Time
 
-	writeMu sync.Mutex
+	// encEnabled mirrors DeviceState.EncEnabled for the current connection so
+	// the tunnel data path never has to hit the state store.
+	encEnabled     atomic.Bool
+	registerOKSent atomic.Bool
+	writeMu        sync.Mutex
+}
+
+// ClientInfo is an immutable snapshot exposed by the admin API.
+type ClientInfo struct {
+	ClientID   string    `json:"client_id"`
+	Hostname   string    `json:"hostname"`
+	OS         string    `json:"os"`
+	RemoteAddr string    `json:"remote_addr"`
+	RegTime    time.Time `json:"reg_time"`
+	LastPing   time.Time `json:"last_ping"`
+	Online     bool      `json:"online"`
+}
+
+func (c *Client) SetEncryptionEnabled(enabled bool) {
+	c.encEnabled.Store(enabled)
+}
+
+func (c *Client) EncryptionEnabled() bool {
+	return c.encEnabled.Load()
+}
+
+// markRegisterOKSent ensures that only one of the approval handler and the
+// pending-loop transition sends register_ok to a given connection.
+func (c *Client) markRegisterOKSent() bool {
+	return c.registerOKSent.CompareAndSwap(false, true)
 }
 
 type ClientManager struct {
@@ -41,13 +72,14 @@ func (m *ClientManager) SetStore(store DeviceQuerier) {
 }
 
 func (m *ClientManager) Add(client *Client) {
+	now := time.Now()
 	m.mu.Lock()
 	var old *Client
 	if existing, ok := m.clients[client.ClientID]; ok && existing != client {
 		old = existing
 	}
-	client.RegTime = time.Now()
-	client.LastPing = time.Now()
+	client.RegTime = now
+	client.LastPing = now
 	m.clients[client.ClientID] = client
 	m.mu.Unlock()
 
@@ -60,6 +92,12 @@ func (m *ClientManager) Remove(clientID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.clients, clientID)
+}
+
+func (m *ClientManager) RemoveAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clients = make(map[string]*Client)
 }
 
 func (m *ClientManager) RemoveIfMatch(clientID string, client *Client) bool {
@@ -86,6 +124,8 @@ func (m *ClientManager) Get(clientID string) (*Client, bool) {
 	return client, ok
 }
 
+// List returns the live client pointers. Callers must not mutate fields that
+// are protected by the manager lock; use Snapshot for API responses.
 func (m *ClientManager) List() []*Client {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -96,7 +136,39 @@ func (m *ClientManager) List() []*Client {
 	return clients
 }
 
-func (m *ClientManager) UpdateActivityIfMatch(clientID string, client *Client) bool {
+func (m *ClientManager) Snapshot() []ClientInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]ClientInfo, 0, len(m.clients))
+	for _, client := range m.clients {
+		result = append(result, clientInfoLocked(client))
+	}
+	return result
+}
+
+func (m *ClientManager) SnapshotByID(clientID string) (ClientInfo, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	client, ok := m.clients[clientID]
+	if !ok {
+		return ClientInfo{}, false
+	}
+	return clientInfoLocked(client), true
+}
+
+func clientInfoLocked(client *Client) ClientInfo {
+	return ClientInfo{
+		ClientID:   client.ClientID,
+		Hostname:   client.Hostname,
+		OS:         client.OS,
+		RemoteAddr: client.RemoteAddr,
+		RegTime:    client.RegTime,
+		LastPing:   client.LastPing,
+		Online:     true,
+	}
+}
+
+func (m *ClientManager) TouchIfMatch(clientID string, client *Client) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if current, ok := m.clients[clientID]; ok && current == client {
@@ -106,27 +178,15 @@ func (m *ClientManager) UpdateActivityIfMatch(clientID string, client *Client) b
 	return false
 }
 
-func (m *ClientManager) UpdatePingIfMatch(clientID string, client *Client) bool {
-	return m.UpdateActivityIfMatch(clientID, client)
-}
-
 func (m *ClientManager) IsIPWhitelisted(ip string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, client := range m.clients {
-		device := m.getDeviceStateForClient(client)
-		if device != nil && isIPWhitelisted(ip, device.IPWhitelist) {
-			return true
-		}
+	if m.store == nil {
+		return false
 	}
-	return false
-}
-
-func (m *ClientManager) getDeviceStateForClient(client *Client) *DeviceState {
-	if m.store == nil || client == nil || client.ClientID == "" {
-		return nil
-	}
-	return m.store.GetDeviceByID(client.ClientID)
+	// Scan the store in place instead of cloning every device. Device
+	// whitelists apply even while the device is offline.
+	return m.store.AnyDeviceMatches(func(device *DeviceState) bool {
+		return isIPWhitelisted(ip, device.IPWhitelist)
+	})
 }
 
 func (m *ClientManager) GetIPWhitelist(clientID string) []string {
@@ -143,13 +203,7 @@ func (m *ClientManager) GetIPWhitelist(clientID string) []string {
 	return device.IPWhitelist
 }
 
-func (c *Client) WriteJSON(v interface{}) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in WriteJSON: %v", r)
-		}
-	}()
-
+func (c *Client) WriteJSON(v interface{}) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
@@ -159,8 +213,7 @@ func (c *Client) WriteJSON(v interface{}) (err error) {
 
 	c.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	defer c.Conn.SetWriteDeadline(time.Time{})
-	err = c.Conn.WriteJSON(v)
-	return err
+	return c.Conn.WriteJSON(v)
 }
 
 func (c *Client) WriteMessage(messageType int, data []byte) error {
@@ -173,6 +226,5 @@ func (c *Client) WriteMessage(messageType int, data []byte) error {
 
 	c.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	defer c.Conn.SetWriteDeadline(time.Time{})
-	err := c.Conn.WriteMessage(messageType, data)
-	return err
+	return c.Conn.WriteMessage(messageType, data)
 }

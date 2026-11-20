@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
+
 	"goremote/internal/common"
 )
 
@@ -15,7 +17,6 @@ type Config struct {
 	Heartbeat   HeartbeatConfig `yaml:"heartbeat"`
 	Reconnect   ReconnectConfig `yaml:"reconnect"`
 	Log         LogConfig       `yaml:"log"`
-	Tunnel      TunnelConfig    `yaml:"tunnel"`
 }
 
 type ServerConfig struct {
@@ -51,10 +52,6 @@ type LogConfig struct {
 	MaxBackups int    `yaml:"max_backups"`
 }
 
-type TunnelConfig struct {
-	Enabled bool `yaml:"enabled"`
-}
-
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -83,7 +80,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 

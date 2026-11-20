@@ -46,6 +46,36 @@ func TestBlacklistManagerStopIsIdempotent(t *testing.T) {
 	bm.Stop()
 }
 
+func TestBlacklistManagerRetainsRecentViolations(t *testing.T) {
+	bm := NewBlacklistManager(10)
+	bm.AddViolation("192.0.2.55")
+	bm.cleanupExpired()
+	if got := bm.AllViolations()["192.0.2.55"]; got != 1 {
+		t.Fatalf("recent violation count = %d, want 1", got)
+	}
+	bm.Stop()
+}
+
+func TestBlacklistManagerAutoBlacklistExpires(t *testing.T) {
+	bm := NewBlacklistManager(1)
+	bm.mu.Lock()
+	bm.entries["192.0.2.56"] = &BlacklistEntry{
+		IP:        "192.0.2.56",
+		AddedAt:   time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-time.Hour),
+	}
+	bm.mu.Unlock()
+
+	if bm.IsBlacklisted("192.0.2.56") {
+		t.Fatal("expired auto-blacklist entry should not block")
+	}
+	bm.cleanupExpired()
+	if _, ok := bm.entries["192.0.2.56"]; ok {
+		t.Fatal("expired entry should be removed by cleanup")
+	}
+	bm.Stop()
+}
+
 func TestDynamicBodySizeLimitMiddlewareUsesLatestLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

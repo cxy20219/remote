@@ -3,14 +3,16 @@ package server
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
+	"strings"
 
 	"goremote/internal/common"
 )
 
 type Config struct {
 	Server   ServerConfig
-	Admin    AdminConfig
 	Security SecurityConfig
 	Tunnel   TunnelConfig
 	Swagger  SwaggerConfig
@@ -27,33 +29,21 @@ type ServerConfig struct {
 }
 
 type TLSConfig struct {
-	Enabled            bool
-	Cert               string
-	Key                string
-	InsecureSkipVerify bool
-}
-
-type AdminConfig struct {
-	Password string
+	Enabled bool
+	Cert    string
+	Key     string
 }
 
 type SecurityConfig struct {
-	AllowedOrigins     []string
-	LoginRateLimit     int
-	MaxBodySizeMB      int
-	MaxConnPerMin      int
-	GlobalWhitelist    []string
-	BlacklistThreshold int
-	StateKey           string
+	StateKey       string
+	AllowedOrigins []string
+	// TrustedProxies 只信任这里列出的反代地址；为空表示不信任任何代理头，
+	// 直接使用 TCP 对端 IP（默认行为）。反代部署必须显式配置。
+	TrustedProxies []string
 }
 
 type TunnelConfig struct {
-	Enabled             bool
-	PortRangeStart      int
-	PortRangeEnd        int
-	MaxTunnelsPerClient int
-	PublicHost          string
-	DefaultLocalAddr    string
+	Enabled bool
 }
 
 type SwaggerConfig struct {
@@ -76,15 +66,12 @@ func ParseConfig() *Config {
 	flag.StringVar(&cfg.Server.TLS.Key, "tls-key", "", "TLS key path")
 	flag.StringVar(&cfg.dataDir, "data", "./data", "data directory for server-state.json")
 
-	flag.BoolVar(&cfg.Tunnel.Enabled, "tunnel", true, "enable tunnel feature")
-	flag.IntVar(&cfg.Tunnel.PortRangeStart, "port-start", 10000, "tunnel port range start")
-	flag.IntVar(&cfg.Tunnel.PortRangeEnd, "port-end", 20000, "tunnel port range end")
-	flag.IntVar(&cfg.Tunnel.MaxTunnelsPerClient, "max-tunnels", 10, "max tunnels per client")
-	flag.StringVar(&cfg.Tunnel.DefaultLocalAddr, "local-addr", "127.0.0.1", "default local address for tunnels")
-	flag.StringVar(&cfg.Tunnel.PublicHost, "public-host", "", "public host for tunnel addresses")
-	flag.StringVar(&cfg.Security.StateKey, "state-key", "", "state encryption key (prefer GOREMOTE_STATE_KEY)")
+	allowedOrigins := flag.String("allowed-origins", "", "comma-separated browser origins allowed to open /ws")
+	trustedProxies := flag.String("trusted-proxies", "", "comma-separated reverse-proxy IPs/CIDRs trusted for X-Forwarded-For (empty = trust none)")
 
+	flag.BoolVar(&cfg.Tunnel.Enabled, "tunnel", true, "enable tunnel feature")
 	flag.BoolVar(&cfg.Swagger.Enabled, "swagger", true, "enable swagger UI")
+	flag.StringVar(&cfg.Security.StateKey, "state-key", "", "state encryption key (prefer GOREMOTE_STATE_KEY)")
 
 	flag.StringVar(&cfg.Log.Level, "log-level", "info", "log level: debug, info, warn, error")
 	flag.StringVar(&cfg.Log.File, "log-file", "", "log file path (empty writes JSON logs to stdout)")
@@ -93,13 +80,13 @@ func ParseConfig() *Config {
 
 	flag.Parse()
 
+	if (cfg.Server.TLS.Cert == "") != (cfg.Server.TLS.Key == "") {
+		fmt.Fprintln(os.Stderr, "--tls-cert and --tls-key must be provided together")
+		os.Exit(2)
+	}
 	cfg.Server.TLS.Enabled = cfg.Server.TLS.Cert != "" && cfg.Server.TLS.Key != ""
-	cfg.Security.LoginRateLimit = 5
-	cfg.Security.MaxConnPerMin = 10
-	cfg.Security.BlacklistThreshold = 100
-	cfg.Security.GlobalWhitelist = []string{}
-	cfg.Security.AllowedOrigins = []string{}
-	cfg.Security.MaxBodySizeMB = defaultMaxBodySizeMB
+	cfg.Security.AllowedOrigins = splitCommaList(*allowedOrigins)
+	cfg.Security.TrustedProxies = splitCommaList(*trustedProxies)
 	if cfg.Security.StateKey == "" {
 		cfg.Security.StateKey = os.Getenv("GOREMOTE_STATE_KEY")
 	}
@@ -107,10 +94,21 @@ func ParseConfig() *Config {
 	return cfg
 }
 
+func splitCommaList(raw string) []string {
+	result := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
+}
+
 func (c *Config) DataDir() string {
 	return c.dataDir
 }
 
 func (c *Config) Addr() string {
-	return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port)
+	return net.JoinHostPort(c.Server.Host, strconv.Itoa(c.Server.Port))
 }

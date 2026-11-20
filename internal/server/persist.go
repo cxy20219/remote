@@ -2,18 +2,25 @@ package server
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
 	"goremote/internal/common"
+)
+
+const (
+	stateSyncInterval = 3 * time.Second
+	adminPasswordSize = 18 // bytes; base64url yields 24 characters
 )
 
 type ServerSettings struct {
@@ -50,7 +57,6 @@ type ServerState struct {
 	ServerSignPrivkey string          `json:"server_sign_privkey"`
 	ServerSignPubkey  string          `json:"server_sign_pubkey"`
 	AdminPasswordHash string          `json:"admin_password_hash"`
-	AdminPassword     string          `json:"admin_password_plain,omitempty"`
 	Settings          ServerSettings  `json:"settings"`
 	Devices           []DeviceState   `json:"devices"`
 	Encrypted         *EncryptedState `json:"encrypted,omitempty"`
@@ -70,6 +76,66 @@ func defaultSettings() ServerSettings {
 		HeartbeatInterval:   30,
 		HeartbeatTimeout:    90,
 	}
+}
+
+// normalizeSettings repairs out-of-range persisted values while preserving
+// explicit zero values that disable a limit.
+func normalizeSettings(settings ServerSettings) ServerSettings {
+	defaults := defaultSettings()
+
+	if settings.PortRangeStart < 1 || settings.PortRangeStart > 65535 {
+		settings.PortRangeStart = defaults.PortRangeStart
+	}
+	if settings.PortRangeEnd < 1 || settings.PortRangeEnd > 65535 {
+		settings.PortRangeEnd = defaults.PortRangeEnd
+	}
+	if settings.PortRangeStart > settings.PortRangeEnd {
+		settings.PortRangeStart = defaults.PortRangeStart
+		settings.PortRangeEnd = defaults.PortRangeEnd
+	}
+	if settings.MaxTunnelsPerClient < 0 {
+		settings.MaxTunnelsPerClient = 0
+	}
+	if settings.MaxTunnelsPerClient > 10000 {
+		settings.MaxTunnelsPerClient = 10000
+	}
+	if settings.DefaultLocalAddr == "" {
+		settings.DefaultLocalAddr = defaults.DefaultLocalAddr
+	}
+	if settings.MaxConnPerMin < 0 {
+		settings.MaxConnPerMin = 0
+	}
+	if settings.MaxConnPerMin > 1000000 {
+		settings.MaxConnPerMin = 1000000
+	}
+	if settings.LoginRateLimit < 0 {
+		settings.LoginRateLimit = 0
+	}
+	if settings.LoginRateLimit > 1000000 {
+		settings.LoginRateLimit = 1000000
+	}
+	if settings.BlacklistThreshold < 0 {
+		settings.BlacklistThreshold = 0
+	}
+	if settings.BlacklistThreshold > 1000000 {
+		settings.BlacklistThreshold = 1000000
+	}
+	if settings.GlobalWhitelist == nil {
+		settings.GlobalWhitelist = []string{}
+	}
+	if settings.MaxBodySizeMB < 0 {
+		settings.MaxBodySizeMB = 0
+	}
+	if settings.MaxBodySizeMB > 1024 {
+		settings.MaxBodySizeMB = 1024
+	}
+	if settings.HeartbeatInterval < 1 || settings.HeartbeatInterval > 86400 {
+		settings.HeartbeatInterval = defaults.HeartbeatInterval
+	}
+	if settings.HeartbeatTimeout < 1 || settings.HeartbeatTimeout > 86400 {
+		settings.HeartbeatTimeout = defaults.HeartbeatTimeout
+	}
+	return settings
 }
 
 func cloneSettings(settings ServerSettings) ServerSettings {
@@ -114,36 +180,28 @@ func cloneServerState(state *ServerState) ServerState {
 
 type StateStore struct {
 	mu            sync.RWMutex
+	saveMu        sync.Mutex
 	state         *ServerState
+	deviceIndex   map[string]int
 	path          string
 	encryptionKey []byte
 	dirty         bool
 	stopCh        chan struct{}
 	stopOnce      sync.Once
+	startOnce     sync.Once
+	wg            sync.WaitGroup
 }
 
 func NewStateStore(path string) *StateStore {
-	s := &StateStore{
-		path:   path,
-		stopCh: make(chan struct{}),
+	return &StateStore{
+		path:        path,
+		stopCh:      make(chan struct{}),
+		deviceIndex: make(map[string]int),
 		state: &ServerState{
 			Settings: defaultSettings(),
 			Devices:  []DeviceState{},
 		},
 	}
-	return s
-}
-
-func NewStateStoreWithSettings(settings ServerSettings) *StateStore {
-	s := &StateStore{
-		path:   "",
-		stopCh: make(chan struct{}),
-		state: &ServerState{
-			Settings: settings,
-			Devices:  []DeviceState{},
-		},
-	}
-	return s
 }
 
 func (s *StateStore) Load() error {
@@ -158,81 +216,35 @@ func (s *StateStore) Load() error {
 		return err
 	}
 
-	var state ServerState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return err
+	state := ServerState{
+		Settings: defaultSettings(),
+		Devices:  []DeviceState{},
 	}
-	loadedEncrypted := state.Encrypted != nil
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("parse state file: %w", err)
+	}
+	if state.Devices == nil {
+		state.Devices = []DeviceState{}
+	}
+	var legacy struct {
+		AdminPasswordPlain string `json:"admin_password_plain"`
+	}
+	_ = json.Unmarshal(data, &legacy)
+	wasPlaintext := state.Encrypted == nil
 	if err := s.decryptSensitiveState(&state); err != nil {
 		return err
 	}
-
-	state.Settings = mergeMissingSettingsDefaults(data, state.Settings)
+	state.Settings = normalizeSettings(state.Settings)
 
 	s.state = &state
-	if len(s.encryptionKey) > 0 && !loadedEncrypted {
-		if err := s.saveLocked(); err != nil {
+	s.rebuildDeviceIndexLocked()
+	if (len(s.encryptionKey) > 0 && wasPlaintext) || legacy.AdminPasswordPlain != "" {
+		if err := s.writeState(cloneServerState(&state)); err != nil {
 			return err
 		}
 	}
 	slog.Info("server state loaded", "path", s.path, "devices", len(state.Devices))
 	return nil
-}
-
-func mergeMissingSettingsDefaults(data []byte, loaded ServerSettings) ServerSettings {
-	settings := defaultSettings()
-
-	var raw struct {
-		Settings map[string]json.RawMessage `json:"settings"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil || raw.Settings == nil {
-		return settings
-	}
-
-	if _, ok := raw.Settings["port_range_start"]; ok {
-		settings.PortRangeStart = loaded.PortRangeStart
-	}
-	if _, ok := raw.Settings["port_range_end"]; ok {
-		settings.PortRangeEnd = loaded.PortRangeEnd
-	}
-	if settings.PortRangeStart == 0 {
-		settings.PortRangeStart = 10000
-	}
-	if settings.PortRangeEnd == 0 {
-		settings.PortRangeEnd = 20000
-	}
-	if _, ok := raw.Settings["max_tunnels_per_client"]; ok {
-		settings.MaxTunnelsPerClient = loaded.MaxTunnelsPerClient
-	}
-	if _, ok := raw.Settings["default_local_addr"]; ok {
-		settings.DefaultLocalAddr = loaded.DefaultLocalAddr
-	}
-	if _, ok := raw.Settings["public_host"]; ok {
-		settings.PublicHost = loaded.PublicHost
-	}
-	if _, ok := raw.Settings["max_conn_per_min"]; ok {
-		settings.MaxConnPerMin = loaded.MaxConnPerMin
-	}
-	if _, ok := raw.Settings["login_rate_limit"]; ok {
-		settings.LoginRateLimit = loaded.LoginRateLimit
-	}
-	if _, ok := raw.Settings["blacklist_threshold"]; ok {
-		settings.BlacklistThreshold = loaded.BlacklistThreshold
-	}
-	if _, ok := raw.Settings["global_whitelist"]; ok {
-		settings.GlobalWhitelist = append([]string(nil), loaded.GlobalWhitelist...)
-	}
-	if _, ok := raw.Settings["max_body_size_mb"]; ok {
-		settings.MaxBodySizeMB = loaded.MaxBodySizeMB
-	}
-	if _, ok := raw.Settings["heartbeat_interval"]; ok {
-		settings.HeartbeatInterval = loaded.HeartbeatInterval
-	}
-	if _, ok := raw.Settings["heartbeat_timeout"]; ok {
-		settings.HeartbeatTimeout = loaded.HeartbeatTimeout
-	}
-
-	return settings
 }
 
 func (s *StateStore) initNew() error {
@@ -241,7 +253,10 @@ func (s *StateStore) initNew() error {
 		return err
 	}
 
-	password := uuid.New().String()[:12]
+	password, err := generateAdminPassword()
+	if err != nil {
+		return err
+	}
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
@@ -251,37 +266,57 @@ func (s *StateStore) initNew() error {
 		ServerSignPrivkey: hex.EncodeToString(privKey),
 		ServerSignPubkey:  hex.EncodeToString(pubKey),
 		AdminPasswordHash: string(hashedPassword),
-		AdminPassword:     password,
 		Settings:          defaultSettings(),
 		Devices:           []DeviceState{},
 	}
 
-	slog.Info("========================================")
-	slog.Info("Generated admin credentials")
-	slog.Info("Admin password", "password", password)
-	slog.Info("========================================")
-
-	return s.saveLocked()
-}
-
-func (s *StateStore) Save() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.saveLocked()
-}
-
-func (s *StateStore) saveLocked() error {
-	if s.path == "" {
-		return nil
-	}
-
-	copy := cloneServerState(s.state)
-	copy.AdminPassword = ""
-	if err := s.encryptSensitiveState(&copy); err != nil {
+	if err := s.writeState(cloneServerState(s.state)); err != nil {
 		return err
 	}
 
-	data, err := json.MarshalIndent(copy, "", "  ")
+	slog.Info("========================================")
+	slog.Info("Generated admin credentials")
+	slog.Info("Admin password (first run only)", "password", password)
+	slog.Info("========================================")
+	return nil
+}
+
+func generateAdminPassword() (string, error) {
+	raw := make([]byte, adminPasswordSize)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate admin password: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// Save writes the current state synchronously.
+func (s *StateStore) Save() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
+	s.mu.Lock()
+	snapshot := cloneServerState(s.state)
+	s.dirty = false
+	s.mu.Unlock()
+
+	if err := s.writeState(snapshot); err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func (s *StateStore) writeState(state ServerState) error {
+	if s.path == "" {
+		return nil
+	}
+	if err := s.encryptSensitiveState(&state); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -299,55 +334,61 @@ func (s *StateStore) saveLocked() error {
 	return os.Rename(tmp, s.path)
 }
 
-func (s *StateStore) MarkDirty() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.dirty = true
+func (s *StateStore) StartSyncLoop() {
+	s.startOnce.Do(func() {
+		s.wg.Add(1)
+		go s.syncLoop()
+	})
 }
 
-func (s *StateStore) StartSyncLoop() {
-	go func() {
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				s.mu.Lock()
-				dirty := s.dirty
-				if dirty {
-					s.dirty = false
-				}
-				var err error
-				if dirty {
-					err = s.saveLocked()
-				}
-				s.mu.Unlock()
-				if err != nil {
-					slog.Error("failed to save state", "error", err)
-				}
-			case <-s.stopCh:
-				s.mu.Lock()
-				if s.dirty {
-					s.saveLocked()
-				}
-				s.mu.Unlock()
-				return
+func (s *StateStore) syncLoop() {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(stateSyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := s.flushDirty(); err != nil {
+				slog.Error("failed to save state", "error", err)
 			}
+		case <-s.stopCh:
+			if err := s.flushDirty(); err != nil {
+				slog.Error("failed to save state on shutdown", "error", err)
+			}
+			return
 		}
-	}()
+	}
+}
+
+func (s *StateStore) flushDirty() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
+	s.mu.Lock()
+	if !s.dirty {
+		s.mu.Unlock()
+		return nil
+	}
+	s.dirty = false
+	snapshot := cloneServerState(s.state)
+	s.mu.Unlock()
+
+	if err := s.writeState(snapshot); err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *StateStore) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 	})
-}
-
-func (s *StateStore) GetState() *ServerState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	cloned := cloneServerState(s.state)
-	return &cloned
+	s.wg.Wait()
 }
 
 func (s *StateStore) GetSettings() ServerSettings {
@@ -363,9 +404,21 @@ func (s *StateStore) UpdateSettings(fn func(*ServerSettings)) {
 	s.dirty = true
 }
 
+func (s *StateStore) rebuildDeviceIndexLocked() {
+	s.deviceIndex = make(map[string]int, len(s.state.Devices))
+	for i := range s.state.Devices {
+		s.deviceIndex[s.state.Devices[i].ID] = i
+	}
+}
+
 func (s *StateStore) GetDeviceByID(id string) *DeviceState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if index, ok := s.deviceIndex[id]; ok && index < len(s.state.Devices) && s.state.Devices[index].ID == id {
+		device := cloneDevice(s.state.Devices[index])
+		return &device
+	}
+	// Fallback for stores constructed directly (tests) or after manual edits.
 	for i := range s.state.Devices {
 		if s.state.Devices[i].ID == id {
 			device := cloneDevice(s.state.Devices[i])
@@ -373,6 +426,43 @@ func (s *StateStore) GetDeviceByID(id string) *DeviceState {
 		}
 	}
 	return nil
+}
+
+func (s *StateStore) GetDeviceBySignPubkey(pubkey, status string) *DeviceState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.state.Devices {
+		if s.state.Devices[i].DeviceSignPubkey == pubkey && s.state.Devices[i].Status == status {
+			device := cloneDevice(s.state.Devices[i])
+			return &device
+		}
+	}
+	return nil
+}
+
+func (s *StateStore) CountDevicesByStatus(status string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for i := range s.state.Devices {
+		if s.state.Devices[i].Status == status {
+			count++
+		}
+	}
+	return count
+}
+
+// AnyDeviceMatches scans devices under the read lock. The callback must not
+// retain or mutate the device pointer.
+func (s *StateStore) AnyDeviceMatches(match func(*DeviceState) bool) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.state.Devices {
+		if match(&s.state.Devices[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *StateStore) GetDevicesByStatus(status string) []DeviceState {
@@ -400,6 +490,10 @@ func (s *StateStore) GetAllDevices() []DeviceState {
 func (s *StateStore) AddDevice(device *DeviceState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.deviceIndex == nil {
+		s.rebuildDeviceIndexLocked()
+	}
+	s.deviceIndex[device.ID] = len(s.state.Devices)
 	s.state.Devices = append(s.state.Devices, *device)
 	s.dirty = true
 }
@@ -420,9 +514,16 @@ func (s *StateStore) UpdateDevice(id string, fn func(*DeviceState)) bool {
 func (s *StateStore) RemoveDevice(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.deviceIndex == nil {
+		s.rebuildDeviceIndexLocked()
+	}
 	for i, d := range s.state.Devices {
 		if d.ID == id {
 			s.state.Devices = append(s.state.Devices[:i], s.state.Devices[i+1:]...)
+			delete(s.deviceIndex, id)
+			for j := i; j < len(s.state.Devices); j++ {
+				s.deviceIndex[s.state.Devices[j].ID] = j
+			}
 			s.dirty = true
 			return true
 		}
@@ -446,8 +547,9 @@ func (s *StateStore) GetServerSignPubkey() ed25519.PublicKey {
 
 func (s *StateStore) VerifyAdminPassword(password string) bool {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return bcrypt.CompareHashAndPassword([]byte(s.state.AdminPasswordHash), []byte(password)) == nil
+	hash := s.state.AdminPasswordHash
+	s.mu.RUnlock()
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
 func (s *StateStore) SetAdminPassword(password string) error {
@@ -456,21 +558,8 @@ func (s *StateStore) SetAdminPassword(password string) error {
 		return err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.state.AdminPasswordHash = string(hashedPassword)
-	s.state.AdminPassword = ""
 	s.dirty = true
-	return s.saveLocked()
-}
-
-func (s *StateStore) GetAdminPassword() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.state.AdminPassword
-}
-
-func (s *StateStore) ClearAdminPassword() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.state.AdminPassword = ""
+	s.mu.Unlock()
+	return s.Save()
 }
