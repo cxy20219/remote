@@ -369,366 +369,603 @@ th,td{padding:8px 8px}
 <script>
 let drawerLoaded = false;
 let deviceList = [];
+let gwlIPs = [];
 
-async function checkAuth(){try{const r=await fetch('/api/check-auth');if(!(await r.json()).authenticated)window.location.href='/login.html'}catch(e){window.location.href='/login.html'}}
-
-function toast(msg,type='success'){
-  const t=document.getElementById('toast');
-  const el=document.createElement('div');
-  el.className='toast-item '+type;el.textContent=msg;t.appendChild(el);
-  setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity .3s';setTimeout(()=>el.remove(),300)},4000)
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[ch]);
 }
 
-async function checkHealth(){
-  try{
-    const r=await fetch('/health');const d=await r.json();
-    const ok=d.status==='ok';
-    document.getElementById('stat-health').textContent=ok?'正常':'异常';
-    document.getElementById('stat-health').style.color=ok?'#22c55e':'#ef4444';
-  }catch(e){
-    document.getElementById('stat-health').textContent='离线';
-    document.getElementById('stat-health').style.color='#ef4444';
+// Encodes a value for use as a JavaScript argument inside an HTML attribute.
+function jsArg(value) {
+  return esc(JSON.stringify(String(value ?? '')));
+}
+
+function fmtDate(value, withTime = true) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return withTime ? date.toLocaleString() : date.toLocaleDateString();
+}
+
+async function apiFetch(path, options) {
+  const response = await fetch(path, options);
+  if (response.status === 401) {
+    window.location.href = '/login.html';
+    throw new Error('unauthorized');
+  }
+  return response;
+}
+
+async function apiJSON(path, options) {
+  const response = await apiFetch(path, options);
+  let data = null;
+  try { data = await response.json(); } catch (e) { data = null; }
+  return { response, data };
+}
+
+function errorText(data, fallback) {
+  return (data && data.error) || fallback;
+}
+
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/check-auth');
+    if (!(await r.json()).authenticated) window.location.href = '/login.html';
+  } catch (e) {
+    window.location.href = '/login.html';
+  }
+}
+
+function toast(msg, type = 'success') {
+  const container = document.getElementById('toast');
+  const el = document.createElement('div');
+  el.className = 'toast-item ' + type;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transition = 'opacity .3s';
+    setTimeout(() => el.remove(), 300);
+  }, 4000);
+}
+
+async function checkHealth() {
+  const target = document.getElementById('stat-health');
+  try {
+    const r = await fetch('/health');
+    const d = await r.json();
+    const ok = d.status === 'ok';
+    target.textContent = ok ? '正常' : '异常';
+    target.style.color = ok ? '#22c55e' : '#ef4444';
+  } catch (e) {
+    target.textContent = '离线';
+    target.style.color = '#ef4444';
   }
 }
 
 // --- Drawer ---
-function toggleDrawer(){
-  if(document.getElementById('drawer').classList.contains('open')){closeDrawer();return}
-  openDrawer()
+function toggleDrawer() {
+  if (document.getElementById('drawer').classList.contains('open')) { closeDrawer(); return; }
+  openDrawer();
 }
-function openDrawer(){
+function openDrawer() {
   document.getElementById('drawer').classList.add('open');
   document.getElementById('drawer-overlay').classList.add('show');
-  if(!drawerLoaded){drawerLoaded=true;loadSettings();loadGlobalWhitelist()}
+  if (!drawerLoaded) { drawerLoaded = true; loadSettings(); loadGlobalWhitelist(); }
 }
-function closeDrawer(){
+function closeDrawer() {
   document.getElementById('drawer').classList.remove('open');
-  document.getElementById('drawer-overlay').classList.remove('show')
+  document.getElementById('drawer-overlay').classList.remove('show');
 }
 
 // --- Settings ---
-async function loadSettings(){
-  try{
-    const r=await fetch('/api/settings');const d=await r.json();
-    document.getElementById('set-port-start').value=d.port_range_start||'';
-    document.getElementById('set-port-end').value=d.port_range_end||'';
-    document.getElementById('set-max-tunnels').value=d.max_tunnels_per_client||'';
-    document.getElementById('set-local-addr').value=d.default_local_addr||'';
-    document.getElementById('set-conn-limit').value=d.max_conn_per_min||'';
-    document.getElementById('set-login-limit').value=d.login_rate_limit||'';
-    document.getElementById('set-hb-interval').value=d.heartbeat_interval||'';
-    document.getElementById('set-hb-timeout').value=d.heartbeat_timeout||'';
-  }catch(e){}
+async function loadSettings() {
+  try {
+    const { response, data } = await apiJSON('/api/settings');
+    if (!response.ok || !data) return;
+    const fields = {
+      'set-port-start': 'port_range_start',
+      'set-port-end': 'port_range_end',
+      'set-max-tunnels': 'max_tunnels_per_client',
+      'set-local-addr': 'default_local_addr',
+      'set-conn-limit': 'max_conn_per_min',
+      'set-login-limit': 'login_rate_limit',
+      'set-hb-interval': 'heartbeat_interval',
+      'set-hb-timeout': 'heartbeat_timeout'
+    };
+    for (const [id, key] of Object.entries(fields)) {
+      document.getElementById(id).value = data[key] ?? '';
+    }
+  } catch (e) { /* drawer stays on previous values */ }
 }
 
-async function saveSettings(){
-  const body={
-    port_range_start:parseInt(document.getElementById('set-port-start').value)||0,
-    port_range_end:parseInt(document.getElementById('set-port-end').value)||0,
-    max_tunnels_per_client:parseInt(document.getElementById('set-max-tunnels').value)||0,
-    default_local_addr:document.getElementById('set-local-addr').value,
-    max_conn_per_min:parseInt(document.getElementById('set-conn-limit').value)||0,
-    login_rate_limit:parseInt(document.getElementById('set-login-limit').value)||0,
-    heartbeat_interval:parseInt(document.getElementById('set-hb-interval').value)||0,
-    heartbeat_timeout:parseInt(document.getElementById('set-hb-timeout').value)||0,
+async function saveSettings() {
+  const numberValue = id => parseInt(document.getElementById(id).value, 10) || 0;
+  const body = {
+    port_range_start: numberValue('set-port-start'),
+    port_range_end: numberValue('set-port-end'),
+    max_tunnels_per_client: numberValue('set-max-tunnels'),
+    default_local_addr: document.getElementById('set-local-addr').value,
+    max_conn_per_min: numberValue('set-conn-limit'),
+    login_rate_limit: numberValue('set-login-limit'),
+    heartbeat_interval: numberValue('set-hb-interval'),
+    heartbeat_timeout: numberValue('set-hb-timeout')
   };
-  try{
-    const r=await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(r.ok)toast('设置已保存');else toast('保存失败','error')
-  }catch(e){toast('网络错误','error')}
+  try {
+    const { response, data } = await apiJSON('/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    if (response.ok) toast('设置已保存'); else toast(errorText(data, '保存失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
-async function changeAdminPassword(){
-  const current=document.getElementById('admin-current-password').value;
-  const next=document.getElementById('admin-new-password').value;
-  if(!current||!next){toast('请输入当前密码和新密码','error');return}
-  try{
-    const r=await fetch('/api/admin/password',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({current_password:current,new_password:next})});
-    const d=await r.json();
-    if(r.ok){toast('密码已修改，请重新登录');setTimeout(()=>{window.location.href='/login.html'},900)}
-    else toast(d.error||'修改密码失败','error')
-  }catch(e){toast('网络错误','error')}
+async function changeAdminPassword() {
+  const current = document.getElementById('admin-current-password').value;
+  const next = document.getElementById('admin-new-password').value;
+  if (!current || !next) { toast('请输入当前密码和新密码', 'error'); return; }
+  try {
+    const { response, data } = await apiJSON('/api/admin/password', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: current, new_password: next })
+    });
+    if (response.ok) {
+      toast('密码已修改，请重新登录');
+      setTimeout(() => { window.location.href = '/login.html'; }, 900);
+    } else {
+      toast(errorText(data, '修改密码失败'), 'error');
+    }
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
 // --- Devices ---
-async function loadDevices(){
-  try{
-    const r=await fetch('/api/devices');const d=await r.json();
-    deviceList=d.devices||[];
-    const online=d.devices.filter(x=>x.online).length;
-    document.getElementById('stat-online').textContent=online;
+async function loadDevices() {
+  try {
+    const { response, data } = await apiJSON('/api/devices');
+    if (!response.ok || !data) throw new Error('load failed');
+    deviceList = data.devices || [];
+    document.getElementById('stat-online').textContent = deviceList.filter(x => x.online).length;
 
-    const sel=document.getElementById('client-select');
-    const oldVal=sel.value;
-    sel.innerHTML='<option value="">请选择...</option>';
-    d.devices.filter(x=>x.status==='authorized'&&x.online).forEach(c=>{
-      const name=c.name||c.hostname||c.id.substring(0,12);
-      sel.innerHTML+=`<option value="${c.id}">${name}</option>`;
+    const select = document.getElementById('client-select');
+    const oldValue = select.value;
+    const options = ['<option value="">请选择...</option>'];
+    deviceList.filter(x => x.status === 'authorized' && x.online).forEach(device => {
+      const name = device.name || device.hostname || device.id.substring(0, 12);
+      options.push('<option value="' + esc(device.id) + '">' + esc(name) + '</option>');
     });
-    sel.value=oldVal;
-
+    select.innerHTML = options.join('');
+    select.value = oldValue;
     renderDevices();
-  }catch(e){document.getElementById('devices').innerHTML='<div class="empty">加载失败</div>'}
+  } catch (e) {
+    document.getElementById('devices').innerHTML = '<div class="empty">加载失败</div>';
+  }
 }
 
-function renderDevices(){
-  const authorized=deviceList.filter(d=>d.status==='authorized');
-  if(!authorized.length){document.getElementById('devices').innerHTML='<div class="empty">暂无已授权设备</div>';return}
-  let h='<table><thead><tr><th>别名</th><th>主机名</th><th>系统</th><th>加密</th><th>状态</th><th>审批时间</th><th>操作</th></tr></thead><tbody>';
-  authorized.forEach(d=>{
-    const encBadge=d.enc_enabled?'<span class="badge badge-enc-on">&#128274; 加密</span>':'<span class="badge badge-enc-off">&#128275; 明文</span>';
-    const onBadge=d.online?'<span class="badge badge-online">在线</span>':'<span class="badge badge-offline">离线</span>';
-    const approved=d.approved_at?new Date(d.approved_at).toLocaleDateString():'-';
-    h+=`<tr><td><strong>${d.name||d.hostname}</strong></td><td>${d.hostname}</td><td>${d.os}</td><td>${encBadge}</td><td>${onBadge}</td><td style="font-size:12px">${approved}</td><td><button class="btn btn-ghost" onclick="openDeviceModal('${d.id}')">配置</button> <button class="btn btn-danger" onclick="deleteDevice('${d.id}','${d.name||d.hostname}')">删除</button></td></tr>`;
-  });
-  h+='</tbody></table>';
-  document.getElementById('devices').innerHTML=h;
+function renderDevices() {
+  const authorized = deviceList.filter(d => d.status === 'authorized');
+  const container = document.getElementById('devices');
+  if (!authorized.length) {
+    container.innerHTML = '<div class="empty">暂无已授权设备</div>';
+    return;
+  }
+  const rows = authorized.map(d => {
+    const name = d.name || d.hostname || '';
+    const encBadge = d.enc_enabled
+      ? '<span class="badge badge-enc-on">&#128274; 加密</span>'
+      : '<span class="badge badge-enc-off">&#128275; 明文</span>';
+    const onBadge = d.online
+      ? '<span class="badge badge-online">在线</span>'
+      : '<span class="badge badge-offline">离线</span>';
+    return '<tr><td><strong>' + esc(name) + '</strong></td><td>' + esc(d.hostname) + '</td><td>' + esc(d.os) + '</td><td>' +
+      encBadge + '</td><td>' + onBadge + '</td><td style="font-size:12px">' + esc(fmtDate(d.approved_at, false)) + '</td><td>' +
+      '<button class="btn btn-ghost" onclick="openDeviceModal(' + jsArg(d.id) + ')">配置</button> ' +
+      '<button class="btn btn-danger" onclick="deleteDevice(' + jsArg(d.id) + ',' + jsArg(name) + ')">删除</button>' +
+      '</td></tr>';
+  }).join('');
+  container.innerHTML = '<table><thead><tr><th>别名</th><th>主机名</th><th>系统</th><th>加密</th><th>状态</th><th>审批时间</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
 // --- Pending Devices ---
-async function loadPendingDevices(){
-  try{
-    const r=await fetch('/api/devices/pending');const d=await r.json();
-    const devices=d.devices||[];
-    document.getElementById('stat-pending').textContent=devices.length;
-    const dot=document.getElementById('pending-dot');
-    const card=document.getElementById('pending-card');
-    if(devices.length>0){
-      card.style.display='';
-      dot.className='dot warn';
-      document.getElementById('pending-count').textContent=devices.length;
-    }else{
-      card.style.display='none';
+async function loadPendingDevices() {
+  try {
+    const { response, data } = await apiJSON('/api/devices/pending');
+    if (!response.ok || !data) throw new Error('load failed');
+    const devices = data.devices || [];
+    document.getElementById('stat-pending').textContent = devices.length;
+    const card = document.getElementById('pending-card');
+    const dot = document.getElementById('pending-dot');
+    if (!devices.length) {
+      card.style.display = 'none';
       return;
     }
-    let h='<table><thead><tr><th>设备 ID</th><th>主机名</th><th>系统</th><th>IP</th><th>连接时间</th><th>操作</th></tr></thead><tbody>';
-    devices.forEach(d=>{
-      const time=d.first_seen?new Date(d.first_seen).toLocaleString():'-';
-      h+=`<tr><td><code>${d.id}</code></td><td>${d.hostname}</td><td>${d.os}</td><td><code>${d.remote_ip||'-'}</code></td><td style="font-size:12px">${time}</td><td><button class="btn btn-success" onclick="approveDevice('${d.id}')">批准</button> <button class="btn btn-danger" onclick="denyDevice('${d.id}')">拒绝</button></td></tr>`;
-    });
-    h+='</tbody></table>';
-    document.getElementById('pending-devices').innerHTML=h;
-  }catch(e){document.getElementById('pending-devices').innerHTML='<div class="empty">加载失败</div>'}
+    card.style.display = '';
+    dot.className = 'dot warn';
+    document.getElementById('pending-count').textContent = devices.length;
+    const rows = devices.map(d =>
+      '<tr><td><code>' + esc(d.id) + '</code></td><td>' + esc(d.hostname) + '</td><td>' + esc(d.os) + '</td><td><code>' +
+      esc(d.remote_ip || '-') + '</code></td><td style="font-size:12px">' + esc(fmtDate(d.first_seen)) + '</td><td>' +
+      '<button class="btn btn-success" onclick="approveDevice(' + jsArg(d.id) + ')">批准</button> ' +
+      '<button class="btn btn-danger" onclick="denyDevice(' + jsArg(d.id) + ')">拒绝</button>' +
+      '</td></tr>').join('');
+    document.getElementById('pending-devices').innerHTML =
+      '<table><thead><tr><th>设备 ID</th><th>主机名</th><th>系统</th><th>IP</th><th>连接时间</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  } catch (e) {
+    document.getElementById('pending-devices').innerHTML = '<div class="empty">加载失败</div>';
+  }
 }
 
-async function approveDevice(id){
-  try{
-    const r=await fetch('/api/devices/pending/'+id+'/approve',{method:'POST'});
-    const d=await r.json();
-    if(r.ok){toast('设备已批准');loadDevices();loadPendingDevices()}
-    else toast(d.error||'批准失败','error')
-  }catch(e){toast('网络错误','error')}
+async function approveDevice(id) {
+  try {
+    const { response, data } = await apiJSON('/api/devices/pending/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
+    if (response.ok) { toast('设备已批准'); loadDevices(); loadPendingDevices(); }
+    else toast(errorText(data, '批准失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
-async function denyDevice(id){
-  if(!confirm('确定拒绝此设备？'))return;
-  try{
-    const r=await fetch('/api/devices/pending/'+id+'/deny',{method:'POST'});
-    if(r.ok){toast('已拒绝');loadPendingDevices()}
-    else{const d=await r.json();toast(d.error||'操作失败','error')}
-  }catch(e){toast('网络错误','error')}
+async function denyDevice(id) {
+  if (!confirm('确定拒绝此设备？')) return;
+  try {
+    const { response, data } = await apiJSON('/api/devices/pending/' + encodeURIComponent(id) + '/deny', { method: 'POST' });
+    if (response.ok) { toast('已拒绝'); loadPendingDevices(); }
+    else toast(errorText(data, '操作失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
-async function deleteDevice(id,name){
-  if(!confirm('确定删除设备 "'+(name||id)+'"？设备将断开连接且需重新注册。'))return;
-  try{
-    const r=await fetch('/api/devices/'+id,{method:'DELETE'});
-    if(r.ok){toast('已删除');loadDevices()}
-    else{const d=await r.json();toast(d.error||'删除失败','error')}
-  }catch(e){toast('网络错误','error')}
+async function deleteDevice(id, name) {
+  if (!confirm('确定删除设备 "' + (name || id) + '"？设备将断开连接且需重新注册。')) return;
+  try {
+    const { response, data } = await apiJSON('/api/devices/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (response.ok) { toast('已删除'); loadDevices(); }
+    else toast(errorText(data, '删除失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
 // --- Device Config Modal ---
-function openDeviceModal(id){
-  const d=deviceList.find(x=>x.id===id);
-  if(!d)return;
-  document.getElementById('device-modal-id').value=id;
-  document.getElementById('device-modal-name').value=d.name||'';
-  document.getElementById('device-modal-enc').checked=d.enc_enabled;
-  document.getElementById('enc-status-label').textContent=d.enc_enabled?'已启用':'已关闭';
-  document.getElementById('device-modal-wl').value=(d.ip_whitelist||[]).join('\n');
-  document.getElementById('device-modal-title').textContent='设备配置 - '+(d.name||d.hostname||id.substring(0,12));
+function openDeviceModal(id) {
+  const device = deviceList.find(x => x.id === id);
+  if (!device) return;
+  document.getElementById('device-modal-id').value = id;
+  document.getElementById('device-modal-name').value = device.name || '';
+  document.getElementById('device-modal-enc').checked = !!device.enc_enabled;
+  document.getElementById('enc-status-label').textContent = device.enc_enabled ? '已启用' : '已关闭';
+  document.getElementById('device-modal-wl').value = (device.ip_whitelist || []).join('\n');
+  document.getElementById('device-modal-title').textContent =
+    '设备配置 - ' + (device.name || device.hostname || id.substring(0, 12));
   document.getElementById('device-modal').classList.add('show');
-  document.getElementById('device-modal-enc').onchange=function(){document.getElementById('enc-status-label').textContent=this.checked?'已启用':'已关闭'}
+  document.getElementById('device-modal-enc').onchange = function () {
+    document.getElementById('enc-status-label').textContent = this.checked ? '已启用' : '已关闭';
+  };
 }
-function closeDeviceModal(){document.getElementById('device-modal').classList.remove('show')}
+function closeDeviceModal() { document.getElementById('device-modal').classList.remove('show'); }
 
-async function saveDeviceConfig(){
-  const id=document.getElementById('device-modal-id').value;
-  const name=document.getElementById('device-modal-name').value;
-  const encEnabled=document.getElementById('device-modal-enc').checked;
-  const wlText=document.getElementById('device-modal-wl').value;
-  const ips=wlText.split('\n').map(s=>s.trim()).filter(s=>s);
-  try{
-    const r=await fetch('/api/devices/'+id+'/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,enc_enabled:encEnabled,ip_whitelist:ips})});
-    if(r.ok){toast('配置已保存');closeDeviceModal();loadDevices()}else{const d=await r.json();toast(d.error||'保存失败','error')}
-  }catch(e){toast('网络错误','error')}
+async function saveDeviceConfig() {
+  const id = document.getElementById('device-modal-id').value;
+  const name = document.getElementById('device-modal-name').value;
+  const encEnabled = document.getElementById('device-modal-enc').checked;
+  const ips = document.getElementById('device-modal-wl').value.split('\n').map(s => s.trim()).filter(Boolean);
+  try {
+    const { response, data } = await apiJSON('/api/devices/' + encodeURIComponent(id) + '/config', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, enc_enabled: encEnabled, ip_whitelist: ips })
+    });
+    if (response.ok) { toast('配置已保存'); closeDeviceModal(); loadDevices(); }
+    else toast(errorText(data, '保存失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
-async function regenDeviceKey(){
-  const id=document.getElementById('device-modal-id').value;
-  if(!confirm('确定重新生成加密密钥？设备将自动接收新密钥。'))return;
-  try{
-    const r=await fetch('/api/devices/'+id+'/regen-key',{method:'PUT'});
-    if(r.ok){toast('密钥已重新生成');closeDeviceModal();loadDevices()}else{const d=await r.json();toast(d.error||'操作失败','error')}
-  }catch(e){toast('网络错误','error')}
+async function regenDeviceKey() {
+  const id = document.getElementById('device-modal-id').value;
+  if (!confirm('确定重新生成加密密钥？设备将自动接收新密钥。')) return;
+  try {
+    const { response, data } = await apiJSON('/api/devices/' + encodeURIComponent(id) + '/regen-key', { method: 'PUT' });
+    if (response.ok) { toast('密钥已重新生成'); closeDeviceModal(); loadDevices(); }
+    else toast(errorText(data, '操作失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
 // --- Tunnels ---
-function tunnelExposureValue(t){return t.Exposure||'public'}
-function tunnelExposureLabel(v){return v==='server_local'?'服务端本机代理':'公网映射'}
-function tunnelListenAddr(t){
-  const exposure=tunnelExposureValue(t);
-  if(exposure==='server_local')return '127.0.0.1:'+t.PublicPort;
-  return '公网:'+t.PublicPort
+function tunnelExposureValue(t) { return t.exposure || 'public'; }
+function tunnelExposureLabel(v) { return v === 'server_local' ? '服务端本机代理' : '公网映射'; }
+function tunnelListenAddr(t) {
+  const port = Number(t.public_port) || 0;
+  if (tunnelExposureValue(t) === 'server_local') return '127.0.0.1:' + port;
+  return '公网:' + port;
 }
-async function loadTunnels(){
-  try{
-    if(deviceList.length===0){await loadDevices()}
-    const r=await fetch('/api/tunnels');const d=await r.json();
-    document.getElementById('stat-tunnels').textContent=d.total;
-    if(!d.tunnels.length){document.getElementById('tunnels').innerHTML='<div class="empty">暂无隧道</div>';return}
-    let h='<table><thead><tr><th>隧道 ID</th><th>设备</th><th>入口类型</th><th>监听入口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
-    d.tunnels.forEach(t=>{
-      const device=deviceList.find(x=>x.id===t.ClientID);
-      const host=device?(device.name||device.hostname):t.ClientID.substring(0,12)+'\u2026';
-      const exposure=tunnelExposureValue(t);
-      h+=`<tr><td><code>${t.TunnelID.substring(0,18)}&hellip;</code></td><td>${host}</td><td>${tunnelExposureLabel(exposure)}</td><td><span class="port-highlight">${tunnelListenAddr(t)}</span></td><td><span class="mono">${t.LocalAddr}:${t.LocalPort}</span></td><td>${t.Protocol.toUpperCase()}</td><td>${new Date(t.CreatedAt).toLocaleString()}</td>`;
-      h+=`<td><button class="btn btn-ghost" onclick="openEditModal('${t.TunnelID}','${t.LocalAddr}',${t.LocalPort},'${t.Protocol}',${t.PublicPort},'${exposure}')">编辑</button> <button class="btn btn-danger" onclick="deleteTunnel('${t.TunnelID}')">删除</button></td></tr>`;
+
+async function loadTunnels() {
+  try {
+    if (deviceList.length === 0) await loadDevices();
+    const { response, data } = await apiJSON('/api/tunnels');
+    if (!response.ok || !data) throw new Error('load failed');
+    document.getElementById('stat-tunnels').textContent = data.total || 0;
+    if (!data.tunnels || !data.tunnels.length) {
+      document.getElementById('tunnels').innerHTML = '<div class="empty">暂无隧道</div>';
+      return;
+    }
+    const rows = data.tunnels.map(t => {
+      const tunnelId = t.tunnel_id || '';
+      const clientId = t.client_id || '';
+      const device = deviceList.find(x => x.id === clientId);
+      const host = device ? (device.name || device.hostname) : clientId.substring(0, 12) + '…';
+      const exposure = tunnelExposureValue(t);
+      const localAddr = t.local_addr || '';
+      const localPort = Number(t.local_port) || 0;
+      const publicPort = Number(t.public_port) || 0;
+      const protocol = String(t.protocol || '').toUpperCase();
+      return '<tr><td><code>' + esc(tunnelId.substring(0, 18)) + '&hellip;</code></td><td>' + esc(host) +
+        '</td><td>' + esc(tunnelExposureLabel(exposure)) + '</td><td><span class="port-highlight">' + esc(tunnelListenAddr(t)) +
+        '</span></td><td><span class="mono">' + esc(localAddr) + ':' + localPort + '</span></td><td>' + esc(protocol) +
+        '</td><td>' + esc(fmtDate(t.created_at)) + '</td><td>' +
+        '<button class="btn btn-ghost" onclick="openEditModal(' + jsArg(tunnelId) + ',' + jsArg(localAddr) + ',' + localPort + ',' +
+        jsArg(t.protocol) + ',' + publicPort + ',' + jsArg(exposure) + ')">编辑</button> ' +
+        '<button class="btn btn-danger" onclick="deleteTunnel(' + jsArg(tunnelId) + ')">删除</button></td></tr>';
+    }).join('');
+    document.getElementById('tunnels').innerHTML =
+      '<table><thead><tr><th>隧道 ID</th><th>设备</th><th>入口类型</th><th>监听入口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  } catch (e) {
+    document.getElementById('tunnels').innerHTML = '<div class="empty">加载失败</div>';
+  }
+}
+
+async function createTunnel() {
+  const clientId = document.getElementById('client-select').value;
+  const localAddr = document.getElementById('local-addr').value;
+  const localPort = parseInt(document.getElementById('local-port').value, 10);
+  const protocol = document.getElementById('protocol').value;
+  const exposure = document.getElementById('exposure').value;
+  if (!clientId) { toast('请先选择设备', 'error'); return; }
+  try {
+    const { response, data } = await apiJSON('/api/tunnels', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, local_addr: localAddr, local_port: localPort, protocol: protocol, exposure: exposure })
     });
-    h+='</tbody></table>';document.getElementById('tunnels').innerHTML=h;
-  }catch(e){document.getElementById('tunnels').innerHTML='<div class="empty">加载失败</div>'}
+    if (response.ok) {
+      toast('隧道创建成功 · ' + ((data && (data.access_addr || data.public_port)) || ''));
+      loadTunnels(); loadPortStatus();
+    } else {
+      toast(errorText(data, '创建失败'), 'error');
+    }
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
-async function createTunnel(){
-  const cid=document.getElementById('client-select').value;
-  const addr=document.getElementById('local-addr').value;
-  const port=document.getElementById('local-port').value;
-  const proto=document.getElementById('protocol').value;
-  const exposure=document.getElementById('exposure').value;
-  if(!cid)return toast('请先选择设备','error');
-  try{
-    const r=await fetch('/api/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:cid,local_addr:addr,local_port:parseInt(port),protocol:proto,exposure:exposure})});
-    const d=await r.json();
-    if(r.ok){toast('隧道创建成功 · '+(d.access_addr||d.public_addr||d.public_port));loadTunnels();loadPortStatus()}
-    else toast(d.error||'创建失败','error')
-  }catch(e){toast('网络错误','error')}
+async function deleteTunnel(id) {
+  if (!confirm('确定删除此隧道？')) return;
+  try {
+    const { response, data } = await apiJSON('/api/tunnels/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (response.ok) { toast('已删除'); loadTunnels(); loadPortStatus(); }
+    else toast(errorText(data, '删除失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
-async function deleteTunnel(id){if(!confirm('确定删除此隧道？'))return;try{const r=await fetch('/api/tunnels/'+id,{method:'DELETE'});const d=await r.json();if(r.ok){toast('已删除');loadTunnels();loadPortStatus()}else toast(d.error||'删除失败','error')}catch(e){toast('网络错误','error')}}
-
-function openEditModal(id,addr,port,proto,pubPort,exposure){
-  document.getElementById('edit-tunnel-id').value=id;
-  document.getElementById('edit-exposure').value=exposure||'public';
-  document.getElementById('edit-public-port').value='';
-  document.getElementById('edit-public-port').placeholder='当前: '+pubPort+'（留空不修改）';
-  document.getElementById('edit-local-addr').value=addr;
-  document.getElementById('edit-local-port').value=port;
-  document.getElementById('edit-protocol').value=proto;
-  document.getElementById('edit-modal').classList.add('show')
+function openEditModal(id, addr, port, proto, pubPort, exposure) {
+  document.getElementById('edit-tunnel-id').value = id;
+  document.getElementById('edit-exposure').value = exposure || 'public';
+  document.getElementById('edit-public-port').value = '';
+  document.getElementById('edit-public-port').placeholder = '当前: ' + pubPort + '（留空不修改）';
+  document.getElementById('edit-local-addr').value = addr;
+  document.getElementById('edit-local-port').value = port;
+  document.getElementById('edit-protocol').value = proto;
+  document.getElementById('edit-modal').classList.add('show');
 }
-function closeEditModal(){document.getElementById('edit-modal').classList.remove('show')}
+function closeEditModal() { document.getElementById('edit-modal').classList.remove('show'); }
 
-async function saveTunnelEdit(){
-  const id=document.getElementById('edit-tunnel-id').value;
-  if(!id)return;
-  const pubPort=document.getElementById('edit-public-port').value;
-  try{
-    const body={local_addr:document.getElementById('edit-local-addr').value,local_port:parseInt(document.getElementById('edit-local-port').value),protocol:document.getElementById('edit-protocol').value,exposure:document.getElementById('edit-exposure').value};
-    if(pubPort)body.public_port=parseInt(pubPort);
-    const r=await fetch('/api/tunnels/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(r.ok){toast('已更新');closeEditModal();loadTunnels()}else toast((await r.json()).error||'更新失败','error')
-  }catch(e){toast('网络错误','error')}
+async function saveTunnelEdit() {
+  const id = document.getElementById('edit-tunnel-id').value;
+  if (!id) return;
+  const publicPort = document.getElementById('edit-public-port').value;
+  try {
+    const body = {
+      local_addr: document.getElementById('edit-local-addr').value,
+      local_port: parseInt(document.getElementById('edit-local-port').value, 10),
+      protocol: document.getElementById('edit-protocol').value,
+      exposure: document.getElementById('edit-exposure').value
+    };
+    if (publicPort) body.public_port = parseInt(publicPort, 10);
+    const { response, data } = await apiJSON('/api/tunnels/' + encodeURIComponent(id), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    if (response.ok) { toast('已更新'); closeEditModal(); loadTunnels(); }
+    else toast(errorText(data, '更新失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
 // --- Port Status ---
-async function loadPortStatus(){
-  try{
-    const r=await fetch('/api/port-status');if(!r.ok)return;const d=await r.json();
-    document.getElementById('port-bar').style.display='flex';
-    document.getElementById('ps-range').textContent=d.range_start+' - '+d.range_end;
-    const avail=Math.max(0,d.available_count);
-    document.getElementById('stat-ports').textContent=avail;
-    document.getElementById('stat-ports').style.color=avail===0?'#ef4444':avail<50?'#f59e0b':'#22c55e';
-    document.getElementById('ps-summary').innerHTML='<span style="color:#3b82f6">'+d.allocated+'</span> / <span style="color:#22c55e">'+avail+'</span>';
-    const blocked = d.unavailable ? d.unavailable.length : 0;
-    document.getElementById('ps-blocked').textContent=blocked;
-    document.getElementById('ps-blocked').style.color=blocked>0?'#ef4444':'#22c55e';
-    document.getElementById('ps-blocked-icon').style.color=blocked>0?'#ef4444':'#94a3b8';
-    // Update drawer unavailable ports
-    const uaEl=document.getElementById('set-unavailable-ports');
-    if(uaEl && d.unavailable && d.unavailable.length>0){uaEl.textContent=d.unavailable.join(', ')+(d.unavailable.length>50?' ...等共 '+d.unavailable.length+' 个':'')}
-    else if(uaEl){uaEl.textContent='无'}
-  }catch(e){}
+async function loadPortStatus() {
+  try {
+    const { response, data } = await apiJSON('/api/port-status');
+    if (!response.ok || !data) return;
+    document.getElementById('port-bar').style.display = 'flex';
+    document.getElementById('ps-range').textContent = data.range_start + ' - ' + data.range_end;
+    const available = Math.max(0, Number(data.available_count) || 0);
+    document.getElementById('stat-ports').textContent = available;
+    document.getElementById('stat-ports').style.color = available === 0 ? '#ef4444' : available < 50 ? '#f59e0b' : '#22c55e';
+    document.getElementById('ps-summary').innerHTML =
+      '<span style="color:#3b82f6">' + (Number(data.allocated) || 0) + '</span> / <span style="color:#22c55e">' + available + '</span>';
+    const blocked = data.unavailable ? data.unavailable.length : 0;
+    document.getElementById('ps-blocked').textContent = blocked;
+    document.getElementById('ps-blocked').style.color = blocked > 0 ? '#ef4444' : '#22c55e';
+    document.getElementById('ps-blocked-icon').style.color = blocked > 0 ? '#ef4444' : '#94a3b8';
+    const unavailableEl = document.getElementById('set-unavailable-ports');
+    if (unavailableEl) {
+      if (data.unavailable && data.unavailable.length) {
+        unavailableEl.textContent = data.unavailable.slice(0, 50).join(', ') +
+          (data.unavailable.length > 50 ? ' ...等共 ' + data.unavailable.length + ' 个' : '');
+      } else {
+        unavailableEl.textContent = '无';
+      }
+    }
+  } catch (e) { /* status bar is optional */ }
 }
 
 // --- Security: Global Whitelist ---
-let gwlIPs=[];
-
-async function loadGlobalWhitelist(){
-  try{const r=await fetch('/api/security/global-whitelist');const d=await r.json();gwlIPs=d.global_whitelist||[];renderGWLTags()}catch(e){gwlIPs=[];renderGWLTags()}
+async function loadGlobalWhitelist() {
+  try {
+    const { response, data } = await apiJSON('/api/security/global-whitelist');
+    gwlIPs = (response.ok && data && data.global_whitelist) || [];
+  } catch (e) {
+    gwlIPs = [];
+  }
+  renderGWLTags();
 }
 
-function renderGWLTags(){
-  const container=document.getElementById('gwl-list');
-  if(!gwlIPs.length){container.innerHTML='<div class="empty" style="padding:20px 0">暂无全局白名单 IP</div>';return}
-  let h='<table><thead><tr><th>IP / CIDR</th><th>操作</th></tr></thead><tbody>';
-  gwlIPs.forEach((ip,i)=>{h+=`<tr><td><code>${ip}</code></td><td><button class="btn btn-ghost" onclick="removeGWLIP(${i})">移除</button></td></tr>`});
-  h+='</tbody></table>';
-  container.innerHTML=h
+function renderGWLTags() {
+  const container = document.getElementById('gwl-list');
+  if (!gwlIPs.length) {
+    container.innerHTML = '<div class="empty" style="padding:20px 0">暂无全局白名单 IP</div>';
+    return;
+  }
+  const rows = gwlIPs.map((ip, index) =>
+    '<tr><td><code>' + esc(ip) + '</code></td><td><button class="btn btn-ghost" onclick="removeGWLIP(' + index + ')">移除</button></td></tr>'
+  ).join('');
+  container.innerHTML = '<table><thead><tr><th>IP / CIDR</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
-async function saveGlobalWhitelist(){
-  try{const r=await fetch('/api/security/global-whitelist',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ips:gwlIPs})});if(!r.ok)toast('保存全局白名单失败','error')}catch(e){toast('网络错误','error')}
+async function saveGlobalWhitelist() {
+  try {
+    const { response, data } = await apiJSON('/api/security/global-whitelist', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ips: gwlIPs })
+    });
+    if (!response.ok) {
+      toast(errorText(data, '保存全局白名单失败'), 'error');
+      await loadGlobalWhitelist();
+      return false;
+    }
+    return true;
+  } catch (e) {
+    toast('网络错误', 'error');
+    await loadGlobalWhitelist();
+    return false;
+  }
 }
 
-async function addGlobalWLIP(){
-  const input=document.getElementById('gwl-new-ip');const ip=input.value.trim();if(!ip)return;
-  if(gwlIPs.includes(ip)){toast('IP 已存在','error');return}
-  gwlIPs.push(ip);input.value='';renderGWLTags();await saveGlobalWhitelist()
+async function addGlobalWLIP() {
+  const input = document.getElementById('gwl-new-ip');
+  const ip = input.value.trim();
+  if (!ip) return;
+  if (gwlIPs.includes(ip)) { toast('IP 已存在', 'error'); return; }
+  gwlIPs.push(ip);
+  input.value = '';
+  renderGWLTags();
+  await saveGlobalWhitelist();
 }
 
-async function removeGWLIP(index){gwlIPs.splice(index,1);renderGWLTags();await saveGlobalWhitelist()}
+async function removeGWLIP(index) {
+  gwlIPs.splice(index, 1);
+  renderGWLTags();
+  await saveGlobalWhitelist();
+}
 
 // --- Security: Blacklist ---
-function switchSecTab(tab){
-  document.querySelectorAll('.sec-tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.sec-panel').forEach(p=>p.classList.remove('active'));
-  if(tab==='gwl'){document.querySelector('.sec-tab:nth-child(1)').classList.add('active');document.getElementById('sec-gwl').classList.add('active')}
-  else{document.querySelector('.sec-tab:nth-child(2)').classList.add('active');document.getElementById('sec-bl').classList.add('active');loadBlacklist()}
+function switchSecTab(tab) {
+  document.querySelectorAll('.sec-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.sec-panel').forEach(p => p.classList.remove('active'));
+  if (tab === 'gwl') {
+    document.querySelector('.sec-tab:nth-child(1)').classList.add('active');
+    document.getElementById('sec-gwl').classList.add('active');
+  } else {
+    document.querySelector('.sec-tab:nth-child(2)').classList.add('active');
+    document.getElementById('sec-bl').classList.add('active');
+    loadBlacklist();
+  }
 }
 
-async function loadBlacklist(){
-  try{const r=await fetch('/api/security/blacklist');const d=await r.json();document.getElementById('bl-threshold').value=d.threshold||0;renderBlacklist(d.blacklist||[],d.violations||{},d.threshold||0)}catch(e){document.getElementById('bl-list').innerHTML='<div class="empty">加载失败</div>'}
+async function loadBlacklist() {
+  try {
+    const { response, data } = await apiJSON('/api/security/blacklist');
+    if (!response.ok || !data) throw new Error('load failed');
+    const threshold = Number(data.threshold) || 0;
+    document.getElementById('bl-threshold').value = threshold;
+    renderBlacklist(data.blacklist || [], data.violations || {}, threshold);
+  } catch (e) {
+    document.getElementById('bl-list').innerHTML = '<div class="empty">加载失败</div>';
+  }
 }
 
-function renderBlacklist(entries,violations,threshold){
-  const container=document.getElementById('bl-list');
-  if(!entries||!entries.length){container.innerHTML='<div class="empty">暂无黑名单 IP</div>';return}
-  let h='<table><thead><tr><th>IP</th><th>原因</th><th>添加时间</th><th>过期时间</th><th>操作</th></tr></thead><tbody>';
-  entries.forEach(e=>{const exp=e.expires_at&&e.expires_at!=='0001-01-01T00:00:00Z'?new Date(e.expires_at).toLocaleString():'永久';
-    h+=`<tr><td><code>${e.ip}</code></td><td style="font-size:12px">${e.reason}</td><td style="font-size:12px">${new Date(e.added_at).toLocaleString()}</td><td style="font-size:12px">${exp}</td><td><button class="btn btn-ghost" onclick="removeBlacklistIP('${e.ip}')">解除</button></td></tr>`});
-  h+='</tbody></table>';
-  const vKeys=Object.keys(violations||{});
-  if(vKeys.length>0){h+='<div style="margin-top:14px"><div style="font-size:12px;color:#94a3b8;margin-bottom:8px;font-weight:600">限流违规计数（阈值: '+threshold+'）</div>';vKeys.forEach(ip=>{const count=violations[ip];const pct=threshold>0?Math.min(100,Math.round(count/threshold*100)):0;h+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><code style="font-size:12px;min-width:100px">${ip}</code><div class="violation-bar" style="flex:1"><div class="violation-fill" style="width:${pct}%"></div></div><span style="font-size:11px;color:#64748b">${count}/${threshold}</span></div>`});h+='</div>'}
-  container.innerHTML=h
+function renderBlacklist(entries, violations, threshold) {
+  const container = document.getElementById('bl-list');
+  if (!entries.length) {
+    container.innerHTML = '<div class="empty">暂无黑名单 IP</div>';
+    return;
+  }
+  const rows = entries.map(entry => {
+    const expires = entry.expires_at && entry.expires_at !== '0001-01-01T00:00:00Z'
+      ? fmtDate(entry.expires_at) : '永久';
+    return '<tr><td><code>' + esc(entry.ip) + '</code></td><td style="font-size:12px">' + esc(entry.reason) +
+      '</td><td style="font-size:12px">' + esc(fmtDate(entry.added_at)) + '</td><td style="font-size:12px">' + esc(expires) +
+      '</td><td><button class="btn btn-ghost" onclick="removeBlacklistIP(' + jsArg(entry.ip) + ')">解除</button></td></tr>';
+  }).join('');
+  let html = '<table><thead><tr><th>IP</th><th>原因</th><th>添加时间</th><th>过期时间</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
+
+  const violationKeys = Object.keys(violations || {});
+  if (violationKeys.length) {
+    html += '<div style="margin-top:14px"><div style="font-size:12px;color:#94a3b8;margin-bottom:8px;font-weight:600">限流违规计数（阈值: ' +
+      (Number(threshold) || 0) + '）</div>';
+    violationKeys.forEach(ip => {
+      const count = Number(violations[ip]) || 0;
+      const percent = threshold > 0 ? Math.min(100, Math.round(count / threshold * 100)) : 0;
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><code style="font-size:12px;min-width:100px">' +
+        esc(ip) + '</code><div class="violation-bar" style="flex:1"><div class="violation-fill" style="width:' + percent +
+        '%"></div></div><span style="font-size:11px;color:#64748b">' + count + '/' + (Number(threshold) || 0) + '</span></div>';
+    });
+    html += '</div>';
+  }
+  container.innerHTML = html;
 }
 
-async function addBlacklistIP(){
-  const ip=document.getElementById('bl-new-ip').value.trim();const reason=document.getElementById('bl-new-reason').value.trim();const duration=parseInt(document.getElementById('bl-new-duration').value)||0;
-  if(!ip){toast('请输入 IP 地址','error');return}
-  try{const r=await fetch('/api/security/blacklist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,reason,duration_minutes:duration})});const d=await r.json();if(r.ok){toast('已拉黑 '+ip);document.getElementById('bl-new-ip').value='';document.getElementById('bl-new-reason').value='';document.getElementById('bl-new-duration').value='';loadBlacklist()}else toast(d.error||'拉黑失败','error')}catch(e){toast('网络错误','error')}
+async function addBlacklistIP() {
+  const ip = document.getElementById('bl-new-ip').value.trim();
+  const reason = document.getElementById('bl-new-reason').value.trim();
+  const duration = parseInt(document.getElementById('bl-new-duration').value, 10) || 0;
+  if (!ip) { toast('请输入 IP 地址', 'error'); return; }
+  try {
+    const { response, data } = await apiJSON('/api/security/blacklist', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip: ip, reason: reason, duration_minutes: duration })
+    });
+    if (response.ok) {
+      toast('已拉黑 ' + ip);
+      document.getElementById('bl-new-ip').value = '';
+      document.getElementById('bl-new-reason').value = '';
+      document.getElementById('bl-new-duration').value = '';
+      loadBlacklist();
+    } else {
+      toast(errorText(data, '拉黑失败'), 'error');
+    }
+  } catch (e) { toast('网络错误', 'error'); }
 }
 
-async function removeBlacklistIP(ip){try{const r=await fetch('/api/security/blacklist/'+encodeURIComponent(ip),{method:'DELETE'});if(r.ok){toast('已解除拉黑');loadBlacklist()}else{const d=await r.json();toast(d.error||'解除失败','error')}}catch(e){toast('网络错误','error')}}
+async function removeBlacklistIP(ip) {
+  try {
+    const { response, data } = await apiJSON('/api/security/blacklist/' + encodeURIComponent(ip), { method: 'DELETE' });
+    if (response.ok) { toast('已解除拉黑'); loadBlacklist(); }
+    else toast(errorText(data, '解除失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
+}
 
-async function updateBLThreshold(){const threshold=parseInt(document.getElementById('bl-threshold').value)||0;try{const r=await fetch('/api/security/blacklist-threshold',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold})});if(r.ok)toast('阈值已更新');else toast('更新失败','error')}catch(e){toast('网络错误','error')}}
+async function updateBLThreshold() {
+  const threshold = parseInt(document.getElementById('bl-threshold').value, 10) || 0;
+  try {
+    const { response } = await apiJSON('/api/security/blacklist-threshold', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ threshold: threshold })
+    });
+    if (response.ok) toast('阈值已更新'); else toast('更新失败', 'error');
+  } catch (e) { toast('网络错误', 'error'); }
+}
 
-async function logout(){await fetch('/api/logout',{method:'POST'});window.location.href='/login.html'}
+async function logout() {
+  await fetch('/api/logout', { method: 'POST' });
+  window.location.href = '/login.html';
+}
 
 // --- Init ---
-checkAuth();checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadPortStatus();
-setInterval(()=>{checkHealth();loadDevices();loadPendingDevices();loadTunnels();loadPortStatus()},10000);
+checkAuth();
+checkHealth();
+loadDevices();
+loadPendingDevices();
+loadTunnels();
+loadPortStatus();
+setInterval(() => { checkHealth(); loadDevices(); loadPendingDevices(); loadTunnels(); loadPortStatus(); }, 10000);
 </script>
 </body>
 </html>
