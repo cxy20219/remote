@@ -35,6 +35,11 @@ const (
 	httpMaxHeaderBytes    = 32 * 1024
 
 	minConnectionReadTimeout = 60 * time.Second
+
+	// 管理写接口（改密、TOTP setup/disable/recover）独立限流：10 次 / 5 分钟。
+	// 一次正常启用流程约 3-4 次，5 次会把「启用 + 关闭」这种合法序列顶到 429。
+	adminWriteLimit  = 10
+	adminWriteWindow = 5 * time.Minute
 )
 
 type Server struct {
@@ -54,9 +59,12 @@ type Server struct {
 	stateStore    *StateStore
 	deviceMgr     *DeviceManager
 	loginLimiter  *RateLimiter
-	connLimiter   *RateLimiter
-	portLimiter   *RateLimiter
-	blacklist     *BlacklistManager
+	// adminWriteLimiter 是管理写接口（改密、TOTP 开关）的独立限流：
+	// 这些接口位于 session 之后，不能只靠登录限流兜底。
+	adminWriteLimiter *RateLimiter
+	connLimiter       *RateLimiter
+	portLimiter       *RateLimiter
+	blacklist         *BlacklistManager
 
 	globalWhitelist  atomic.Pointer[ipMatcher]
 	heartbeatTimeout atomic.Int64
@@ -97,22 +105,23 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 
 	settings := stateStore.GetSettings()
 	s := &Server{
-		Addr:         config.Addr(),
-		tlsEnabled:   config.Server.TLS.Enabled,
-		tlsCert:      config.Server.TLS.Cert,
-		tlsKey:       config.Server.TLS.Key,
-		config:       config,
-		staticFS:     staticFS,
-		clients:      NewClientManager(),
-		stateStore:   stateStore,
-		adminAuth:    adminAuth,
-		cryptoMgr:    cryptoMgr,
-		deviceMgr:    deviceMgr,
-		blacklist:    NewBlacklistManager(settings.BlacklistThreshold),
-		loginLimiter: NewRateLimiter(settings.LoginRateLimit, time.Minute),
-		connLimiter:  NewRateLimiter(settings.MaxConnPerMin, time.Minute),
-		portLimiter:  NewRateLimiter(settings.MaxConnPerMin, time.Minute),
-		stopCh:       make(chan struct{}),
+		Addr:              config.Addr(),
+		tlsEnabled:        config.Server.TLS.Enabled,
+		tlsCert:           config.Server.TLS.Cert,
+		tlsKey:            config.Server.TLS.Key,
+		config:            config,
+		staticFS:          staticFS,
+		clients:           NewClientManager(),
+		stateStore:        stateStore,
+		adminAuth:         adminAuth,
+		cryptoMgr:         cryptoMgr,
+		deviceMgr:         deviceMgr,
+		blacklist:         NewBlacklistManager(settings.BlacklistThreshold),
+		loginLimiter:      NewRateLimiter(settings.LoginRateLimit, time.Minute),
+		adminWriteLimiter: NewRateLimiter(adminWriteLimit, adminWriteWindow),
+		connLimiter:       NewRateLimiter(settings.MaxConnPerMin, time.Minute),
+		portLimiter:       NewRateLimiter(settings.MaxConnPerMin, time.Minute),
+		stopCh:            make(chan struct{}),
 	}
 
 	s.clients.SetStore(stateStore)
@@ -155,6 +164,16 @@ func (s *Server) Start() error {
 		slog.Info("trusted proxies configured", "proxies", effectiveProxies)
 	}
 
+	// 两步验证的密钥只在 state 加密区里才真正加密；没配密钥时是 0600 明文文件，
+	// 每次启动都要显式提醒，不能静默降级。
+	if totpCfg := s.stateStore.TOTPConfig(); totpCfg.Enabled() && !s.stateStore.EncryptionEnabled() {
+		slog.Warn("admin TOTP is enabled but state encryption is disabled; the TOTP secret is stored in plaintext in server-state.json (mode 0600). Set GOREMOTE_STATE_KEY or --state-key to move it into the encrypted state blob")
+	}
+	// 密钥损坏时所有二次验证都会 fail closed；启动就要喊一声，否则登录会表现成
+	// 「验证已过期 / 动态码错误」，排查方向完全是错的。
+	if err := s.adminAuth.TOTPSelfCheck(); err != nil {
+		slog.Warn("admin TOTP configuration is corrupt; every two-factor login will be rejected until TOTP is reset via recovery code", "error", err)
+	}
 	if !s.tlsEnabled && !isLoopbackHost(s.config.Server.Host) {
 		slog.Warn("server listens on a non-loopback interface without TLS; admin cookies and control traffic are sent in plaintext")
 	}
@@ -170,6 +189,7 @@ func (s *Server) Start() error {
 	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s), s.handleConn)
 	s.engine.GET("/health", s.handleHealth)
 	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLogin)
+	s.engine.POST("/api/login/totp", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLoginTOTP)
 	s.engine.POST("/api/logout", s.handleLogout)
 	s.engine.GET("/api/check-auth", s.handleCheckAuth)
 
@@ -199,8 +219,14 @@ func (s *Server) Start() error {
 		protected.POST("/api/security/blacklist", s.handleAPIAddBlacklist)
 		protected.DELETE("/api/security/blacklist/:ip", s.handleAPIRemoveBlacklist)
 		protected.GET("/api/security/blacklist-threshold", s.handleAPIGetBlacklistThreshold)
-		protected.PUT("/api/admin/password", s.handleAPIChangeAdminPassword)
 		protected.PUT("/api/security/blacklist-threshold", s.handleAPIUpdateBlacklistThreshold)
+		adminWrite := AdminWriteRateLimitMiddleware(s.adminWriteLimiter)
+		protected.PUT("/api/admin/password", adminWrite, s.handleAPIChangeAdminPassword)
+		protected.GET("/api/admin/totp", s.handleAPIGetTOTPStatus)
+		protected.POST("/api/admin/totp/setup", adminWrite, s.handleAPITOTPSetup)
+		protected.POST("/api/admin/totp/enable", s.handleAPITOTPEnable)
+		protected.POST("/api/admin/totp/disable", adminWrite, s.handleAPITOTPDisable)
+		protected.POST("/api/admin/totp/recover", adminWrite, s.handleAPITOTPRecover)
 		protected.GET("/api/tunnels", s.handleAPIListTunnels)
 		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
@@ -331,6 +357,9 @@ func (s *Server) Stop() error {
 
 		if s.loginLimiter != nil {
 			s.loginLimiter.Stop()
+		}
+		if s.adminWriteLimiter != nil {
+			s.adminWriteLimiter.Stop()
 		}
 		if s.connLimiter != nil {
 			s.connLimiter.Stop()

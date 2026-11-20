@@ -87,15 +87,31 @@ func TestAdminAuthLocksAfterFailedLogins(t *testing.T) {
 	auth := NewAdminAuth(store)
 
 	for i := 0; i < maxFailedAdminLogins-1; i++ {
-		if err := auth.Login("wrong"); !errors.Is(err, ErrAdminInvalidPassword) {
+		if err := auth.Login("192.0.2.1", "wrong"); !errors.Is(err, ErrAdminInvalidPassword) {
 			t.Fatalf("failed login %d err = %v, want invalid password", i, err)
 		}
 	}
-	if err := auth.Login("wrong"); !errors.Is(err, ErrAdminLoginLocked) {
+	if err := auth.Login("192.0.2.1", "wrong"); !errors.Is(err, ErrAdminLoginLocked) {
 		t.Fatalf("lock err = %v, want locked", err)
 	}
-	if err := auth.Login("CorrectPassword1!"); !errors.Is(err, ErrAdminLoginLocked) {
+	if err := auth.Login("192.0.2.1", "CorrectPassword1!"); !errors.Is(err, ErrAdminLoginLocked) {
 		t.Fatalf("locked login err = %v, want locked", err)
+	}
+
+	// 密码失败只进 IP 池，不触发账户级锁：换 IP 用正确密码仍能拿到第一步，
+	// 否则管理员连恢复码登录的入口都会被攻击者刷没。
+	if err := auth.Login("198.51.100.7", "CorrectPassword1!"); err != nil {
+		t.Fatalf("password step must ignore account-level backoff, got %v", err)
+	}
+
+	// 只等该攻击者 IP 的锁窗口过去，同一 IP 才能恢复。
+	auth.mu.Lock()
+	if failure := auth.failures["192.0.2.1"]; failure != nil {
+		failure.lockedUntil = time.Now().Add(-time.Second)
+	}
+	auth.mu.Unlock()
+	if err := auth.Login("192.0.2.1", "CorrectPassword1!"); err != nil {
+		t.Fatalf("locked IP should recover after its own window: %v", err)
 	}
 }
 
@@ -110,16 +126,16 @@ func TestAdminAuthChangePasswordRevokesSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	if err := auth.ChangePassword("CorrectPassword1!", "NewPassword1!"); err != nil {
+	if err := auth.ChangePassword("192.0.2.1", "CorrectPassword1!", "NewPassword1!"); err != nil {
 		t.Fatalf("ChangePassword: %v", err)
 	}
 	if auth.Validate(token) {
 		t.Fatal("old session should be revoked")
 	}
-	if err := auth.Login("CorrectPassword1!"); !errors.Is(err, ErrAdminInvalidPassword) {
+	if err := auth.Login("192.0.2.1", "CorrectPassword1!"); !errors.Is(err, ErrAdminInvalidPassword) {
 		t.Fatalf("old password err = %v, want invalid", err)
 	}
-	if err := auth.Login("NewPassword1!"); err != nil {
+	if err := auth.Login("192.0.2.1", "NewPassword1!"); err != nil {
 		t.Fatalf("new password login: %v", err)
 	}
 }
@@ -131,7 +147,7 @@ func TestAdminAuthRejectsWeakPassword(t *testing.T) {
 	}
 	auth := NewAdminAuth(store)
 
-	if err := auth.ChangePassword("CorrectPassword1!", "short1!"); !errors.Is(err, ErrAdminWeakPassword) {
+	if err := auth.ChangePassword("192.0.2.1", "CorrectPassword1!", "short1!"); !errors.Is(err, ErrAdminWeakPassword) {
 		t.Fatalf("ChangePassword err = %v, want weak password", err)
 	}
 }

@@ -285,6 +285,63 @@ th,td{padding:8px 8px}
         <span style="font-size:12px;color:#94a3b8">修改成功后会退出当前会话</span>
       </div>
     </div>
+    <div style="border-bottom:1px solid #f1f5f9;margin-bottom:18px;padding-bottom:18px">
+      <div class="card-header" style="margin-bottom:12px"><h2>两步验证 (TOTP)</h2></div>
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:12px" id="totp-status-text">加载中...</p>
+      <div id="totp-setup-password-row" style="display:none;margin-bottom:12px">
+        <div class="settings-grid">
+          <div class="sg-item"><label>当前密码（确认身份）</label><input type="password" id="totp-setup-password" autocomplete="current-password" placeholder="启用前需重新输入密码"></div>
+        </div>
+        <div style="margin-top:10px"><button class="btn btn-primary" onclick="startTOTPSetup()">生成二维码</button></div>
+      </div>
+      <div id="totp-qr-panel" style="display:none;margin-bottom:14px">
+        <p style="font-size:12px;color:#94a3b8;margin-bottom:10px">用验证器 App 扫描二维码，或手抄下面的 Base32 密钥；然后输入 App 显示的 6 位动态码确认。</p>
+        <div id="totp-setup-countdown" style="display:none;font-size:12px;color:#94a3b8;margin-bottom:10px"></div>
+        <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+          <img id="totp-qr" alt="TOTP 二维码" style="width:180px;height:180px;border:1px solid #e2e8f0;border-radius:12px;background:#fff">
+          <div style="flex:1;min-width:240px">
+            <div style="font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px;word-break:break-all;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px;margin-bottom:10px" id="totp-secret"></div>
+            <div class="sg-item"><label>动态码</label><input type="text" id="totp-enable-code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位数字"></div>
+            <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
+              <button class="btn btn-primary" onclick="confirmEnableTOTP()">确认启用</button>
+              <button class="btn" onclick="restartTOTPSetup()">重新生成</button>
+              <button class="btn" onclick="cancelTOTPSetup()">取消</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="totp-recovery-panel" style="display:none;margin-bottom:14px">
+        <p style="font-size:12px;color:#ef4444;margin-bottom:8px">恢复码只显示这一次，请立刻保存到密码管理器或离线位置；每个码只能用一次。</p>
+        <div id="totp-recovery-codes" style="font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px;line-height:1.9;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px"></div>
+      </div>
+      <div id="totp-disable-panel" style="display:none;margin-bottom:14px">
+        <div class="settings-grid">
+          <div class="sg-item"><label>当前密码</label><input type="password" id="totp-disable-password" autocomplete="current-password"></div>
+          <div class="sg-item"><label>当前动态码</label><input type="text" id="totp-disable-code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位数字"></div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="disableTOTP()">确认关闭</button>
+          <button class="btn" onclick="cancelTOTPDisable()">取消</button>
+        </div>
+        <div style="margin-top:10px">
+          <button onclick="showTOTPRecover()" style="background:none;border:none;color:#3b82f6;font-size:12px;cursor:pointer;padding:0">手机丢失、没有动态码？用恢复码关闭</button>
+        </div>
+        <div id="totp-recover-panel" style="display:none;margin-top:10px;border-top:1px dashed #e2e8f0;padding-top:10px">
+          <div class="settings-grid">
+            <div class="sg-item"><label>当前密码</label><input type="password" id="totp-recover-password" autocomplete="current-password"></div>
+            <div class="sg-item"><label>恢复码</label><input type="text" id="totp-recover-code" autocomplete="off" placeholder="12 位恢复码"></div>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn btn-primary" onclick="recoverTOTP()">用恢复码关闭</button>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-primary" id="totp-enable-btn" onclick="startTOTPSetup()">启用两步验证</button>
+        <button class="btn" id="totp-disable-btn" style="display:none" onclick="showTOTPDisable()">关闭两步验证</button>
+        <span style="font-size:12px;color:#94a3b8" id="totp-codes-left"></span>
+      </div>
+    </div>
     <div class="sec-tabs">
       <div class="sec-tab active" onclick="switchSecTab('gwl')">全局白名单</div>
       <div class="sec-tab" onclick="switchSecTab('bl')">黑名单管理</div>
@@ -453,7 +510,7 @@ function toggleDrawer() {
 function openDrawer() {
   document.getElementById('drawer').classList.add('open');
   document.getElementById('drawer-overlay').classList.add('show');
-  if (!drawerLoaded) { drawerLoaded = true; loadSettings(); loadGlobalWhitelist(); }
+  if (!drawerLoaded) { drawerLoaded = true; loadSettings(); loadGlobalWhitelist(); loadTOTPStatus(); }
 }
 function closeDrawer() {
   document.getElementById('drawer').classList.remove('open');
@@ -516,6 +573,176 @@ async function changeAdminPassword() {
     } else {
       toast(errorText(data, '修改密码失败'), 'error');
     }
+  } catch (e) { toast('网络错误', 'error'); }
+}
+
+// --- Two-factor authentication (TOTP) ---
+let totpEnabled = false;
+
+async function loadTOTPStatus() {
+  try {
+    const { response, data } = await apiJSON('/api/admin/totp');
+    if (!response.ok || !data) return;
+    totpEnabled = !!data.enabled;
+    document.getElementById('totp-status-text').textContent = totpEnabled
+      ? '已启用：登录需要「密码 + 动态码」。恢复码剩余 ' + (data.recovery_codes_left || 0) + ' 个。'
+      : '未启用：登录只需密码。建议启用，避免密码泄露后被直接登录。';
+    document.getElementById('totp-enable-btn').style.display = totpEnabled ? 'none' : 'inline-block';
+    document.getElementById('totp-disable-btn').style.display = totpEnabled ? 'inline-block' : 'none';
+    document.getElementById('totp-codes-left').textContent = totpEnabled
+      ? '恢复码剩余 ' + (data.recovery_codes_left || 0) + ' 个' : '';
+  } catch (e) { /* keep previous state */ }
+}
+
+async function startTOTPSetup() {
+  const pwdRow = document.getElementById('totp-setup-password-row');
+  const pwd = document.getElementById('totp-setup-password');
+  pwdRow.style.display = 'block';
+  if (!pwd.value) { toast('请输入当前密码以确认身份', 'error'); pwd.focus(); return; }
+  try {
+    const { response, data } = await apiJSON('/api/admin/totp/setup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd.value })
+    });
+    if (!response.ok) { toast(errorText(data, '生成二维码失败'), 'error'); return; }
+    document.getElementById('totp-qr').src = data.qr_data_url;
+    document.getElementById('totp-secret').textContent = data.secret;
+    document.getElementById('totp-enable-code').value = '';
+    document.getElementById('totp-qr-panel').style.display = 'block';
+    document.getElementById('totp-enable-code').focus();
+    startTOTPSetupCountdown(data.expires_in);
+    pwd.value = '';
+  } catch (e) { toast('网络错误', 'error'); }
+}
+
+async function confirmEnableTOTP() {
+  const code = document.getElementById('totp-enable-code').value.trim();
+  if (!code) { toast('请输入动态码', 'error'); return; }
+  try {
+    const { response, data } = await apiJSON('/api/admin/totp/enable', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code })
+    });
+    if (!response.ok) { toast(errorText(data, '启用失败'), 'error'); return; }
+    stopTOTPSetupCountdown();
+    document.getElementById('totp-qr-panel').style.display = 'none';
+    document.getElementById('totp-setup-password-row').style.display = 'none';
+    const box = document.getElementById('totp-recovery-codes');
+    box.textContent = '';
+    for (const item of (data.recovery_codes || [])) {
+      const row = document.createElement('div');
+      row.textContent = item;
+      box.appendChild(row);
+    }
+    document.getElementById('totp-recovery-panel').style.display = 'block';
+    toast('两步验证已启用，请保存恢复码');
+    loadTOTPStatus();
+  } catch (e) { toast('网络错误', 'error'); }
+}
+
+function cancelTOTPSetup() {
+  stopTOTPSetupCountdown();
+  document.getElementById('totp-qr-panel').style.display = 'none';
+  document.getElementById('totp-setup-password-row').style.display = 'none';
+  document.getElementById('totp-setup-password').value = '';
+  document.getElementById('totp-enable-code').value = '';
+}
+
+// 二维码有 10 分钟 TTL：页面停着不动时给出倒计时，过期后自动收起并允许重新生成，
+// 避免用户对着早已失效的密钥反复输码。
+let totpSetupTimer = null;
+let totpSetupDeadline = 0;
+
+function startTOTPSetupCountdown(expiresIn) {
+  stopTOTPSetupCountdown();
+  const el = document.getElementById('totp-setup-countdown');
+  const ttl = Number(expiresIn) > 0 ? Number(expiresIn) : 600;
+  totpSetupDeadline = Date.now() + ttl * 1000;
+  el.style.display = 'block';
+  const tick = () => {
+    const left = Math.max(0, Math.ceil((totpSetupDeadline - Date.now()) / 1000));
+    if (left <= 0) {
+      stopTOTPSetupCountdown();
+      document.getElementById('totp-qr-panel').style.display = 'none';
+      document.getElementById('totp-secret').textContent = '';
+      document.getElementById('totp-enable-code').value = '';
+      document.getElementById('totp-setup-password-row').style.display = 'block';
+      document.getElementById('totp-setup-password').focus();
+      toast('二维码已过期，请重新输入密码生成', 'error');
+      return;
+    }
+    const m = Math.floor(left / 60), s = left % 60;
+    el.textContent = '二维码有效 ' + m + ':' + String(s).padStart(2, '0') + '，过期后需重新生成';
+  };
+  tick();
+  totpSetupTimer = setInterval(tick, 1000);
+}
+
+function stopTOTPSetupCountdown() {
+  if (totpSetupTimer) { clearInterval(totpSetupTimer); totpSetupTimer = null; }
+  const el = document.getElementById('totp-setup-countdown');
+  if (el) { el.style.display = 'none'; el.textContent = ''; }
+}
+
+// 重发入口：收起当前二维码，重新要一次密码再生成新密钥。
+function restartTOTPSetup() {
+  stopTOTPSetupCountdown();
+  document.getElementById('totp-qr-panel').style.display = 'none';
+  document.getElementById('totp-secret').textContent = '';
+  document.getElementById('totp-enable-code').value = '';
+  document.getElementById('totp-setup-password-row').style.display = 'block';
+  document.getElementById('totp-setup-password').focus();
+  toast('请输入当前密码生成新的二维码');
+}
+
+function showTOTPDisable() {
+  document.getElementById('totp-disable-panel').style.display = 'block';
+  document.getElementById('totp-disable-password').focus();
+}
+
+function cancelTOTPDisable() {
+  document.getElementById('totp-disable-panel').style.display = 'none';
+  document.getElementById('totp-disable-password').value = '';
+  document.getElementById('totp-disable-code').value = '';
+}
+
+function showTOTPRecover() {
+  document.getElementById('totp-recover-panel').style.display = 'block';
+  document.getElementById('totp-recover-password').focus();
+}
+
+async function recoverTOTP() {
+  const password = document.getElementById('totp-recover-password').value;
+  const code = document.getElementById('totp-recover-code').value.trim();
+  if (!password || !code) { toast('请输入密码和恢复码', 'error'); return; }
+  try {
+    const { response, data } = await apiJSON('/api/admin/totp/recover', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password, recovery_code: code })
+    });
+    if (!response.ok) { toast(errorText(data, '关闭失败'), 'error'); return; }
+    document.getElementById('totp-recover-panel').style.display = 'none';
+    document.getElementById('totp-recover-password').value = '';
+    document.getElementById('totp-recover-code').value = '';
+    cancelTOTPDisable();
+    toast('已用恢复码关闭两步验证');
+    loadTOTPStatus();
+  } catch (e) { toast('网络错误', 'error'); }
+}
+
+async function disableTOTP() {
+  const password = document.getElementById('totp-disable-password').value;
+  const code = document.getElementById('totp-disable-code').value.trim();
+  if (!password || !code) { toast('请输入密码和当前动态码', 'error'); return; }
+  try {
+    const { response, data } = await apiJSON('/api/admin/totp/disable', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password, code: code })
+    });
+    if (!response.ok) { toast(errorText(data, '关闭失败'), 'error'); return; }
+    cancelTOTPDisable();
+    toast('两步验证已关闭');
+    loadTOTPStatus();
   } catch (e) { toast('网络错误', 'error'); }
 }
 

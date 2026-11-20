@@ -33,6 +33,11 @@ type sensitiveStatePlain struct {
 	ServerSignPrivkey string            `json:"server_sign_privkey"`
 	AdminPasswordHash string            `json:"admin_password_hash"`
 	DeviceEncKeys     map[string]string `json:"device_enc_keys"`
+
+	// 两步验证密钥与恢复码哈希：与密码 hash 同等级，配置了 state 加密密钥时只存在于密文里。
+	TOTPSecret         string   `json:"totp_secret,omitempty"`
+	TOTPRecoveryHashes []string `json:"totp_recovery_hashes,omitempty"`
+	TOTPLastStep       int64    `json:"totp_last_step,omitempty"`
 }
 
 func (s *StateStore) SetEncryptionKey(rawKey string) error {
@@ -77,9 +82,12 @@ func (s *StateStore) encryptSensitiveState(state *ServerState) error {
 	}
 
 	plain := sensitiveStatePlain{
-		ServerSignPrivkey: state.ServerSignPrivkey,
-		AdminPasswordHash: state.AdminPasswordHash,
-		DeviceEncKeys:     make(map[string]string),
+		ServerSignPrivkey:  state.ServerSignPrivkey,
+		AdminPasswordHash:  state.AdminPasswordHash,
+		DeviceEncKeys:      make(map[string]string),
+		TOTPSecret:         state.TOTPSecret,
+		TOTPRecoveryHashes: state.TOTPRecoveryHashes,
+		TOTPLastStep:       state.TOTPLastStep,
 	}
 	for _, device := range state.Devices {
 		if device.EncKey != "" {
@@ -107,6 +115,9 @@ func (s *StateStore) encryptSensitiveState(state *ServerState) error {
 
 	state.ServerSignPrivkey = ""
 	state.AdminPasswordHash = ""
+	state.TOTPSecret = ""
+	state.TOTPRecoveryHashes = nil
+	state.TOTPLastStep = 0
 	for i := range state.Devices {
 		state.Devices[i].EncKey = ""
 	}
@@ -157,6 +168,9 @@ func (s *StateStore) decryptSensitiveState(state *ServerState) error {
 	}
 	state.ServerSignPrivkey = plain.ServerSignPrivkey
 	state.AdminPasswordHash = plain.AdminPasswordHash
+	state.TOTPSecret = plain.TOTPSecret
+	state.TOTPRecoveryHashes = plain.TOTPRecoveryHashes
+	state.TOTPLastStep = plain.TOTPLastStep
 	for i := range state.Devices {
 		if encKey, ok := plain.DeviceEncKeys[state.Devices[i].ID]; ok {
 			state.Devices[i].EncKey = encKey

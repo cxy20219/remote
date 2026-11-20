@@ -543,7 +543,7 @@ func LoginRateLimitMiddleware(rl *RateLimiter, s *Server) gin.HandlerFunc {
 			return
 		}
 
-		if key := ip; !rl.Allow(key) {
+		if key := clientIPKey(ip); !rl.Allow(key) {
 			s.blacklist.AddViolation(ip)
 			setRetryAfter(c, rl, key)
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests, try again later"})
@@ -557,7 +557,7 @@ func LoginRateLimitMiddleware(rl *RateLimiter, s *Server) gin.HandlerFunc {
 // 这些接口每命中一次都可能消耗一次密码/动态码校验，必须有独立且更严的限流。
 func AdminWriteRateLimitMiddleware(rl *RateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		key := c.ClientIP()
+		key := clientIPKey(c.ClientIP())
 		if !rl.Allow(key) {
 			setRetryAfter(c, rl, key)
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests, try again later"})
@@ -589,7 +589,7 @@ func ConnRateLimitMiddleware(rl *RateLimiter, s *Server) gin.HandlerFunc {
 			return
 		}
 
-		if !rl.Allow(ip) {
+		if !rl.Allow(clientIPKey(ip)) {
 			s.blacklist.AddViolation(ip)
 			slog.Warn("ws connection rate limited", "ip", ip)
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "connection rate limit exceeded"})

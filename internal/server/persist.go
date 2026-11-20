@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -60,6 +61,13 @@ type ServerState struct {
 	Settings          ServerSettings  `json:"settings"`
 	Devices           []DeviceState   `json:"devices"`
 	Encrypted         *EncryptedState `json:"encrypted,omitempty"`
+
+	// 管理员两步验证（TOTP）。配置了 state 加密密钥时，这三项会被搬进
+	// Encrypted 密文并在明文层置空；未配置密钥时以明文落盘（文件权限 0600），
+	// 启动时会打告警。旧 state 文件没有这些字段，零值即「未启用」。
+	TOTPSecret         string   `json:"totp_secret,omitempty"`
+	TOTPRecoveryHashes []string `json:"totp_recovery_hashes,omitempty"`
+	TOTPLastStep       int64    `json:"totp_last_step,omitempty"`
 }
 
 func defaultSettings() ServerSettings {
@@ -174,6 +182,9 @@ func cloneServerState(state *ServerState) ServerState {
 	if state.Encrypted != nil {
 		encrypted := *state.Encrypted
 		cloned.Encrypted = &encrypted
+	}
+	if state.TOTPRecoveryHashes != nil {
+		cloned.TOTPRecoveryHashes = append([]string(nil), state.TOTPRecoveryHashes...)
 	}
 	return cloned
 }
@@ -550,6 +561,103 @@ func (s *StateStore) VerifyAdminPassword(password string) bool {
 	hash := s.state.AdminPasswordHash
 	s.mu.RUnlock()
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+}
+
+// TOTPConfig 是管理员两步验证的持久化配置快照。
+type TOTPConfig struct {
+	Secret         string
+	RecoveryHashes []string
+	LastStep       int64
+}
+
+// Enabled 表示管理员已启用 TOTP。
+func (c TOTPConfig) Enabled() bool { return c.Secret != "" }
+
+// TOTPConfig 返回当前配置的副本。
+func (s *StateStore) TOTPConfig() TOTPConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return TOTPConfig{
+		Secret:         s.state.TOTPSecret,
+		RecoveryHashes: append([]string(nil), s.state.TOTPRecoveryHashes...),
+		LastStep:       s.state.TOTPLastStep,
+	}
+}
+
+// SetTOTPConfig 整块替换两步验证配置并同步落盘。
+// 只允许「启用」和「关闭」这种整块语义使用；恢复码消费与时间步推进必须走
+// ConsumeTOTPRecoveryCode / CompareAndSwapTOTPLastStep，否则并发下会互相回滚。
+func (s *StateStore) SetTOTPConfig(cfg TOTPConfig) error {
+	hashes := make([]string, len(cfg.RecoveryHashes))
+	copy(hashes, cfg.RecoveryHashes)
+
+	s.mu.Lock()
+	s.state.TOTPSecret = cfg.Secret
+	s.state.TOTPRecoveryHashes = hashes
+	s.state.TOTPLastStep = cfg.LastStep
+	s.dirty = true
+	s.mu.Unlock()
+	return s.Save()
+}
+
+// TOTPLastStep 返回最后接受的时间步（防重放）。
+func (s *StateStore) TOTPLastStep() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.TOTPLastStep
+}
+
+// CompareAndSwapTOTPLastStep 仅当当前值仍等于 oldStep 且 newStep > oldStep 时推进，
+// 返回是否成功。并发下同一个码只能有一个调用者推进成功。
+func (s *StateStore) CompareAndSwapTOTPLastStep(oldStep, newStep int64) bool {
+	if newStep <= oldStep {
+		return false
+	}
+	s.mu.Lock()
+	if s.state.TOTPLastStep != oldStep {
+		s.mu.Unlock()
+		return false
+	}
+	s.state.TOTPLastStep = newStep
+	s.dirty = true
+	s.mu.Unlock()
+	return true
+}
+
+// ConsumeTOTPRecoveryCode 原子消费一个恢复码哈希：命中则移除并返回剩余数量。
+// 并发下同一个恢复码只会有一次 ok=true。比较始终遍历全表，避免提前返回泄漏位置。
+func (s *StateStore) ConsumeTOTPRecoveryCode(hash string) (remaining int, consumed bool, err error) {
+	target := []byte(hash)
+	s.mu.Lock()
+	idx := -1
+	for i, candidate := range s.state.TOTPRecoveryHashes {
+		if subtle.ConstantTimeCompare([]byte(candidate), target) == 1 {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		n := len(s.state.TOTPRecoveryHashes)
+		s.mu.Unlock()
+		return n, false, nil
+	}
+	next := make([]string, 0, len(s.state.TOTPRecoveryHashes)-1)
+	next = append(next, s.state.TOTPRecoveryHashes[:idx]...)
+	next = append(next, s.state.TOTPRecoveryHashes[idx+1:]...)
+	s.state.TOTPRecoveryHashes = next
+	s.dirty = true
+	remaining = len(next)
+	s.mu.Unlock()
+	if err := s.Save(); err != nil {
+		return remaining, true, err
+	}
+	return remaining, true, nil
+}
+
+// EncryptionEnabled 表示 state 敏感字段是否走 AES-256-GCM 加密区。
+func (s *StateStore) EncryptionEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.encryptionKey) > 0
 }
 
 func (s *StateStore) SetAdminPassword(password string) error {

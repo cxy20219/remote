@@ -20,6 +20,13 @@ input::placeholder{color:#cbd5e1}
 .btn{width:100%;padding:12px;background:#3b82f6;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;transition:all .15s;box-shadow:0 2px 4px rgba(59,130,246,.3)}
 .btn:hover{background:#2563eb;box-shadow:0 3px 8px rgba(59,130,246,.4)}
 .btn:disabled{opacity:.6;cursor:not-allowed;box-shadow:none}
+.link-btn{background:none;border:none;color:#3b82f6;font-size:12px;cursor:pointer;padding:0}
+.link-btn:hover{text-decoration:underline}
+.actions{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:10px}
+.actions .sep{color:#e2e8f0;font-size:11px}
+.hint{color:#94a3b8;font-size:12px;margin-top:8px;display:none}
+.hint.show{display:block}
+.hint.warn{color:#f59e0b}
 .error{color:#ef4444;font-size:13px;text-align:center;margin-top:14px;display:none}
 .error.show{display:block}
 .loading{text-align:center;color:#94a3b8;font-size:13px;margin-top:14px;display:none}
@@ -31,32 +38,190 @@ input::placeholder{color:#cbd5e1}
 <div class="card">
 <div class="logo"><div class="logo-icon">G</div></div>
 <h1>GoRemote</h1>
-<p class="subtitle">SSH 隧道管理面板</p>
-<div class="form-group">
+<p class="subtitle" id="subtitle">SSH 隧道管理面板</p>
+<div class="form-group" id="password-group">
 <label>管理员密码</label>
 <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')login()">
 </div>
+<div class="form-group" id="totp-group" style="display:none">
+<label>动态验证码 / 恢复码</label>
+<input type="text" id="totp-code" placeholder="验证器 6 位动态码，或 12 位恢复码" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" onkeydown="if(event.key==='Enter')submitTOTP()">
+<div class="hint" id="totp-countdown"></div>
+</div>
 <button class="btn" id="login-btn" onclick="login()">登 录</button>
+<div class="actions" id="back-actions" style="display:none">
+<button class="link-btn" onclick="requestNewChallenge()" id="resend-btn">重新获取验证码</button>
+<span class="sep">|</span>
+<button class="link-btn" onclick="backToPassword()">使用密码重新登录</button>
+</div>
 <div class="error" id="error"></div>
 <div class="loading" id="loading">验证中...</div>
 <div class="footer">GoRemote &middot; 内网穿透管理</div>
 </div>
 <script>
-async function login(){
-const pwd=document.getElementById('password');
-const btn=document.getElementById('login-btn');
-const err=document.getElementById('error');
-const loading=document.getElementById('loading');
-err.classList.remove('show');
-if(!pwd.value){err.textContent='请输入密码';err.classList.add('show');return}
-btn.disabled=true;loading.classList.add('show');
-try{
-const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd.value})});
-const d=await r.json();
-if(r.ok)window.location.href='/';
-else{err.textContent=d.error||'密码错误';err.classList.add('show')}
-}catch(e){err.textContent='网络错误';err.classList.add('show')}
-finally{btn.disabled=false;loading.classList.remove('show')}
+let challenge = '';
+let challengeDeadline = 0;   // 挑战过期时刻（毫秒时间戳）
+let challengeTimer = null;
+
+const ERROR_TEXT = {
+  'invalid password': '密码错误',
+  'invalid totp code': '动态码错误',
+  'invalid or expired challenge': '验证已过期，请重新输入密码',
+  'admin login temporarily locked': '尝试次数过多，请稍后再试',
+  'too many requests, try again later': '操作过于频繁，请稍后再试',
+  'totp is not enabled': '两步验证未启用，请重新登录',
+  'two-factor authentication is misconfigured; check server logs': '服务端动态码配置异常，请改用恢复码登录'
+};
+
+function showError(message) {
+  const err = document.getElementById('error');
+  err.textContent = message;
+  err.classList.add('show');
+}
+
+function errorMessage(data, fallback) {
+  const raw = (data && data.error) || '';
+  return ERROR_TEXT[raw] || raw || fallback;
+}
+
+// 429 优先用 Retry-After 给出可执行的等待时间，而不是只丢一句英文原文。
+function failureMessage(r, data, fallback) {
+  if (r.status === 429) {
+    const wait = Number(r.headers.get('Retry-After') || 0);
+    if (wait > 0) { return '操作过于频繁，请 ' + wait + ' 秒后再试'; }
+  }
+  return errorMessage(data, fallback);
+}
+
+function stopCountdown() {
+  if (challengeTimer) { clearInterval(challengeTimer); challengeTimer = null; }
+  const el = document.getElementById('totp-countdown');
+  el.classList.remove('show');
+  el.classList.remove('warn');
+  el.textContent = '';
+}
+
+// 挑战有 TTL：页面停着不动时也要自己退场，否则主按钮会一直拿死令牌重放。
+function startCountdown() {
+  stopCountdown();
+  const el = document.getElementById('totp-countdown');
+  el.classList.add('show');
+  const tick = () => {
+    const left = Math.max(0, Math.ceil((challengeDeadline - Date.now()) / 1000));
+    if (left <= 0) { expireChallenge('验证已过期，请重新输入密码'); return; }
+    const m = Math.floor(left / 60), s = left % 60;
+    el.textContent = '本步骤有效 ' + m + ':' + String(s).padStart(2, '0');
+    if (left <= 30) { el.classList.add('warn'); } else { el.classList.remove('warn'); }
+  };
+  tick();
+  challengeTimer = setInterval(tick, 1000);
+}
+
+// 挑战失效（用尽/过期/服务端已删）时清掉本地令牌并退回密码步骤，
+// 避免「点登录永远提示验证已过期」这种死循环。
+function expireChallenge(message) {
+  stopCountdown();
+  challenge = '';
+  document.getElementById('totp-code').value = '';
+  document.getElementById('totp-group').style.display = 'none';
+  document.getElementById('back-actions').style.display = 'none';
+  document.getElementById('password-group').style.display = 'block';
+  document.getElementById('subtitle').textContent = 'SSH 隧道管理面板';
+  document.getElementById('password').focus();
+  if (message) { showError(message); }
+}
+
+async function login() {
+  if (challenge) { submitTOTP(); return; }
+  const pwd = document.getElementById('password');
+  if (!pwd.value) { showError('请输入密码'); return }
+  await submitPassword(pwd.value);
+}
+
+// 第一步：密码换挑战（或未启用 TOTP 时直接拿会话）。
+async function submitPassword(password) {
+  const btn = document.getElementById('login-btn');
+  const loading = document.getElementById('loading');
+  document.getElementById('error').classList.remove('show');
+  btn.disabled = true; loading.classList.add('show');
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.status === 'totp_required') {
+      challenge = d.challenge;
+      const ttl = Number(d.expires_in) > 0 ? Number(d.expires_in) : 300;
+      challengeDeadline = Date.now() + ttl * 1000;
+      document.getElementById('password').value = '';
+      document.getElementById('password-group').style.display = 'none';
+      document.getElementById('totp-group').style.display = 'block';
+      document.getElementById('back-actions').style.display = 'flex';
+      document.getElementById('subtitle').textContent = d.recovery_only ? '两步验证 · 请使用恢复码' : '两步验证';
+      document.getElementById('totp-code').placeholder = d.recovery_only
+        ? '服务端动态码不可用，请输入 12 位恢复码'
+        : '验证器 6 位动态码，或 12 位恢复码';
+      document.getElementById('totp-code').value = '';
+      startCountdown();
+      document.getElementById('totp-code').focus();
+    } else if (r.ok) {
+      stopCountdown();
+      window.location.href = '/';
+    } else {
+      showError(failureMessage(r, d, '登录失败'));
+    }
+  } catch (e) {
+    showError('网络错误');
+  } finally {
+    btn.disabled = false; loading.classList.remove('show');
+  }
+}
+
+// 第二步：挑战 + 动态码/恢复码换会话。
+async function submitTOTP() {
+  if (!challenge) { expireChallenge('验证已过期，请重新输入密码'); return; }
+  const input = document.getElementById('totp-code');
+  const btn = document.getElementById('login-btn');
+  const loading = document.getElementById('loading');
+  document.getElementById('error').classList.remove('show');
+  if (!input.value) { showError('请输入动态码或恢复码'); return }
+  btn.disabled = true; loading.classList.add('show');
+  try {
+    const r = await fetch('/api/login/totp', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge: challenge, code: input.value })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      stopCountdown();
+      window.location.href = '/';
+      return;
+    }
+    const raw = (d && d.error) || '';
+    // 挑战已作废：必须清掉本地令牌，否则之后每次都提交同一个死令牌。
+    if (raw === 'invalid or expired challenge' || raw === 'totp is not enabled') {
+      expireChallenge('验证已过期，请重新输入密码');
+      return;
+    }
+    showError(failureMessage(r, d, '验证失败'));
+    input.select();
+  } catch (e) {
+    showError('网络错误');
+  } finally {
+    btn.disabled = false; loading.classList.remove('show');
+  }
+}
+
+// 重新获取验证码 = 退回密码步骤重新登录。不再用内存里的明文密码换挑战：
+// 那既会让密码驻留页面内存，又会消耗登录限流配额（连点会把自己卡住）。
+function requestNewChallenge() {
+  expireChallenge('请输入密码，重新获取验证码');
+}
+
+function backToPassword() {
+  expireChallenge('');
+  document.getElementById('error').classList.remove('show');
 }
 </script>
 </body>

@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,8 +26,9 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	if err := s.adminAuth.Login(req.Password); err != nil {
+	if err := s.adminAuth.Login(c.ClientIP(), req.Password); err != nil {
 		if errors.Is(err, ErrAdminLoginLocked) {
+			s.setAuthRetryAfter(c)
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
 			return
 		}
@@ -34,13 +36,243 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
+	// 密码正确但启用了两步验证：签发一次性挑战，不发会话。
+	if s.adminAuth.TOTPEnabled() {
+		// 密钥损坏时仍然发挑战：第二步可以用恢复码登录（唯一的自助出口）。
+		// 只是把 recovery_only 标出来，前端据此直接提示「请用恢复码」。
+		recoveryOnly := s.adminAuth.TOTPSelfCheck() != nil
+		if recoveryOnly {
+			slog.Error("admin totp configuration is corrupt; only recovery codes can complete login")
+		}
+		challenge, err := s.adminAuth.BeginTOTPChallenge(c.ClientIP())
+		if err != nil {
+			slog.Error("failed to create totp challenge", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start two-factor authentication"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":        "totp_required",
+			"challenge":     challenge,
+			"expires_in":    int(totpChallengeTTL / time.Second),
+			"recovery_only": recoveryOnly,
+		})
+		return
+	}
+
+	// 未启用 TOTP 时密码就是完整认证，此时才清零失败池。
+	s.adminAuth.ClearFullAuthFailures(c.ClientIP())
+	s.issueAdminSession(c)
+}
+
+// handleLoginTOTP 是两步登录的第二步：用挑战换正式会话。
+func (s *Server) handleLoginTOTP(c *gin.Context) {
+	var req struct {
+		Challenge string `json:"challenge"`
+		Code      string `json:"code"`
+	}
+	if !decodeStrictJSON(c, &req) {
+		return
+	}
+	if req.Challenge == "" || strings.TrimSpace(req.Code) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "challenge and code are required"})
+		return
+	}
+
+	err := s.adminAuth.VerifyTOTPChallenge(c.ClientIP(), req.Challenge, req.Code)
+	switch {
+	case err == nil:
+		s.issueAdminSession(c)
+	case errors.Is(err, ErrAdminLoginLocked):
+		s.setAuthRetryAfter(c)
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
+	case errors.Is(err, ErrTOTPChallengeInvalid):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired challenge"})
+	case errors.Is(err, ErrTOTPInvalidCode):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid totp code"})
+	case errors.Is(err, ErrTOTPCorrupt):
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "two-factor authentication is misconfigured; check server logs"})
+	case errors.Is(err, ErrTOTPNotConfigured):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "totp is not enabled"})
+	default:
+		slog.Error("totp verification failed", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify two-factor authentication"})
+	}
+}
+
+// setAuthRetryAfter 给认证类 429 补 Retry-After：取 IP 失败锁与账户级退避的剩余秒数。
+func (s *Server) setAuthRetryAfter(c *gin.Context) {
+	if seconds := s.adminAuth.LockRetryAfter(c.ClientIP()); seconds > 0 {
+		c.Header("Retry-After", strconv.Itoa(seconds))
+	}
+}
+
+func (s *Server) issueAdminSession(c *gin.Context) {
 	token, err := s.adminAuth.GenerateToken()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
 		return
 	}
-	s.setAdminCookie(c, token, 86400)
+	s.setAdminCookie(c, token, int(adminSessionTTL.Seconds()))
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// handleAPIGetTOTPStatus 返回两步验证状态（永不返回密钥）。
+func (s *Server) handleAPIGetTOTPStatus(c *gin.Context) {
+	cfg := s.stateStore.TOTPConfig()
+	session, _ := c.Cookie("go_remote_token")
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":             cfg.Enabled(),
+		"setup_pending":       s.adminAuth.PendingTOTPSetup(session),
+		"recovery_codes_left": len(cfg.RecoveryHashes),
+	})
+}
+
+// handleAPITOTPSetup 生成待激活密钥与二维码；要求重新输入当前密码。
+func (s *Server) handleAPITOTPSetup(c *gin.Context) {
+	var req struct {
+		Password string `json:"password"`
+	}
+	if !decodeStrictJSON(c, &req) {
+		return
+	}
+	if req.Password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password is required"})
+		return
+	}
+	if err := s.adminAuth.CheckPassword(c.ClientIP(), req.Password); err != nil {
+		if errors.Is(err, ErrAdminLoginLocked) {
+			s.setAuthRetryAfter(c)
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
+			return
+		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid password"})
+		return
+	}
+
+	session, _ := c.Cookie("go_remote_token")
+	secret, uri, qrDataURL, err := s.adminAuth.StartTOTPSetup(session)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrTOTPAlreadyEnabled):
+		c.JSON(http.StatusConflict, gin.H{"error": "totp is already enabled"})
+		return
+	case errors.Is(err, ErrStateEncryptionKeyRequired):
+		c.JSON(http.StatusConflict, gin.H{"error": "state encryption is required to enable TOTP; set GOREMOTE_STATE_KEY or --state-key first"})
+		return
+	default:
+		slog.Error("failed to start totp setup", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start totp setup"})
+		return
+	}
+	slog.Info("admin totp setup started", "ip", c.ClientIP())
+	c.JSON(http.StatusOK, gin.H{
+		"secret":      secret,
+		"otpauth_uri": uri,
+		"qr_data_url": qrDataURL,
+		"expires_in":  int(totpSetupTTL / time.Second),
+	})
+}
+
+// handleAPITOTPEnable 用动态码确认待激活密钥，恢复码只在这次响应里出现一次。
+func (s *Server) handleAPITOTPEnable(c *gin.Context) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if !decodeStrictJSON(c, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "code is required"})
+		return
+	}
+
+	session, _ := c.Cookie("go_remote_token")
+	codes, err := s.adminAuth.EnableTOTP(session, req.Code)
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "recovery_codes": codes})
+	case errors.Is(err, ErrTOTPInvalidCode):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid totp code"})
+	case errors.Is(err, ErrTOTPSetupExpired):
+		c.JSON(http.StatusConflict, gin.H{"error": "totp setup is not pending or has expired"})
+	case errors.Is(err, ErrTOTPAlreadyEnabled):
+		c.JSON(http.StatusConflict, gin.H{"error": "totp is already enabled"})
+	case errors.Is(err, ErrStateEncryptionKeyRequired):
+		c.JSON(http.StatusConflict, gin.H{"error": "state encryption is required to enable TOTP; set GOREMOTE_STATE_KEY or --state-key first"})
+	default:
+		slog.Error("failed to enable totp", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enable two-factor authentication"})
+	}
+}
+
+// handleAPITOTPRecover 用恢复码关闭两步验证（手机丢失时的自助出口）。
+func (s *Server) handleAPITOTPRecover(c *gin.Context) {
+	var req struct {
+		Password     string `json:"password"`
+		RecoveryCode string `json:"recovery_code"`
+	}
+	if !decodeStrictJSON(c, &req) {
+		return
+	}
+	if req.Password == "" || strings.TrimSpace(req.RecoveryCode) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password and recovery_code are required"})
+		return
+	}
+
+	session, _ := c.Cookie("go_remote_token")
+	err := s.adminAuth.RecoverTOTP(c.ClientIP(), session, req.Password, req.RecoveryCode)
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	case errors.Is(err, ErrAdminLoginLocked):
+		s.setAuthRetryAfter(c)
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
+	case errors.Is(err, ErrAdminInvalidPassword):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid password"})
+	case errors.Is(err, ErrTOTPInvalidCode):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid recovery code"})
+	case errors.Is(err, ErrTOTPNotConfigured):
+		c.JSON(http.StatusConflict, gin.H{"error": "totp is not enabled"})
+	default:
+		slog.Error("failed to recover totp", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable two-factor authentication"})
+	}
+}
+
+// handleAPITOTPDisable 关闭两步验证，必须同时提供密码与当前动态码。
+func (s *Server) handleAPITOTPDisable(c *gin.Context) {
+	var req struct {
+		Password string `json:"password"`
+		Code     string `json:"code"`
+	}
+	if !decodeStrictJSON(c, &req) {
+		return
+	}
+	if req.Password == "" || strings.TrimSpace(req.Code) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password and code are required"})
+		return
+	}
+
+	session, _ := c.Cookie("go_remote_token")
+	err := s.adminAuth.DisableTOTP(c.ClientIP(), session, req.Password, req.Code)
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	case errors.Is(err, ErrAdminLoginLocked):
+		s.setAuthRetryAfter(c)
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
+	case errors.Is(err, ErrAdminInvalidPassword):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid password"})
+	case errors.Is(err, ErrTOTPInvalidCode):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid totp code"})
+	case errors.Is(err, ErrTOTPCorrupt):
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "two-factor authentication is misconfigured; check server logs"})
+	case errors.Is(err, ErrTOTPNotConfigured):
+		c.JSON(http.StatusConflict, gin.H{"error": "totp is not enabled"})
+	default:
+		slog.Error("failed to disable totp", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable two-factor authentication"})
+	}
 }
 
 func (s *Server) handleAPIChangeAdminPassword(c *gin.Context) {
@@ -52,10 +284,12 @@ func (s *Server) handleAPIChangeAdminPassword(c *gin.Context) {
 		return
 	}
 
-	if err := s.adminAuth.ChangePassword(req.CurrentPassword, req.NewPassword); err != nil {
+	if err := s.adminAuth.ChangePassword(c.ClientIP(), req.CurrentPassword, req.NewPassword); err != nil {
 		switch {
 		case errors.Is(err, ErrAdminInvalidPassword):
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "current password is invalid"})
+		case errors.Is(err, ErrAdminLoginLocked):
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
 		case errors.Is(err, ErrAdminWeakPassword):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "new password must be at least 12 characters and use at least 3 character types"})
 		default:
