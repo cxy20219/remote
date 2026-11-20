@@ -8,7 +8,7 @@
 
 ## 功能特性
 
-- **零配置启动** — `./server` 一键启动，admin 密码自动生成；Agent 仅需服务器地址
+- **零配置启动** — `./server` 一键启动；首次启动进入初始化向导（本机 loopback 或一次性令牌），自行设置管理员密码并可选启用 TOTP（见 [docs/FIRST-RUN-SETUP.md](docs/FIRST-RUN-SETUP.md)）
 - **审批制注册** — Agent 基于 ed25519 身份认证，管理员 Web 端一键批准/拒绝
 - **每设备独立加密** — 审批时通过 X25519 ECDH 协商 AES-256-GCM 密钥，且支持 Web UI 随时轮换
 - **Web 管理面板** — 设备管理、隧道 CRUD、安全策略配置、系统设置全套界面
@@ -24,7 +24,7 @@
 - **每设备独立密钥**：每台设备单独协商 AES-256-GCM 隧道数据密钥，支持按设备关闭加密或重新生成密钥。
 - **密钥交换保护**：服务端下发的密钥更新带签名，Agent 首次信任后会校验后续 `register_ok` / `register_update`，防止密钥更新被篡改。
 - **防重放**：设备重连签名带时间戳，服务端限制时间窗口并记录已使用签名，减少重放风险。
-- **管理面加固**：支持管理员改密、按来源 IP 的登录失败临时锁定、HttpOnly Cookie，会话修改密码后自动吊销；首次启动生成的明文管理员密码只打印一次，不写入状态文件。
+- **管理面加固**：支持管理员改密、按来源 IP 的登录失败临时锁定、HttpOnly Cookie，会话修改密码后自动吊销；首次启动不生成任何密码：通过本机 loopback 或一次性令牌完成初始化向导后，密码只以 bcrypt hash 写入 state，日志不含凭据。
 - **两步验证 (TOTP)**：可扫码启用（RFC 6238，SHA-1/6 位/30 秒，±1 时间窗），登录需要密码 + 动态码；10 个一次性恢复码、防重放、挑战绑定来源 IP；密码失败按 IP 计数，动态码失败另有跨 IP 账户级退避（5 分钟封顶、恢复码豁免）。**启用前必须配置 `GOREMOTE_STATE_KEY`**（否则 setup 直接 409），密钥与恢复码哈希只进加密区。注意：没配 TLS 时二次验证保护有限；反代部署必须配 `--trusted-proxies`。详见 [docs/TOTP-2FA.md](docs/TOTP-2FA.md)。
 - **管理面板输出转义**：设备上报的主机名、隧道地址、黑名单原因等动态内容统一转义，避免管理端存储型 XSS。
 - **敏感状态加密**：可通过 `GOREMOTE_STATE_KEY` 或 `--state-key` 加密 `server-state.json` 中的服务端私钥、管理员密码 hash 和设备隧道密钥。
@@ -39,7 +39,7 @@
 wget -qO server https://github.com/xxx/goremote/releases/latest/download/server-linux-amd64 && chmod +x server && ./server
 ```
 
-首次启动自动打印 admin 密码，浏览器打开 `http://your-ip:8080/` 登录即可。
+首次启动不会生成密码：无反代直连时打开 `http://127.0.0.1:8080/setup.html`（服务器本机 / SSH 转发）完成向导，其余情况使用日志里的一次性初始化令牌，详见 [docs/FIRST-RUN-SETUP.md](docs/FIRST-RUN-SETUP.md)。
 
 ### 客户端
 
@@ -64,9 +64,13 @@ chmod +x server-linux-amd64
 # 可选：启用状态文件敏感字段加密，生产环境建议使用随机 32 字节以上密钥
 GOREMOTE_STATE_KEY='CHANGE-ME-long-random-state-key' ./server-linux-amd64
 
-# 3. 查看 admin 密码
-tail -n 20 server.log  # 或直接查看控制台输出
+# 3. 完成首次初始化（二选一）
+#    a) 无反代直连：本机/SSH 转发打开 http://127.0.0.1:8080/setup.html（免令牌）
+#    b) 有反代或远程：从日志取一次性初始化令牌，打开 https://your-server:8080/setup.html 填入
+journalctl -u goremote | grep 初始化   # 或 tail -n 20 server.log
 ```
+
+> **任何反向代理（同机或异机）都必须用一次性令牌完成初始化**；loopback 免令牌只适用于没有反代、直连后端的场景。反代部署仍需按实际地址配置 `--trusted-proxies`（例如 `127.0.0.1`），它负责按 IP 的限流和 TOTP challenge 绑定。配置了它之后 loopback 免令牌会关闭，所以别为了省令牌把它删掉。
 
 ### 客户端
 

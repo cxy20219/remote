@@ -17,6 +17,7 @@
 | `--swagger` | bool | `true` | 是否启用 Swagger UI（仅认证后可访问） |
 | `--allowed-origins` | string | 空 | 允许打开 `/ws` 的浏览器 Origin，逗号分隔，如 `https://admin.example.com`；空值只允许无 Origin 的 Agent 连接 |
 | `--state-key` | string | 空 | 状态文件敏感字段加密密钥；优先使用环境变量 `GOREMOTE_STATE_KEY` |
+| `--trusted-proxies` | string | 空 | 逗号分隔的反代 IP/CIDR；非空时信任 `X-Forwarded-For` / `X-Real-IP`（用于限流和 challenge 绑定），同时**关闭初始化的 loopback 免令牌**，初始化一律要求一次性令牌。格式非法时服务端拒绝启动 |
 | `--log-level` | string | `info` | `debug` / `info` / `warn` / `error` |
 | `--log-file` | string | 空 | 空=JSON 日志写 stdout；文件权限 0600 |
 | `--log-max-size-mb` | int | `50` | 单个日志文件轮转阈值 |
@@ -64,9 +65,11 @@
 `<data>/server-state.json` 保存：
 
 - 服务端 ed25519 签名密钥（用于给 `register_ok` / `register_update` 签名）
-- 管理员 bcrypt 密码 hash（首次启动生成 24 字符随机密码，仅打印一次，不落盘明文）
+- 管理员 bcrypt 密码 hash（由首次初始化向导设置；首次启动不再生成/打印随机密码）
 - 设备身份、审批状态、设备 DH 公钥、设备白名单、隧道加密密钥
 - 运行时设置
+
+一次性初始化令牌**只存在内存**，不写入状态文件；重启会换新令牌，旧令牌永久失效。
 
 写入采用临时文件 + rename 原子替换；每 3 秒检查脏标记异步落盘，`SIGINT/SIGTERM` 时同步 flush。
 

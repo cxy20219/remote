@@ -70,7 +70,8 @@ const ERROR_TEXT = {
   'admin login temporarily locked': '尝试次数过多，请稍后再试',
   'too many requests, try again later': '操作过于频繁，请稍后再试',
   'totp is not enabled': '两步验证未启用，请重新登录',
-  'two-factor authentication is misconfigured; check server logs': '服务端动态码配置异常，请改用恢复码登录'
+  'two-factor authentication is misconfigured; check server logs': '服务端动态码配置异常，请改用恢复码登录',
+  'setup required': '服务尚未初始化，正在跳转初始化向导'
 };
 
 function showError(message) {
@@ -150,6 +151,10 @@ async function submitPassword(password) {
       body: JSON.stringify({ password: password })
     });
     const d = await r.json().catch(() => ({}));
+    if (r.status === 409 && (d.error || '') === 'setup required') {
+      window.location.href = '/setup.html';
+      return;
+    }
     if (r.ok && d.status === 'totp_required') {
       challenge = d.challenge;
       const ttl = Number(d.expires_in) > 0 ? Number(d.expires_in) : 300;

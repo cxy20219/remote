@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-store">
+<title>GoRemote · 首次初始化</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#eff6ff 0%,#e0e7ff 50%,#f0f4ff 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.card{background:#fff;border-radius:20px;padding:40px;max-width:460px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,.08),0 1px 3px rgba(0,0,0,.04)}
+.logo{text-align:center;margin-bottom:8px}
+.logo-icon{width:48px;height:48px;background:linear-gradient(135deg,#3b82f6,#6366f1);border-radius:14px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:700}
+h1{color:#1e293b;font-size:21px;text-align:center;margin-top:16px;margin-bottom:4px}
+.subtitle{color:#94a3b8;text-align:center;font-size:13px;margin-bottom:22px;line-height:1.6}
+.steps{display:flex;justify-content:center;gap:18px;margin-bottom:24px;font-size:12px;color:#94a3b8}
+.step{display:flex;align-items:center;gap:6px}
+.step .dot{width:20px;height:20px;border-radius:50%;background:#e2e8f0;color:#64748b;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.step.active .dot{background:#3b82f6;color:#fff}
+.step.done .dot{background:#22c55e;color:#fff}
+.panel{display:none}
+.panel.active{display:block}
+.form-group{margin-bottom:16px}
+label{color:#64748b;display:block;margin-bottom:6px;font-size:13px;font-weight:500}
+input{width:100%;padding:12px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;color:#334155;font-size:15px;outline:none;transition:all .2s}
+input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.12);background:#fff}
+input::placeholder{color:#cbd5e1}
+.btn{width:100%;padding:12px;background:#3b82f6;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;transition:all .15s;box-shadow:0 2px 4px rgba(59,130,246,.3)}
+.btn:hover{background:#2563eb}
+.btn:disabled{opacity:.6;cursor:not-allowed;box-shadow:none}
+.btn.secondary{background:#f1f5f9;color:#334155;box-shadow:none}
+.btn.secondary:hover{background:#e2e8f0}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+.btn-row .btn{flex:1;min-width:140px}
+.hint{color:#94a3b8;font-size:12px;margin-top:6px;line-height:1.6}
+.error{color:#ef4444;font-size:13px;text-align:center;margin-top:12px;display:none;line-height:1.6}
+.error.show{display:block}
+.status{color:#64748b;font-size:13px;text-align:center;margin-top:12px;display:none;line-height:1.6}
+.status.show{display:block}
+.status.warn{color:#f59e0b}
+.qr-panel{margin-top:16px;border-top:1px dashed #e2e8f0;padding-top:16px;display:none}
+.qr-wrap{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.qr-wrap img{width:180px;height:180px;border:1px solid #e2e8f0;border-radius:12px;background:#fff}
+.qr-side{flex:1;min-width:220px}
+.secret{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px;word-break:break-all;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px;margin-bottom:10px}
+.recovery-panel{margin-top:16px;border-top:1px dashed #e2e8f0;padding-top:16px;display:none}
+.recovery-warning{color:#ef4444;font-size:13px;line-height:1.7;margin-bottom:10px;font-weight:600}
+.recovery-codes{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:13px;line-height:1.9;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;columns:2;column-gap:20px}
+.footer{text-align:center;color:#cbd5e1;font-size:11px;margin-top:22px}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="logo"><div class="logo-icon">G</div></div>
+<h1>初始化 GoRemote</h1>
+<p class="subtitle">首次启动需要设置管理员密码；两步验证可选，但强烈建议启用。</p>
+
+<div class="steps">
+  <div class="step active" id="step-ind-1"><span class="dot">1</span>设置密码</div>
+  <div class="step" id="step-ind-2"><span class="dot">2</span>两步验证</div>
+  <div class="step" id="step-ind-3"><span class="dot">3</span>完成</div>
+</div>
+
+<div class="panel active" id="panel-1">
+  <div class="form-group" id="token-group" style="display:none">
+    <label>一次性初始化令牌</label>
+    <input type="text" id="setup-token" placeholder="journalctl 日志里的 10 位令牌" autocomplete="off" spellcheck="false">
+    <div class="hint">只在非本机访问时需要；令牌 30 分钟内有效，用一次即废。</div>
+  </div>
+  <div class="form-group">
+    <label>管理员密码</label>
+    <input type="password" id="password" placeholder="至少 12 位，包含 3 类字符" autocomplete="new-password">
+  </div>
+  <div class="form-group">
+    <label>确认密码</label>
+    <input type="password" id="confirm" placeholder="再输入一次" autocomplete="new-password">
+  </div>
+  <button class="btn" id="password-btn" onclick="submitPassword()">下一步</button>
+  <div class="hint">密码只用于本机管理登录，不会出现在日志里。</div>
+</div>
+
+<div class="panel" id="panel-2">
+  <p class="subtitle" style="text-align:left;margin-bottom:14px">用验证器 App（Google Authenticator / 1Password / Authy）扫码，之后登录需要「密码 + 动态码」。</p>
+  <button class="btn" id="totp-start-btn" onclick="startTOTP()">扫码启用两步验证</button>
+  <div class="qr-panel" id="qr-panel">
+    <div class="qr-wrap">
+      <img id="qr" alt="TOTP 二维码">
+      <div class="qr-side">
+        <div class="secret" id="secret"></div>
+        <div class="form-group">
+          <label>动态码</label>
+          <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位数字" onkeydown="if(event.key==='Enter')enableTOTP()">
+        </div>
+        <button class="btn" id="totp-enable-btn" onclick="enableTOTP()">确认启用</button>
+      </div>
+    </div>
+    <div class="recovery-panel" id="recovery-panel">
+      <p class="recovery-warning">恢复码只显示这一次，刷新页面就看不到了，请现在就抄下来或存进密码管理器。</p>
+      <div class="recovery-codes" id="recovery-codes"></div>
+      <div class="btn-row">
+        <button class="btn secondary" onclick="copyRecoveryCodes()">复制全部</button>
+        <button class="btn" onclick="finishSetup()">我已保存，完成</button>
+      </div>
+    </div>
+  </div>
+  <div class="btn-row">
+    <button class="btn secondary" onclick="skipTOTP()">暂时跳过</button>
+  </div>
+  <div class="status" id="totp-status"></div>
+</div>
+
+<div class="panel" id="panel-3">
+  <p class="subtitle" id="done-text" style="text-align:left"></p>
+  <button class="btn" onclick="window.location.href='/'">进入管理面板</button>
+</div>
+
+<div class="error" id="error"></div>
+<div class="footer">GoRemote &middot; 首次初始化向导</div>
+</div>
+
+<script>
+let recoveryCodes = [];
+let totpEnabled = false;
+
+const ERROR_TEXT = {
+  'password must be at least 12 characters and use at least 3 character types': '密码至少 12 位，且包含大写/小写/数字/符号中的至少 3 类',
+  'invalid or expired setup token': '初始化令牌无效或已过期',
+  'setup requires loopback access or a valid setup token': '请从服务器本机访问，或填写一次性初始化令牌',
+  'server is already initialized': '服务已经初始化，请直接登录',
+  'too many setup attempts': '尝试次数过多，请稍后再试',
+  'totp setup is not pending or has expired': '二维码已过期，请重新生成',
+  'invalid totp code': '动态码错误',
+  'state encryption is required to enable TOTP; set GOREMOTE_STATE_KEY or --state-key first': '未配置 state 加密密钥，无法启用两步验证'
+};
+
+function $(id) { return document.getElementById(id); }
+
+function showError(message) {
+  const el = $('error');
+  el.textContent = message || '';
+  el.classList.toggle('show', !!message);
+}
+
+function showStatus(message, warn) {
+  const el = $('totp-status');
+  el.textContent = message || '';
+  el.classList.toggle('show', !!message);
+  el.classList.toggle('warn', !!warn);
+}
+
+function errorText(data, fallback) {
+  const raw = (data && data.error) || '';
+  return ERROR_TEXT[raw] || raw || fallback;
+}
+
+function showStep(step) {
+  for (let i = 1; i <= 3; i++) {
+    $('panel-' + i).classList.toggle('active', i === step);
+    $('step-ind-' + i).classList.toggle('active', i === step);
+    $('step-ind-' + i).classList.toggle('done', i < step);
+  }
+  showError('');
+}
+
+function passwordProblem(pwd) {
+  if (pwd.length < 12) { return '密码至少 12 位'; }
+  let classes = 0;
+  if (/[a-z]/.test(pwd)) { classes++; }
+  if (/[A-Z]/.test(pwd)) { classes++; }
+  if (/[0-9]/.test(pwd)) { classes++; }
+  if (/[^a-zA-Z0-9\s]/.test(pwd)) { classes++; }
+  if (classes < 3) { return '至少包含大写/小写/数字/符号中的 3 类'; }
+  return '';
+}
+
+async function submitPassword() {
+  const pwd = $('password').value;
+  const confirm = $('confirm').value;
+  const token = $('setup-token').value.trim();
+  const problem = passwordProblem(pwd);
+  if (problem) { showError(problem); return; }
+  if (pwd !== confirm) { showError('两次输入的密码不一致'); return; }
+
+  const btn = $('password-btn');
+  btn.disabled = true;
+  showError('');
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) { headers['X-Setup-Token'] = token; }
+    const r = await fetch('/api/setup/password', {
+      method: 'POST', headers: headers, body: JSON.stringify({ password: pwd })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      $('password').value = '';
+      $('confirm').value = '';
+      $('setup-token').value = '';
+      showStep(2);
+      return;
+    }
+    if (r.status === 409) {
+      showError(errorText(d, '服务已经初始化'));
+      setTimeout(function () { window.location.href = '/login.html'; }, 1500);
+      return;
+    }
+    showError(errorText(d, '初始化失败'));
+  } catch (e) {
+    showError('网络错误');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function startTOTP() {
+  showStatus('正在生成二维码...');
+  try {
+    const r = await fetch('/api/setup/totp/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (r.status === 409 && /state encryption/.test(d.error || '')) {
+        showStatus('未配置 GOREMOTE_STATE_KEY，暂时无法启用两步验证；可以先跳过，稍后在管理面板启用。', true);
+      } else if (r.status === 409) {
+        showStatus('初始化窗口已结束，可以先跳过，登录后在管理面板启用两步验证。', true);
+      } else {
+        showStatus(errorText(d, '生成二维码失败'), true);
+      }
+      return;
+    }
+    $('qr').src = d.qr_data_url;
+    $('secret').textContent = d.secret;
+    $('qr-panel').style.display = 'block';
+    $('totp-start-btn').disabled = true;
+    $('code').value = '';
+    $('code').focus();
+    showStatus('');
+  } catch (e) {
+    showStatus('网络错误', true);
+  }
+}
+
+async function enableTOTP() {
+  const code = $('code').value.trim();
+  if (!code) { showStatus('请输入动态码', true); return; }
+  $('totp-enable-btn').disabled = true;
+  showStatus('');
+  try {
+    const r = await fetch('/api/setup/totp/enable', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showStatus(errorText(d, '验证失败'), true);
+      return;
+    }
+    // 恢复码只在内存里渲染，不写 localStorage/sessionStorage；刷新即丢（有意为之）。
+    recoveryCodes = d.recovery_codes || [];
+    renderRecoveryCodes();
+    $('qr-panel').querySelector('.qr-wrap').style.display = 'none';
+    $('recovery-panel').style.display = 'block';
+    totpEnabled = true;
+    showStatus('两步验证已启用。');
+  } catch (e) {
+    showStatus('网络错误', true);
+  } finally {
+    $('totp-enable-btn').disabled = false;
+  }
+}
+
+function renderRecoveryCodes() {
+  const box = $('recovery-codes');
+  box.textContent = '';
+  for (const code of recoveryCodes) {
+    const line = document.createElement('div');
+    line.textContent = code;
+    box.appendChild(line);
+  }
+}
+
+async function copyRecoveryCodes() {
+  const text = recoveryCodes.join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    showStatus('已复制到剪贴板，请粘贴到密码管理器后清除剪贴板。');
+  } catch (e) {
+    showStatus('复制失败，请手动抄写。', true);
+  }
+}
+
+async function skipTOTP() {
+  try {
+    await fetch('/api/setup/totp/skip', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    });
+  } catch (e) { /* 窗口可能已结束，仍允许完成 */ }
+  totpEnabled = false;
+  finishSetup();
+}
+
+function finishSetup() {
+  recoveryCodes = [];
+  $('done-text').textContent = totpEnabled
+    ? '初始化完成，两步验证已启用。'
+    : '初始化完成。尚未启用两步验证，可以在管理面板里随时开启。';
+  showStep(3);
+}
+
+(async function initPage() {
+  try {
+    const r = await fetch('/api/setup/status', { cache: 'no-store' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { throw new Error('status'); }
+    if (!d.needs_setup) {
+      window.location.href = '/login.html';
+      return;
+    }
+    if (!d.loopback) { $('token-group').style.display = 'block'; }
+  } catch (e) {
+    showError('无法获取初始化状态，请刷新重试');
+  }
+})();
+</script>
+</body>
+</html>

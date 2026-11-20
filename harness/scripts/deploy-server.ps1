@@ -69,11 +69,15 @@ if ($health -match '"ok"') {
     Remote-Command "tail -5 $RemoteDir/server.log"
 }
 
-# Show admin password
+# Show first-run setup token (only exists until initialization completes)
 Write-Host "`n=== Deployment Summary ===" -ForegroundColor Cyan
 Write-Host "Server: http://$ServerIp`:$ServerPort"
-$pwd = Remote-Command "grep -o 'password\":\"[^\"]*\"' $RemoteDir/server.log | head -1 | cut -d'\"' -f4"
-if ($pwd) {
-    Write-Host "Admin password (first-run only): $pwd" -ForegroundColor Yellow
+$logTail = Remote-Command "tail -n 50 $RemoteDir/server.log" | Out-String
+$tokenMatch = [regex]::Match($logTail, '"token":"([^"]+)"')
+if ($tokenMatch.Success) {
+    Write-Host "First-run setup token (30 min, rotated on restart): $($tokenMatch.Groups[1].Value)" -ForegroundColor Yellow
+    Write-Host "Open http://$ServerIp`:$ServerPort/setup.html and finish the setup wizard." -ForegroundColor Yellow
+} else {
+    Write-Host "No setup token in the last 50 log lines (already initialized, or token generation failed)." -ForegroundColor Yellow
 }
 Write-Host "Log: $RemoteDir/server.log"

@@ -66,7 +66,19 @@ func generateServerCert(t *testing.T, dir string) (certPath, keyPath string) {
 	return
 }
 
+// newTestConfig 返回**已初始化**（已设置管理员密码）的测试服务端配置。
+// 需要验证首启门禁的用例请用 newTestConfigUninitialized，别在这里隐式依赖前置状态。
 func newTestConfig(t *testing.T) (*Config, *StateStore) {
+	t.Helper()
+	config, stateStore := newTestConfigUninitialized(t)
+	if _, err := stateStore.SetInitialAdminPassword("TestPassword123!"); err != nil {
+		t.Fatalf("initialize admin password: %v", err)
+	}
+	return config, stateStore
+}
+
+// newTestConfigUninitialized 返回未初始化（AdminPasswordHash 为空）的配置。
+func newTestConfigUninitialized(t *testing.T) (*Config, *StateStore) {
 	t.Helper()
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "server-state.json")

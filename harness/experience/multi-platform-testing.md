@@ -651,6 +651,7 @@ plink -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw "PASSWORD" user@YOUR_SERV
 - **热路径 O(1)**：加密开关缓存在 `Client` 原子字段；`StateStore` 增加设备 ID 索引；全局白名单编译为 `ipMatcher`，每连接不重复解析 CIDR。
 - **并发安全**：Agent 的 stopped/pending/encEnabled/clientID 改原子量；`ClientManager.Snapshot` 在管理器锁内读取心跳字段；可中断指数退避，SIGTERM 不再被最长 60s 睡眠拖住。
 - **管理员认证**：bcrypt hash only，24 字符随机密码只打印一次；按来源 IP 锁定；自动黑名单 24h 过期；日志文件 0600。
+  > **已废弃**：首次启动不再生成随机密码，现行流程见 [`docs/FIRST-RUN-SETUP.md`](../../docs/FIRST-RUN-SETUP.md)。
 - **管理面板**：全部动态值经 `esc` / `jsArg` 转义后再进入 HTML 与内联事件；API 返回 401 自动跳登录；设备列表补上 `ip_whitelist` 字段。
 - **配置与死代码**：服务端 CLI 只保留真实生效的参数并新增 `--allowed-origins`；删除 agent 发起隧道、旧 base64 加解密、重复 DH 封装、`sendRegisterOK` 等不可达代码；`deadcode` 清零。
 

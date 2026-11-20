@@ -55,10 +55,12 @@ type Server struct {
 	handler       *Handler
 	tunnelManager *TunnelManager
 	adminAuth     *AdminAuth
+	setupMgr      *SetupManager
 	cryptoMgr     *common.CryptoManager
 	stateStore    *StateStore
 	deviceMgr     *DeviceManager
 	loginLimiter  *RateLimiter
+	setupLimiter  *RateLimiter
 	// adminWriteLimiter 是管理写接口（改密、TOTP 开关）的独立限流：
 	// 这些接口位于 session 之后，不能只靠登录限流兜底。
 	adminWriteLimiter *RateLimiter
@@ -100,6 +102,7 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	}
 
 	adminAuth := NewAdminAuth(stateStore)
+	setupMgr := NewSetupManager(stateStore)
 	cryptoMgr := common.NewCryptoManager()
 	deviceMgr := NewDeviceManager(stateStore, cryptoMgr)
 
@@ -114,10 +117,12 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 		clients:           NewClientManager(),
 		stateStore:        stateStore,
 		adminAuth:         adminAuth,
+		setupMgr:          setupMgr,
 		cryptoMgr:         cryptoMgr,
 		deviceMgr:         deviceMgr,
 		blacklist:         NewBlacklistManager(settings.BlacklistThreshold),
 		loginLimiter:      NewRateLimiter(settings.LoginRateLimit, time.Minute),
+		setupLimiter:      NewRateLimiter(setupRateLimit, setupRateWindow),
 		adminWriteLimiter: NewRateLimiter(adminWriteLimit, adminWriteWindow),
 		connLimiter:       NewRateLimiter(settings.MaxConnPerMin, time.Minute),
 		portLimiter:       NewRateLimiter(settings.MaxConnPerMin, time.Minute),
@@ -174,6 +179,22 @@ func (s *Server) Start() error {
 	if err := s.adminAuth.TOTPSelfCheck(); err != nil {
 		slog.Warn("admin TOTP configuration is corrupt; every two-factor login will be rejected until TOTP is reset via recovery code", "error", err)
 	}
+	if s.setupMgr.NeedsSetup() {
+		if token := s.setupMgr.Token(); token != "" {
+			slog.Warn("首次初始化令牌（仅用于首次初始化，30 分钟内有效，用一次即废）",
+				"token", token,
+				"expires_at", s.setupMgr.TokenExpiresAt().Format(time.RFC3339))
+			if len(s.config.Security.TrustedProxies) == 0 {
+				slog.Info("也可以从服务器本机 loopback 打开 /setup.html 初始化，免令牌（例如 ssh -L 8080:127.0.0.1:8080）")
+			} else {
+				slog.Info("已配置 --trusted-proxies，loopback 免令牌已关闭；请使用上面的初始化令牌完成向导")
+			}
+		} else if len(s.config.Security.TrustedProxies) == 0 {
+			slog.Warn("首次初始化令牌生成失败，只允许从服务器本机 loopback 完成初始化")
+		} else {
+			slog.Error("首次初始化令牌生成失败且已配置 --trusted-proxies：当前没有任何可用的初始化入口，检查随机源后重启")
+		}
+	}
 	if !s.tlsEnabled && !isLoopbackHost(s.config.Server.Host) {
 		slog.Warn("server listens on a non-loopback interface without TLS; admin cookies and control traffic are sent in plaintext")
 	}
@@ -185,9 +206,15 @@ func (s *Server) Start() error {
 	s.engine.Use(DynamicBodySizeLimitMiddleware(func() int64 {
 		return s.maxBodyBytes.Load()
 	}))
+	s.engine.Use(SetupGateMiddleware(s.setupMgr))
 
 	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s), s.handleConn)
 	s.engine.GET("/health", s.handleHealth)
+	s.engine.GET("/api/setup/status", s.handleSetupStatus)
+	s.engine.POST("/api/setup/password", SetupRateLimitMiddleware(s.setupLimiter), s.handleSetupPassword)
+	s.engine.POST("/api/setup/totp/start", AdminWriteRateLimitMiddleware(s.adminWriteLimiter), s.handleSetupTOTPStart)
+	s.engine.POST("/api/setup/totp/enable", AdminWriteRateLimitMiddleware(s.adminWriteLimiter), s.handleSetupTOTPEnable)
+	s.engine.POST("/api/setup/totp/skip", AdminWriteRateLimitMiddleware(s.adminWriteLimiter), s.handleSetupTOTPSkip)
 	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLogin)
 	s.engine.POST("/api/login/totp", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLoginTOTP)
 	s.engine.POST("/api/logout", s.handleLogout)
@@ -200,6 +227,11 @@ func (s *Server) Start() error {
 	}
 	s.engine.GET("/login.html", func(c *gin.Context) {
 		data, _ := fs.ReadFile(staticSub, "login.html")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+	})
+	s.engine.GET("/setup.html", func(c *gin.Context) {
+		data, _ := fs.ReadFile(staticSub, "setup.html")
+		c.Header("Cache-Control", "no-store")
 		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
 	})
 
@@ -357,6 +389,9 @@ func (s *Server) Stop() error {
 
 		if s.loginLimiter != nil {
 			s.loginLimiter.Stop()
+		}
+		if s.setupLimiter != nil {
+			s.setupLimiter.Stop()
 		}
 		if s.adminWriteLimiter != nil {
 			s.adminWriteLimiter.Stop()

@@ -299,13 +299,15 @@ func (s *Server) handleAPIChangeAdminPassword(c *gin.Context) {
 	}
 
 	s.setAdminCookie(c, "", -1)
+	s.setupMgr.EndWizard()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func (s *Server) handleLogout(c *gin.Context) {
 	token, _ := c.Cookie("go_remote_token")
-	if token != "" {
+	if token != "" && s.adminAuth.Validate(token) {
 		s.adminAuth.Logout(token)
+		s.setupMgr.EndWizard()
 	}
 	s.setAdminCookie(c, "", -1)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

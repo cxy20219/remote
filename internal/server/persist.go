@@ -2,9 +2,7 @@ package server
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,10 +17,7 @@ import (
 	"goremote/internal/common"
 )
 
-const (
-	stateSyncInterval = 3 * time.Second
-	adminPasswordSize = 18 // bytes; base64url yields 24 characters
-)
+const stateSyncInterval = 3 * time.Second
 
 type ServerSettings struct {
 	PortRangeStart      int      `json:"port_range_start"`
@@ -264,19 +259,11 @@ func (s *StateStore) initNew() error {
 		return err
 	}
 
-	password, err := generateAdminPassword()
-	if err != nil {
-		return err
-	}
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-
+	// 首次启动不生成管理员密码：AdminPasswordHash 留空即「未初始化」，
+	// 由初始化向导通过 POST /api/setup/password 设置。绝不在日志里打印任何凭据。
 	s.state = &ServerState{
 		ServerSignPrivkey: hex.EncodeToString(privKey),
 		ServerSignPubkey:  hex.EncodeToString(pubKey),
-		AdminPasswordHash: string(hashedPassword),
 		Settings:          defaultSettings(),
 		Devices:           []DeviceState{},
 	}
@@ -284,20 +271,46 @@ func (s *StateStore) initNew() error {
 	if err := s.writeState(cloneServerState(s.state)); err != nil {
 		return err
 	}
-
-	slog.Info("========================================")
-	slog.Info("Generated admin credentials")
-	slog.Info("Admin password (first run only)", "password", password)
-	slog.Info("========================================")
 	return nil
 }
 
-func generateAdminPassword() (string, error) {
-	raw := make([]byte, adminPasswordSize)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate admin password: %w", err)
+// AdminPasswordInitialized 报告管理员密码是否已设置；false 表示首次初始化未完成。
+func (s *StateStore) AdminPasswordInitialized() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state != nil && s.state.AdminPasswordHash != ""
+}
+
+// SetInitialAdminPassword 仅在尚未设置管理员密码时写入首个密码。
+// 密码 hash 在锁外计算（bcrypt 慢），空值检查在锁内二次确认，
+// 保证并发 setup 请求只有一个能成功；返回 false 表示已被别人初始化。
+// Save 失败时必须回滚内存，否则进程内「已初始化」而磁盘仍为空，
+// 重启后又回到向导，管理员会以为密码设置成功过。
+func (s *StateStore) SetInitialAdminPassword(password string) (bool, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return false, err
 	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
+
+	s.mu.Lock()
+	if s.state.AdminPasswordHash != "" {
+		s.mu.Unlock()
+		return false, nil
+	}
+	s.state.AdminPasswordHash = string(hash)
+	s.dirty = true
+	s.mu.Unlock()
+
+	if err := s.Save(); err != nil {
+		s.mu.Lock()
+		if s.state.AdminPasswordHash == string(hash) {
+			s.state.AdminPasswordHash = ""
+			s.dirty = true
+		}
+		s.mu.Unlock()
+		return true, err
+	}
+	return true, nil
 }
 
 // Save writes the current state synchronously.

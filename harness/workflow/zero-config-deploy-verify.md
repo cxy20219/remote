@@ -78,18 +78,38 @@ plink -batch -pw "PASSWORD" root@YOUR_SERVER 'chmod +x /root/goremote/server; cd
 
 预期输出：`{"status":"ok"}`
 
-### 4. 获取 admin 密码
+### 4. 完成首次初始化（设置管理员密码）
+
+首次启动**不再生成密码**，也不再向日志打印任何凭据。任选一种方式完成初始化：
+
+**方式 A（仅限无反代直连）：本机 / SSH 转发打开向导，免令牌**
 
 ```powershell
-plink -batch -pw "PASSWORD" root@YOUR_SERVER 'grep "Admin password" /root/goremote/server.log'
+# 在你自己的电脑上建立转发，把服务器的 8080 映射到本地
+ssh -L 8080:127.0.0.1:8080 root@YOUR_SERVER
+# 浏览器打开 http://127.0.0.1:8080/setup.html
 ```
 
-预期输出：
-```
-{"level":"INFO","msg":"Admin password","password":"9d99e3b9-2b8"}
+> 只要服务端配置了 `--trusted-proxies`（任何反代，包括同机 nginx/caddy），loopback 免令牌即关闭，必须用下面的方式 B。
+
+**方式 B：从日志取一次性初始化令牌**
+
+```powershell
+plink -batch -pw "PASSWORD" root@YOUR_SERVER 'grep 初始化 /root/goremote/server.log'
 ```
 
-> 密码仅在**首次运行**时生成打印，且明文仅在启动日志中出现一次（后续登录用 bcrypt 哈希校验）。
+预期输出（令牌是占位符）：
+```
+{"level":"WARN","msg":"首次初始化令牌（仅用于首次初始化，30 分钟内有效，用一次即废）","token":"XXXXX-XXXXX","expires_at":"..."}
+```
+
+打开 `https://YOUR_SERVER:8080/setup.html`，填入令牌，设置管理员密码（≥12 位、≥3 类字符），可选当场扫码启用 TOTP。
+
+> 令牌 10 位、30 分钟有效、用一次即废，错误 10 次立即作废；**重启会换新令牌**，部署后别急着重启，否则要重新看日志。
+>
+> 服务端前面挂了反向代理（同机或异机）时，初始化**必须**用上面的一次性令牌；`--trusted-proxies` 仍要按实际反代地址配置，但它的作用是按 IP 限流和 challenge 绑定，配置后 loopback 免令牌会关闭。格式非法时服务端会拒绝启动。
+>
+> 初始化完成后 `POST /api/setup/password` 永久返回 `409`，setup 页会重定向到 `/`。详见 `docs/FIRST-RUN-SETUP.md`。
 
 ### 5. 启动 Agent（本机 Windows）
 
@@ -140,8 +160,8 @@ tail -5 agent.log
 ### 6. 审批设备
 
 ```powershell
-# 1. 登录获取 session
-$body = @{password="9d99e3b9-2b8"} | ConvertTo-Json
+# 1. 登录获取 session（密码是首次初始化时自己设置的）
+$body = @{password="YOUR_ADMIN_PASSWORD"} | ConvertTo-Json
 $login = Invoke-WebRequest -Uri "http://YOUR_SERVER:8080/api/login" -Method POST -Body $body -ContentType "application/json" -SessionVariable "session" -UseBasicParsing
 
 # 2. 查看待审批设备
@@ -152,6 +172,8 @@ $pending.Content
 $approve = Invoke-WebRequest -Uri "http://YOUR_SERVER:8080/api/devices/pending/client-ff155a09/approve" -Method POST -WebSession $session -UseBasicParsing
 $approve.Content
 ```
+
+> 初始化时启用了 TOTP 的话，第 1 步会返回 `{"totp_required":true,"challenge":"..."}` 而不下发会话；需再调 `POST /api/login/totp`（`{password, totp, challenge}`）完成第二步。恢复码可代替动态码。
 
 预期输出：`{"device_id":"client-ff155a09","status":"approved"}`
 
@@ -284,7 +306,7 @@ $regen.Content
 
 ## 注意事项
 
-- **首次启动前必须清理旧状态**：旧版 `server-state.json` 的格式与新版不兼容，必须删除重新生成
+- **首次启动前必须清理旧状态**：旧版 `server-state.json` 的格式与新版不兼容，必须删除；删除后重启会回到未初始化状态，需重新走初始化向导
 - **Agent 身份文件**：`~/.goremote/identity` 包含设备私钥，丢失后需管理员删除旧设备后重新注册
 - **端口扫描器**：公网服务器会持续收到扫端口的连接请求，会触发 `registration failed` 或限流日志——这是正常行为，不影响稳定运行；压测前应白名单压测源
-- **密码安全性**：admin 密码首次启动后不再明文存储。如遗忘密码，删除 `server-state.json` 重新启动
+- **密码安全性**：admin 密码只存 bcrypt hash，日志与 state 明文里都没有。项目不内置找回；如遗忘，删除 `server-state.json` 会回到未初始化状态并丢失设备/隧道/密钥，删除前先备份；启用过 TOTP 可用恢复码登录

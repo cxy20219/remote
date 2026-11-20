@@ -143,7 +143,7 @@ go test -race ./internal/...
 | 审批制注册 | `server/device_mgr.go` | 新设备需管理员批准才能接入，pending → authorized |
 | 密钥轮换 | `server/device_mgr.go` | Web UI 一键重新生成密钥，Agent 通过 `register_update` 自动接收 |
 | 管理员会话 | `server/admin_auth.go` / `server/api.go` | 256-bit 随机 token，HttpOnly Cookie，24 小时过期，最多保留 64 个会话并清理过期会话；**按来源 IP** 连续失败 10 次锁定 5 分钟，避免攻击者用全局计数锁死管理员；管理面支持改密，改密后吊销全部会话 |
-| 状态敏感字段加密 | `server/state_crypto.go` / `server/persist.go` | 可通过 `GOREMOTE_STATE_KEY` 或 `--state-key` 启用 AES-256-GCM 落盘加密，保护服务端签名私钥、管理员密码 hash、设备隧道密钥；旧明文状态在带 key 启动后自动迁移为加密格式；首次启动生成的管理员明文密码不再写入状态文件 |
+| 状态敏感字段加密 | `server/state_crypto.go` / `server/persist.go` | 可通过 `GOREMOTE_STATE_KEY` 或 `--state-key` 启用 AES-256-GCM 落盘加密，保护服务端签名私钥、管理员密码 hash、设备隧道密钥；旧明文状态在带 key 启动后自动迁移为加密格式；管理员密码由首次初始化向导设置（不再自动生成），只存 bcrypt hash |
 | 管理面板输出转义 | `web/static/index.html` | 设备名/主机名/隧道地址/黑名单原因等动态值统一 HTML/JS 上下文转义后再拼入 DOM，防止 Agent 上报值触发管理端存储型 XSS |
 | CheckOrigin | `server/server.go` | `allowed_origins` 白名单；空配置只允许无 Origin 的 Agent 请求，拒绝浏览器 Origin |
 | 管理 API 写保护 | `server/security.go` / `server/api.go` | 已认证 POST/PUT/DELETE 会校验浏览器 Origin/Referer；写接口严格 JSON 解码，拒绝未知字段和多 JSON 文档；CLI/脚本无 Origin 请求仍可用 |
@@ -165,7 +165,7 @@ go test -race ./internal/...
 2. 交叉编译对应平台二进制
 3. 上传二进制至服务器（**无需任何配置文件**）
 4. 启动服务端：`./server --data /path/to/data`
-5. 查看 admin 密码：`grep "Admin password" server.log`
+5. 完成首次初始化：未配 `--trusted-proxies` 时可打开 `http://127.0.0.1:8080/setup.html`（本机 / SSH 转发免令牌）；有反代或远程时从日志取一次性初始化令牌填入。设置管理员密码，可选扫码启用 TOTP
 6. 启动 Agent：`./agent --server <ip>:8080`
 7. 在 Web UI 审批设备
 8. 创建隧道验证数据贯通
@@ -224,12 +224,12 @@ go test -race ./internal/...
 | 审批后 Agent 无反应 | 重启 Agent（携带已有 identity 重连自动获取密钥） |
 | 隧道不通 | 确认本地服务监听，`ss -tlnp | grep <port>` 检查 |
 | **隧道偶尔断开**隧道 EOF 导致 Agent 重连 | Agent 日志搜 `ciphertext too short`，已修复（跳过 EOF 解密） |
-| server-state.json 损坏 | 手工修复或删除重启（设备信息丢失） |
+| server-state.json 损坏 | 手工修复或删除重启（设备、密钥、管理员密码全丢，需重新初始化） |
 | **plink/pscp 首次连接失败** | 使用 `-hostkey` 参数缓存主机密钥，`echo y \| plink` 无效 |
 | **nc 隧道测试无响应** | 127.0.0.1 被黑名单误伤，加入全局白名单或应用 localhost 跳过修复 |
 | PowerShell 命令转义问题 | 远程 plink 命令用单引号包裹 |
 | Start-Process 无法重定向 | 使用 `-WindowStyle Hidden` 或 PowerShell Job 替代 |
-| 密码遗忘 | 删除 `server-state.json` 重启重新生成 |
+| 密码遗忘 | 项目不内置找回。删除 `server-state.json` 重启会回到未初始化状态（设备/隧道/密钥全丢），删除前先备份；启用过 TOTP 可用恢复码登录 |
 | 扫描器连接日志噪音 | 不影响运行，是正常行为 |
 | Agent 日志出现 `non-fatal message error, continuing` | 正常行为，端口扫描器短连接造成，不影响 Agent |
 | Agent 不断注册新的 pending ID | 确认是否运行新版 pending 心跳；清理未知旧 Agent/pending；检查服务端状态是否被重置 |
