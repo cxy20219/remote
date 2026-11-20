@@ -50,11 +50,10 @@
 | register_fail | S→C | 注册失败 |
 | ping | C→S | 心跳请求 |
 | pong | S→C | 心跳响应 |
-| tunnel_open | C→S | 申请创建隧道 |
-| tunnel_open_ack | S→C | 隧道创建确认 |
-| tunnel_close | C↔S | 关闭隧道 |
+| tunnel_open | S→C | 服务端下发隧道目标 |
+| tunnel_close | S→C | 服务端关闭/重建隧道 |
 | tunnel_data_bin | C↔S | 隧道数据（双向，WebSocket Binary frame） |
-| tunnel_error | S→C | 隧道错误通知 |
+| tunnel_error | C→S | Agent 报告本地拨号/写失败 |
 
 ### 3.2 消息格式
 
@@ -62,29 +61,26 @@
 
 ```go
 type RegisterPayload struct {
-    Key      string `json:"key"`
-    Hostname string `json:"hostname"`
-    OS       string `json:"os"`
+    ReAuth         bool   `json:"reauth"`
+    ClientID       string `json:"client_id,omitempty"`
+    DevicePubkey   string `json:"device_pubkey"`
+    DeviceDHPubkey string `json:"device_dh_pubkey,omitempty"`
+    Hostname       string `json:"hostname"`
+    OS             string `json:"os"`
+    Timestamp      int64  `json:"timestamp,omitempty"`
+    Signature      string `json:"signature,omitempty"`
 }
 
 // 隧道消息
 type TunnelOpenPayload struct {
-    TunnelID  string `json:"tunnel_id"`  // 隧道唯一ID（Agent生成）
-    LocalAddr string `json:"local_addr"` // 本地地址，如 "127.0.0.1"
-    LocalPort int    `json:"local_port"` // 本地端口，如 22
-    Protocol  string `json:"protocol"`   // "tcp" / "udp"
-}
-
-type TunnelOpenAckPayload struct {
-    TunnelID   string `json:"tunnel_id"`
-    PublicPort int    `json:"public_port"` // 分配的公网端口
-    Success    bool   `json:"success"`
-    Error      string `json:"error,omitempty"`
+    TunnelID  string `json:"tunnel_id"`  // 服务端生成的隧道唯一ID
+    LocalAddr string `json:"local_addr"` // Agent 侧目标地址，如 "127.0.0.1"
+    LocalPort int    `json:"local_port"` // Agent 侧目标端口，如 22
+    Protocol  string `json:"protocol"`   // 当前仅 "tcp"
 }
 
 type TunnelClosePayload struct {
     TunnelID string `json:"tunnel_id"`
-    ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
 }
 
 type TunnelErrorPayload struct {
@@ -133,12 +129,13 @@ type TunnelErrorPayload struct {
   "reason": "invalid key"
 }
 
-// 隧道创建确认
+// 服务端下发隧道目标
 {
-  "type": "tunnel_open_ack",
+  "type": "tunnel_open",
   "tunnel_id": "uuid",
-  "public_port": 15001,
-  "success": true
+  "local_addr": "127.0.0.1",
+  "local_port": 22,
+  "protocol": "tcp"
 }
 
 // 心跳响应
@@ -221,8 +218,12 @@ func (h *Handler) Handle(msg *Message) error {
         return h.handleRegisterFail(msg)
     case "pong":
         return nil  // 心跳响应，无需处理
-    case "tunnel_open_ack":
-        return h.handleTunnelOpenAck(msg)
+    case "register_update":
+        return h.handleRegisterUpdate(msg)
+    case "device_deleted":
+        return h.handleDeviceDeleted(msg)
+    case "tunnel_open":
+        return h.handleTunnelOpen(msg)
     case "tunnel_close":
         return h.handleTunnelClose(msg)
     case "tunnel_data_bin":
@@ -389,9 +390,9 @@ internal/agent/
 ├── connector.go   # WebSocket连接管理
 ├── handler.go     # 消息处理
 ├── reconnect.go   # 重连机制
-├── tunnel.go      # 隧道管理（内网穿透）
-├── config.go      # 配置加载
-└── logger.go      # 日志配置
+├── tunnel.go      # 隧道管理（每连接有序队列）
+├── identity.go    # 本地身份与 ECDH 解密
+└── config.go      # 配置加载
 ```
 
 ## 10. 隧道管理（内网穿透）

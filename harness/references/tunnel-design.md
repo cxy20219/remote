@@ -37,35 +37,25 @@
 
 | Type | 方向 | 说明 |
 |------|------|------|
-| tunnel_open | C→S | 客户端申请创建隧道 |
-| tunnel_open_ack | S→C | 服务端返回分配的公网端口 |
-| tunnel_close | C↔S | 任一方关闭隧道 |
+| tunnel_open | S→C | 服务端分配公网端口后，通知 Agent 隧道目标 |
+| tunnel_close | S→C | 服务端关闭/重建隧道时通知 Agent |
 | tunnel_data_bin | C↔S | 隧道数据（二进制 WebSocket frame，唯一数据路径） |
-| tunnel_error | S→C | 隧道错误通知 |
+| tunnel_error | C→S | Agent 报告本地拨号/写失败，服务端据此关闭外部连接 |
 
 ### 2.2 消息格式
 
 ```go
-// TunnelOpenPayload - 客户端申请创建隧道
+// TunnelOpenPayload - 服务端下发隧道目标
 type TunnelOpenPayload struct {
-    TunnelID  string `json:"tunnel_id"`  // 隧道唯一ID（Agent生成）
-    LocalAddr string `json:"local_addr"` // 本地地址，如 "127.0.0.1"
-    LocalPort int    `json:"local_port"` // 本地端口，如 22
-    Protocol  string `json:"protocol"`   // "tcp" / "udp"
-}
-
-// TunnelOpenAckPayload - 服务端确认隧道创建
-type TunnelOpenAckPayload struct {
-    TunnelID   string `json:"tunnel_id"`
-    PublicPort int    `json:"public_port"` // 分配的公网端口
-    Success    bool   `json:"success"`
-    Error      string `json:"error,omitempty"`
+    TunnelID  string `json:"tunnel_id"`  // 服务端生成的隧道唯一ID
+    LocalAddr string `json:"local_addr"` // Agent 侧目标地址，如 "127.0.0.1"
+    LocalPort int    `json:"local_port"` // Agent 侧目标端口，如 22
+    Protocol  string `json:"protocol"`   // 当前仅 "tcp"
 }
 
 // TunnelClosePayload - 关闭隧道
 type TunnelClosePayload struct {
     TunnelID string `json:"tunnel_id"`
-    ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
 }
 
 // TunnelErrorPayload - 隧道错误
@@ -160,13 +150,14 @@ TCP Conn —▶ 端口 10000
 type Tunnel struct {
     TunnelID   string
     ClientID   string
-    Client     *Client        // WebSocket 连接
+    Client     *Client        // WebSocket 连接，不参与 JSON
     Protocol   string
     PublicPort int            // 监听的公网端口
-    LocalAddr  string         // 客户端本地地址
+    Exposure   string         // "public" / "server_local"
+    BindAddr   string         // 实际监听地址
+    LocalAddr  string         // Agent 侧目标地址
     LocalPort  int
     CreatedAt  time.Time
-    Status     string         // "active" / "closing"
 }
 
 // ExternalConn 外部连接信息
@@ -174,6 +165,8 @@ type ExternalConn struct {
     ConnID   string
     TunnelID string
     Conn     net.Conn         // TCP 连接
+    queue    chan extChunk    // 32 槽有序写队列
+    done     chan struct{}
 }
 
 // TunnelManager 隧道管理器
@@ -217,14 +210,15 @@ func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 ### 3.3 核心流程
 
 **创建隧道（含端口占用检测）**：
-1. Agent 发送 `tunnel_open`（包含 localAddr:localPort）
+1. 管理员通过 `POST /api/tunnels` 指定 `client_id/local_addr/local_port/exposure`
 2. Server 根据 `exposure` 选择监听地址：
    - `public` → 监听公网入口（默认等价于 `0.0.0.0`）
    - `server_local` → 仅监听 `127.0.0.1`
 3. Server `AllocatePortForExposure()` 遍历端口范围，对每个候选端口直接 `net.Listen` 实绑：
    - 绑定成功 → 保留 listener，标记为已分配
    - 绑定失败 → 记录到 `unavailablePorts`，跳过
-4. Server 调用 `AcceptOnListener()` 启动 accept 循环，返回 `tunnel_open_ack`
+4. Server 调用 `AcceptOnListener()` 启动 accept 循环，并向 Agent 发送 `tunnel_open`
+5. 若 `tunnel_open` 写失败，Server 回滚关闭 listener、释放端口并返回错误
 
 **端口释放（联动清理）**：
 - `ReleasePort()` 清除 `publicPorts` 和 `unavailablePorts` 中的标记
@@ -232,17 +226,21 @@ func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 
 **数据转发**：
 ```
-外部用户 ──TCP连接──▶ [Server:15001] ──accept──┐
-                                                │
-                         ┌───────────────────────┘
-                         │ Server 推送 tunnel_data_bin(conn_id=x, data=加密请求)
-                         ▼
-                   Agent 收到 tunnel_data_bin
-                         │ 首次收到该 conn_id → 连接本地服务
-                         │ Agent 发送 tunnel_data_bin(conn_id=x, data=加密响应)
-                         ▼
-                    Server 收到 tunnel_data_bin → 解密后写入外部 TCP 连接
+外部用户 ──TCP连接──▶ [Server:15001] ──accept──▶ 外部连接读 goroutine
+                                                    │
+                         每连接有序队列(32槽) ◀──────┘
+                                                    │ Server 推送 tunnel_data_bin(conn_id=x, data=加密请求)
+                                                    ▼
+                                              Agent WebSocket 收包
+                                                    │ 解密后进入该 conn_id 的本地有序队列
+                                                    ▼
+                                              独立 writer 连接本地服务并写入
+                                                    │ 本地响应 → tunnel_data_bin(加密)
+                                                    ▼
+                    Server 解密 → 写入该 conn_id 的外部连接独立 writer
 ```
+
+两侧都不在 WebSocket 收包 goroutine 里直接做本地拨号或大块 TCP 写；每连接写队列满时等待 15s 让 writer 排空，仍无空间才关闭该连接。这样慢客户端不会截断其他隧道的数据。
 
 服务端处理 Agent 返回数据时必须同时校验 `tunnel_id` 归属和 `conn_id` 归属：`ExternalConn.TunnelID` 必须等于当前帧的 `tunnel_id`，且 EOF 帧也不能跳过该检查。设备重连、pending 转 authorized、WebSocket readLoop 退出、删除设备时必须关闭该 client 的所有隧道和 listener，避免旧公网端口泄漏。
 
@@ -266,10 +264,10 @@ func (tm *TunnelManager) Listen(publicPort int, tunnelID string) error {
 | `range_start` / `range_end` | 配置的端口范围 |
 | `total_ports` | 端口总数 = end - start + 1 |
 | `allocated` | 已由隧道占用的端口数 |
-| `unavailable` | 被系统其他进程占用的端口列表（惰性检测，仅在 `AllocatePort` 尝试时发现） |
+| `unavailable` | 被系统其他进程占用的端口列表（惰性检测，仅在 `AllocatePortForExposure` 尝试时发现） |
 | `available_count` | 可用端口数 = total - allocated - len(unavailable) |
 
-**实现**：`internal/server/tunnel.go` 中的 `GetPortStatus()` 方法，读锁保护。`unavailablePorts` 通过 `AllocatePort` 的实绑 `net.Listen` 试探填充，`ReleasePort` 释放时同时清除标记。
+**实现**：`internal/server/tunnel.go` 中的 `GetPortStatus()` 方法，读锁保护。`unavailablePorts` 通过 `AllocatePortForExposure` 的实绑 `net.Listen` 试探填充，`ReleasePort` 释放时同时清除标记。
 
 ---
 
@@ -297,18 +295,18 @@ type LocalConn struct {
 // TunnelManager 隧道管理器
 type TunnelManager struct {
     mu        sync.RWMutex
-    tunnels   map[string]*Tunnel     // tunnelID -> Tunnel
-    localConns map[string]*LocalConn // connID -> LocalConn
-    agent     *Agent
+    tunnels    map[string]*Tunnel     // tunnelID -> Tunnel
+    localConns map[string]*localConn  // connID -> 有序写队列 + net.Conn
+    agent      *Agent
 }
 ```
 
 ### 4.2 核心流程
 
 **创建隧道**：
-1. Agent 生成 tunnelID，发送 `tunnel_open` 给 Server
-2. Server 返回 `tunnel_open_ack`（包含 publicPort）
-3. Agent 记录 tunnelID 和 publicPort 的映射
+1. Server 在 `POST /api/tunnels` 成功后发送 `tunnel_open`
+2. Agent 记录 tunnelID → localAddr/localPort/protocol
+3. Agent 不返回 ack；数据面首个 `tunnel_data_bin` 会触发本地拨号
 
 **按需连接本地服务**：
 - Agent **不预先连接**本地服务
@@ -316,8 +314,9 @@ type TunnelManager struct {
 - 解密 data 写入 localConn，读取响应后加密并发送 `tunnel_data_bin(conn_id=x, data=响应)`
 
 **连接复用**：
-- 同一 conn_id 的后续 `tunnel_data_bin` 复用已建立的 localConn
-- 收到 `is_eof=true` 时关闭 localConn
+- 同一 conn_id 的后续 `tunnel_data_bin` 进入同一有序队列，复用已建立的 localConn
+- 收到 `is_eof=true`（且无数据）时关闭 localConn
+- 本地读端先 EOF 时，Agent 发送 EOF 帧并清理本地连接；服务端先关闭时，Agent 不再回送无意义 EOF
 
 ---
 
@@ -355,26 +354,26 @@ type TunnelManager struct {
 响应：
 ```json
 {
-  "tunnel_id": "tunnel-xxx",
+  "tunnel_id": "uuid",
   "public_port": 15001,
-  "public_addr": "server.example.com:15001",
   "access_addr": "server.example.com:15001",
   "exposure": "public",
   "local_addr": "127.0.0.1",
-  "status": "active"
+  "local_port": 22,
+  "protocol": "tcp"
 }
 ```
 
 服务端本机代理响应示例：
 ```json
 {
-  "tunnel_id": "tunnel-xxx",
+  "tunnel_id": "uuid",
   "public_port": 15001,
-  "public_addr": "127.0.0.1:15001",
   "access_addr": "127.0.0.1:15001",
   "exposure": "server_local",
   "local_addr": "127.0.0.1",
-  "status": "active"
+  "local_port": 22,
+  "protocol": "tcp"
 }
 ```
 
@@ -390,8 +389,9 @@ type TunnelManager struct {
       "local_addr": "127.0.0.1",
       "local_port": 22,
       "public_port": 15001,
+      "exposure": "public",
+      "bind_addr": "0.0.0.0",
       "protocol": "tcp",
-      "status": "active",
       "created_at": "2026-04-17T10:00:00Z"
     }
   ]

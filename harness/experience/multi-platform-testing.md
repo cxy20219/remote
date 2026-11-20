@@ -624,3 +624,61 @@ plink -batch -P TUNNEL_PORT -hostkey $innerHostkey -pw "PASSWORD" user@YOUR_SERV
 ### 是否升级为固定流程
 
 已升级到 [稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md) 的 Android ADB 5555 长连接验证。以后涉及 `readLoop`、心跳、WebSocket 写队列、二进制隧道数据帧或 Android Agent 的改动，都应重复该验证。
+
+## 24. 2026-11-19 稳定性/安全/性能重构复盘
+
+### 背景与范围
+
+本轮对 Go 服务端和 Agent 做整体体检，目标是稳定性、安全性、性能优先，并清理死代码/冗余实现。未保留旧协议兼容层，直接按更清晰的实现重构了隧道数据面、状态持久化、管理员认证和前端渲染。
+
+### 发现的根因级问题
+
+1. **隧道数据热路径反复扫描状态**：服务端每收到一个 256KB 隧道 chunk 都调用 `GetDeviceByID`，该函数线性扫描设备并深拷贝，设备多时吞吐被拖垮。
+2. **读循环同步写导致全局阻塞**：服务端 `HandleAgentData` 在 WebSocket 收包 goroutine 里直接写外部 TCP；Agent 在收包 goroutine 里直接拨号并写本地服务。任一慢连接或 10s 拨号超时都会卡住所有隧道。
+3. **部分写被忽略**：`conn.Write(data)` 的返回值未检查，极端情况下会截断 TCP 字节流。
+4. **管理端存储型 XSS**：设备 hostname/name、隧道 local_addr、黑名单 reason 等 Agent/管理员可控值直接拼进 `innerHTML` 和 `onclick` JS 字符串。
+5. **明文管理员密码落盘**：首次生成的密码写入 `server-state.json` 的 `admin_password_plain`，清理只改内存不落盘。
+6. **全局登录锁定可被用来锁死管理员**：失败计数是进程级，攻击者从任意 IP 失败 10 次即可让合法管理员 5 分钟内无法登录。
+7. **数据竞态**：Agent 在隧道读 goroutine 读 `identity.EncEnabled`，主收包 goroutine 写它；API 在未持锁时读 `Client.LastPing`。
+8. **未生效的 CLI 参数**：`--port-start/--port-end/--max-tunnels/--local-addr/--public-host` 等声明但未接入运行时设置，实际以 Web UI 状态为准。
+
+### 已落地的实现
+
+- **零拷贝加密帧**：新增 `NewBinaryTunnelDataFrame` 预留 payload 区，`CryptoManager.EncryptTo` 直接把 nonce+ciphertext 写入帧尾；去掉每 chunk 的二次拷贝。`DecryptBytes` 保留独立输出缓冲。
+- **每连接有序写队列**：服务端 `ExternalConn` 32 槽 + 独立 writer；Agent `localConn` 32 槽 + 独立 writer。收包线程只解密/入队，不在拨号和写 TCP 上阻塞。
+- **有界背压**：队列满时等待 15s 让 writer 排空；仍无空间才关闭该连接并通知对端。不能改成 4 槽立即丢弃：20MB 突发会在 1MB 处截断。
+- **完整写**：`writeFull` 循环处理部分写，Agent 和服务端共用。
+- **热路径 O(1)**：加密开关缓存在 `Client` 原子字段；`StateStore` 增加设备 ID 索引；全局白名单编译为 `ipMatcher`，每连接不重复解析 CIDR。
+- **并发安全**：Agent 的 stopped/pending/encEnabled/clientID 改原子量；`ClientManager.Snapshot` 在管理器锁内读取心跳字段；可中断指数退避，SIGTERM 不再被最长 60s 睡眠拖住。
+- **管理员认证**：bcrypt hash only，24 字符随机密码只打印一次；按来源 IP 锁定；自动黑名单 24h 过期；日志文件 0600。
+- **管理面板**：全部动态值经 `esc` / `jsArg` 转义后再进入 HTML 与内联事件；API 返回 401 自动跳登录；设备列表补上 `ip_whitelist` 字段。
+- **配置与死代码**：服务端 CLI 只保留真实生效的参数并新增 `--allowed-origins`；删除 agent 发起隧道、旧 base64 加解密、重复 DH 封装、`sendRegisterOK` 等不可达代码；`deadcode` 清零。
+
+### 验证结果
+
+| 项目 | 结果 |
+|------|------|
+| `go test ./...` | 通过 |
+| `go test -race ./internal/...` | 通过 |
+| `go vet ./...` / `gofmt -l .` | 无输出 |
+| `deadcode ./...` | 无不可达函数 |
+| `staticcheck ./...` | 无告警 |
+| E2E：20MB 下载/上传 SHA256 | 一致 |
+| E2E：`server_local` 隧道 | 可访问 |
+| E2E：Agent kill 后重连 | 自动 reauth 成功，隧道可重建 |
+| E2E：SIGTERM 优雅退出 | Agent/Server 均正常退出 |
+| 并发：8 路 × 8MB × 6 轮 | 哈希全部一致，无 queue stalled |
+| 管理面板 Playwright smoke | 登录/设备/隧道/抽屉/黑名单页无 console error；注入 `<img onerror>` 别名后仅按文本渲染，`window.__xss` 未触发 |
+
+### 适用边界
+
+- 单个 Agent 只有一条 WebSocket，连接级队列满时仍会对共享 WS 施加有界背压；这是无应用层窗口协议时的合理取舍。不要为了“零阻塞”改成无界队列，否则慢客户端会吃光内存。
+- 30 槽以下的队列不足以吸收 20MB 级 loopback 突发；调整队列/超时后必须重跑大文件与 8 并发哈希校验。
+- `server_local` 和公网映射共用 `TunnelManager`，修改监听器生命周期时要同时验证端口释放和 Agent 重连后的隧道重建。
+- 前端新增任何 `innerHTML` 渲染都必须走 `esc`/`jsArg`，或改用 `textContent`/DOM API；不要恢复模板字符串直插动态值。
+
+### 关联流程
+
+- 回归入口：[稳定性、性能、完整性综合验证流程](../workflow/stability-performance-completeness-verify.md)
+- 数据面协议：[隧道设计文档](../references/tunnel-design.md)
+- 配置字段：[配置参考](../references/config-reference.md)

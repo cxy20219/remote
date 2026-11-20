@@ -46,7 +46,7 @@ curl -X POST http://your-server-ip:8080/api/tunnels \
 
 返回示例：
 ```json
-{"local_addr":"127.0.0.1","public_addr":"your-server-ip:10005","public_port":10005,"status":"active","tunnel_id":"18aa8af9cb10381e-c150-4000-8000-18aa8af9cb1038be"}
+{"local_addr":"127.0.0.1","local_port":22,"protocol":"tcp","access_addr":"your-server-ip:10005","public_port":10005,"exposure":"public","tunnel_id":"uuid"}
 ```
 
 ### 3. 验证隧道端口已监听

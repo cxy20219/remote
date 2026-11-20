@@ -82,21 +82,13 @@ GoRemote 是一个基于 WebSocket 的内网穿透系统，通过 SSH 隧道实�
 {"type": "ping"}
 {"type": "pong"}
 
-// 隧道申请
+// 服务端下发隧道目标
 {
   "type": "tunnel_open",
   "tunnel_id": "uuid",
   "local_addr": "127.0.0.1",
   "local_port": 22,
   "protocol": "tcp"
-}
-
-// 隧道创建确认
-{
-  "type": "tunnel_open_ack",
-  "tunnel_id": "uuid",
-  "public_port": 15001,
-  "success": true
 }
 ```
 
@@ -109,11 +101,10 @@ GoRemote 是一个基于 WebSocket 的内网穿透系统，通过 SSH 隧道实�
 | register_fail | Server → Client | 注册失败（密钥错误等） |
 | ping | Client → Server | 心跳请求 |
 | pong | Server → Client | 心跳响应 |
-| tunnel_open | Client → Server | 申请创建隧道 |
-| tunnel_open_ack | Server → Client | 隧道创建确认 |
-| tunnel_close | C↔S | 关闭隧道 |
+| tunnel_open | Server → Client | 服务端下发隧道目标 |
+| tunnel_close | Server → Client | 服务端关闭/重建隧道 |
 | tunnel_data_bin | C↔S | 隧道数据（双向，WebSocket Binary frame） |
-| tunnel_error | Server → Client | 隧道错误通知 |
+| tunnel_error | Client → Server | Agent 报告本地拨号/写失败 |
 
 ## 5. 安全性
 

@@ -344,11 +344,10 @@
 | register_fail | S→C | 注册失败 |
 | ping | C→S | 心跳请求 |
 | pong | S→C | 心跳响应 |
-| tunnel_open | C→S | 申请创建隧道 |
-| tunnel_open_ack | S→C | 隧道创建确认 |
-| tunnel_close | C↔S | 关闭隧道 |
+| tunnel_open | S→C | 服务端下发隧道目标 |
+| tunnel_close | S→C | 服务端关闭/重建隧道 |
 | tunnel_data_bin | C↔S | 隧道数据（双向，WebSocket Binary frame） |
-| tunnel_error | S→C | 隧道错误通知 |
+| tunnel_error | C→S | Agent 报告本地拨号/写失败 |
 
 ### 6.3 测试注意事项
 

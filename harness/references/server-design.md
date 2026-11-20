@@ -44,7 +44,7 @@
 | Tunnel Manager | 管理端口映射隧道，含端口防扫描限流（portLimiter） |
 | Handler | 消息路由，分发给对应处理函数 |
 | Security | 安全中间件：响应头、CSP、动态 Body 限大、浏览器写请求 Origin/Referer 校验、HTTP 管理写接口与 WebSocket 控制消息严格 JSON 解码、登录限流、WS 限流（connLimiter）、IP 白名单检查；公网直连默认不信任代理头和 `X-Forwarded-Proto` |
-| AdminAuth | 管理员密码校验、失败锁定、改密和会话管理；token 为 256-bit 随机值，24 小时过期，最多保留 64 个会话，改密后吊销全部会话 |
+| AdminAuth | 管理员密码校验、按来源 IP 的失败锁定、改密和会话管理；token 为 256-bit 随机值，24 小时过期，最多保留 64 个会话，改密后吊销全部会话 |
 | StateStore | 持久化 `server-state.json`；配置状态密钥时使用 AES-256-GCM 加密服务端签名私钥、管理员密码 hash 和设备隧道密钥，并兼容旧明文状态自动迁移 |
 | Logger | 日志记录 |
 
@@ -90,22 +90,14 @@ type RegisterFailPayload struct {
 
 // 隧道消息
 type TunnelOpenPayload struct {
-    TunnelID  string `json:"tunnel_id"`  // 隧道唯一ID（Agent生成）
-    LocalAddr string `json:"local_addr"` // 本地地址，如 "127.0.0.1"
-    LocalPort int    `json:"local_port"` // 本地端口，如 22
-    Protocol  string `json:"protocol"`   // "tcp" / "udp"
-}
-
-type TunnelOpenAckPayload struct {
-    TunnelID   string `json:"tunnel_id"`
-    PublicPort int    `json:"public_port"` // 分配的公网端口
-    Success    bool   `json:"success"`
-    Error      string `json:"error,omitempty"`
+    TunnelID  string `json:"tunnel_id"`  // 服务端生成的隧道唯一ID
+    LocalAddr string `json:"local_addr"` // Agent 侧目标地址，如 "127.0.0.1"
+    LocalPort int    `json:"local_port"` // Agent 侧目标端口，如 22
+    Protocol  string `json:"protocol"`   // 当前仅 "tcp"
 }
 
 type TunnelClosePayload struct {
     TunnelID string `json:"tunnel_id"`
-    ConnID   string `json:"conn_id,omitempty"` // 可选，关闭特定连接
 }
 
 type TunnelErrorPayload struct {
@@ -126,11 +118,10 @@ type TunnelErrorPayload struct {
 | register_fail | S→C | 注册失败 |
 | ping | C→S | 心跳请求 |
 | pong | S→C | 心跳响应 |
-| tunnel_open | C→S | 申请创建隧道 |
-| tunnel_open_ack | S→C | 隧道创建确认 |
-| tunnel_close | C↔S | 关闭隧道 |
+| tunnel_open | S→C | 服务端下发隧道目标 |
+| tunnel_close | S→C | 服务端关闭/重建隧道 |
 | tunnel_data_bin | C↔S | 隧道数据（双向，WebSocket Binary frame） |
-| tunnel_error | S→C | 隧道错误通知 |
+| tunnel_error | C→S | Agent 报告本地拨号/写失败 |
 
 ### 4.2 消息流程
 
@@ -375,10 +366,14 @@ internal/server/
 ├── server.go      # WebSocket服务端主逻辑
 ├── client.go      # ClientManager 客户端管理
 ├── handler.go     # 消息处理
-├── tunnel.go      # 隧道管理（内网穿透）
+├── tunnel.go      # 隧道管理（每连接有序队列）
+├── device_mgr.go  # 设备审批状态机
+├── persist.go     # 状态持久化与设备索引
+├── state_crypto.go# 状态敏感字段加密
+├── admin_auth.go  # 管理员会话与按 IP 锁定
+├── security.go    # 限流、白名单、黑名单、响应头
 ├── api.go         # HTTP管理接口
-├── config.go      # 配置加载
-└── logger.go      # 日志配置
+└── config.go      # CLI 配置
 
 docs/
 ├── docs.go        # Swagger文档生成代码

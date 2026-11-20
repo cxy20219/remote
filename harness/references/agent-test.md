@@ -122,21 +122,16 @@ func TestHandler_HandleRegisterFail(t *testing.T) {
     }
 }
 
-func TestHandler_HandleTunnelOpenAck(t *testing.T) {
-    handler := &Handler{
-        agent: &Agent{tunnels: make(map[string]*Tunnel)},
-    }
+func TestHandler_HandleTunnelOpen(t *testing.T) {
+    agent := NewAgent(DefaultConfig(), nil)
+    handler := NewHandler(agent)
     msg := &Message{
-        Type:    "tunnel_open_ack",
-        Payload: json.RawMessage(`{"tunnel_id":"t1","public_port":15001,"success":true}`),
+        Type:    "tunnel_open",
+        Payload: json.RawMessage(`{"tunnel_id":"t1","local_addr":"127.0.0.1","local_port":22,"protocol":"tcp"}`),
     }
 
-    ack := handler.HandleTunnelOpenAck(msg)
-    if !ack.Success {
-        t.Error("expected success")
-    }
-    if ack.PublicPort != 15001 {
-        t.Errorf("got port %d", ack.PublicPort)
+    if err := handler.Handle(msg); err != nil {
+        t.Fatalf("tunnel_open failed: %v", err)
     }
 }
 ```

@@ -194,10 +194,10 @@ Agent 下次重连:
 | `register_denied` | S→C | 管理员拒绝注册 |
 | `register_update` | S→C | 管理员修改配置（加密开关变更等），通知 Agent 更新本地配置 |
 | `ping` / `pong` | C↔S | 心跳 |
-| `tunnel_open` / `tunnel_open_ack` | C↔S | 隧道创建 |
-| `tunnel_close` | C↔S | 隧道关闭 |
+| `tunnel_open` | S→C | 服务端下发隧道目标 |
+| `tunnel_close` | S→C | 服务端关闭/重建隧道 |
 | `tunnel_data_bin` | C↔S | 隧道数据（WebSocket Binary frame） |
-| `tunnel_error` | S→C | 隧道错误 |
+| `tunnel_error` | C→S | Agent 报告本地拨号/写失败 |
 
 ### 6.2 register 消息详
 
@@ -423,13 +423,13 @@ challenge 有效期 60 秒，过期需重新获取。
 
 **原始设计（§11）**：移除 `config/server.yaml`，未明确替代方案。
 
-**实际实现**：`--port/--host/--data/--tls-cert/--tls-key/--tunnel/--swagger` 七个 CLI 参数。运行时可变配置（端口范围、限流等）走 Web UI → API → `StateStore`，不在 CLI 中重复。
+**实际实现**：`--host/--port/--data/--tls-cert/--tls-key/--tunnel/--swagger/--allowed-origins` 以及日志、`--state-key` 参数。运行时可变配置（端口范围、限流、心跳、白名单等）走 Web UI → API → `StateStore`，不在 CLI 中重复。
 
 ### 13.8 加密方式
 
 **原始设计（§9.1）**：原始 `CryptoContext` 用全局共享密钥派生 AES-256-GCM 密钥。
 
-**实际实现**：保留 `CryptoContext` 作为底层加密原语，新增 `CryptoManager` 按 `client_id` 管理独立的 `CryptoContext`。`tunnel.go` 中 `Encrypt/Decrypt` 调用变为 `cryptoMgr.Encrypt/Decrypt(clientID, data)`，每设备独立加密密钥。
+**实际实现**：保留 `CryptoContext` 作为底层加密原语，新增 `CryptoManager` 按 `client_id` 管理独立的 `CryptoContext`。隧道数据热路径使用 `EncryptTo` 直接写入 Binary 帧预留区，服务端/Agent 各用 `DecryptBytes` 还原，每设备独立密钥且避免 chunk 二次拷贝。
 
 ### 13.9 代码量
 

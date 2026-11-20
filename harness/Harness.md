@@ -76,8 +76,10 @@ swag init -g cmd/server/main.go -o docs
 # 测试
 go test ./...
 
-# 静态检查
-go vet ./internal/...
+# 静态检查 / 死代码 / 竞态
+go vet ./...
+go run golang.org/x/tools/cmd/deadcode@latest ./...
+go test -race ./internal/...
 ```
 
 > `go test -race ./internal/...` 需要 gcc/cgo。Windows 本机没有 gcc 时会报 `C compiler "gcc" not found`，属于环境限制。
@@ -86,15 +88,18 @@ go vet ./internal/...
 
 | 文件 | 功能 |
 |------|------|
-| `internal/common/crypto.go` | `CryptoManager` 每设备密钥管理，`CryptoContext` AES-256-GCM 加解密 |
+| `internal/common/crypto.go` | `CryptoManager` 每设备密钥管理；`EncryptTo` 直接写入隧道帧预留区，避免每 chunk 二次拷贝 |
 | `internal/common/identity.go` | ed25519 签名/验证、x25519 ECDH 密钥交换、HKDF 派生 |
-| `internal/server/persist.go` | `StateStore` 异步原子写入 `server-state.json` |
+| `internal/common/message.go` | 严格 JSON、Binary 隧道帧编解码；`NewBinaryTunnelDataFrame` 预留 payload 区供加密直写 |
+| `internal/server/persist.go` | `StateStore` 设备索引 + 脏标记异步原子写 `server-state.json`；管理密码只存 bcrypt hash |
 | `internal/server/state_crypto.go` | `server-state.json` 敏感字段 AES-256-GCM 落盘加密 |
-| `internal/server/device_mgr.go` | `DeviceManager` pending/authorized 审批状态机 |
-| `internal/server/tunnel.go` | 隧道管理，`bufPool` sync.Pool 复用 256KB chunk，支持 WebSocket Binary 隧道数据帧 |
-| `internal/server/client.go` | `ClientManager`+`DeviceQuerier` 接口，支持设备级 IP 白名单查询；`LastPing` 同时承载最近有效活动时间 |
+| `internal/server/device_mgr.go` | `DeviceManager` pending/authorized 审批状态机、DH 协商封装、pending 上限 |
+| `internal/server/tunnel.go` | 隧道管理；每外部连接独立有序写队列 + 写满后短暂背压，避免慢客户端拖死 WS 读循环 |
+| `internal/server/client.go` | `ClientManager` 快照 API、每连接加密开关原子缓存；`LastPing` 由管理器锁保护 |
+| `internal/server/admin_auth.go` | 管理员会话与按来源 IP 的失败锁定（不再全局锁定） |
 | `internal/agent/identity.go` | Agent 本地 `~/.goremote/identity` 管理，ECDH 解密 enc_key |
-| `internal/agent/agent.go` | Agent 主循环（pending 等待审批 → reauth 重连，含 pendingApproval 标志） |
+| `internal/agent/agent.go` | Agent 主循环（可中断退避重连、pending 审批、原子加密开关/clientID） |
+| `internal/agent/tunnel.go` | Agent 端每本地连接独立写队列，拨号/写阻塞不再卡住 WS 收包 |
 | `internal/agent/connector.go` | WebSocket 连接（128KB buffer），JSON 控制消息 + Binary 隧道数据帧收发 |
 | `web/static.go` | `go:embed static` 嵌入 Web 界面到服务端二进制 |
 
@@ -109,7 +114,8 @@ go vet ./internal/...
 | 零配置架构理解 | [references/zero-config-design.md](references/zero-config-design.md) | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) |
 | 零配置测试踩坑 | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) | [workflow/zero-config-deploy-verify.md](workflow/zero-config-deploy-verify.md) |
 | 多平台集成测试经验 | [experience/multi-platform-testing.md](experience/multi-platform-testing.md) | [experience/zero-config-testing-lessons.md](experience/zero-config-testing-lessons.md) |
-| 代码安全与性能优化审查 | [experience/multi-platform-testing.md#9-已修正的代码问题列表](experience/multi-platform-testing.md#9-已修正的代码问题列表) | [experience/go-remote-debugging.md](experience/go-remote-debugging.md) |
+| 代码安全与性能优化审查 | [experience/multi-platform-testing.md#24-2026-11-19-稳定性安全性能重构复盘](experience/multi-platform-testing.md#24-2026-11-19-稳定性安全性能重构复盘) | [experience/multi-platform-testing.md#9-已修正的代码问题列表](experience/multi-platform-testing.md#9-已修正的代码问题列表) |
+| 配置字段与 CLI 参数 | [references/config-reference.md](references/config-reference.md) | [references/zero-config-design.md](references/zero-config-design.md) |
 | 高并发 SSH 吞吐测试 | [workflow/stability-performance-completeness-verify.md#6-ssh-并发验证](workflow/stability-performance-completeness-verify.md#6-ssh-并发验证) | [experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果](experience/multi-platform-testing.md#15-高并发-ssh-吞吐测试结果) |
 | Android ADB 5555 长连接 | [workflow/stability-performance-completeness-verify.md#android-adb-5555-长连接验证](workflow/stability-performance-completeness-verify.md#android-adb-5555-长连接验证) | [experience/multi-platform-testing.md#23-2026-05-16-android-adb-5555-隧道高吞吐误判离线](experience/multi-platform-testing.md#23-2026-05-16-android-adb-5555-隧道高吞吐误判离线) |
 | 服务端重启恢复流程 | [workflow/zero-config-deploy-verify.md#8b-验证服务端重启后的设备恢复](workflow/zero-config-deploy-verify.md) | [experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移](experience/multi-platform-testing.md#14-服务器重启导致-agent-身份漂移) |
@@ -136,8 +142,9 @@ go vet ./internal/...
 | X25519 密钥交换 | `common/identity.go` / `server/device_mgr.go` / `server/handler.go` | 审批、重连、`register_update` 时 ECDH + HKDF-SHA256 加密传输 enc_key；服务端签名 `client_id+enc_enabled+server_dh_pubkey+enc_key_encrypted`，Agent 首次 TOFU pin 后必须验签 |
 | 审批制注册 | `server/device_mgr.go` | 新设备需管理员批准才能接入，pending → authorized |
 | 密钥轮换 | `server/device_mgr.go` | Web UI 一键重新生成密钥，Agent 通过 `register_update` 自动接收 |
-| 管理员会话 | `server/admin_auth.go` / `server/api.go` | 256-bit 随机 token，HttpOnly Cookie，24 小时过期，最多保留 64 个会话并清理过期会话；连续失败 10 次临时锁定 5 分钟；管理面支持改密，改密后吊销全部会话 |
-| 状态敏感字段加密 | `server/state_crypto.go` / `server/persist.go` | 可通过 `GOREMOTE_STATE_KEY` 或 `--state-key` 启用 AES-256-GCM 落盘加密，保护服务端签名私钥、管理员密码 hash、设备隧道密钥；旧明文状态在带 key 启动后自动迁移为加密格式 |
+| 管理员会话 | `server/admin_auth.go` / `server/api.go` | 256-bit 随机 token，HttpOnly Cookie，24 小时过期，最多保留 64 个会话并清理过期会话；**按来源 IP** 连续失败 10 次锁定 5 分钟，避免攻击者用全局计数锁死管理员；管理面支持改密，改密后吊销全部会话 |
+| 状态敏感字段加密 | `server/state_crypto.go` / `server/persist.go` | 可通过 `GOREMOTE_STATE_KEY` 或 `--state-key` 启用 AES-256-GCM 落盘加密，保护服务端签名私钥、管理员密码 hash、设备隧道密钥；旧明文状态在带 key 启动后自动迁移为加密格式；首次启动生成的管理员明文密码不再写入状态文件 |
+| 管理面板输出转义 | `web/static/index.html` | 设备名/主机名/隧道地址/黑名单原因等动态值统一 HTML/JS 上下文转义后再拼入 DOM，防止 Agent 上报值触发管理端存储型 XSS |
 | CheckOrigin | `server/server.go` | `allowed_origins` 白名单；空配置只允许无 Origin 的 Agent 请求，拒绝浏览器 Origin |
 | 管理 API 写保护 | `server/security.go` / `server/api.go` | 已认证 POST/PUT/DELETE 会校验浏览器 Origin/Referer；写接口严格 JSON 解码，拒绝未知字段和多 JSON 文档；CLI/脚本无 Origin 请求仍可用 |
 | 真实客户端 IP | `server/server.go` | 默认 `SetTrustedProxies(nil)`，公网直连时限流/黑名单只信任 TCP RemoteAddr，避免伪造 `X-Forwarded-For` |
@@ -149,7 +156,7 @@ go vet ./internal/...
 | WS 连接限流 | `server/security.go` | `max_conn_per_min`，默认 10/min/IP |
 | 隧道端口防扫描 | `server/tunnel.go` | 同上，黑名单联动 |
 | IP 白名单绕过限流 | `server/security.go` | 设备级 + 全局白名单，支持 CIDR |
-| 自动黑名单 | `server/security.go` | 累计限流违规达阈值自动拉黑 |
+| 自动黑名单 | `server/security.go` | 1 小时内累计限流违规达阈值自动拉黑；自动拉黑 24 小时后过期，避免 NAT 地址被永久阻断 |
 | TLS 传输加密 | `server/server.go` / `agent/connector.go` | `--tls-cert/--tls-key` 启用；服务端和 Agent 默认要求 TLS 1.3 |
 
 ## 构建部署
@@ -234,8 +241,17 @@ go vet ./internal/...
 | 关闭设备加密后仍尝试解密 | 检查 Agent identity、服务端 `CryptoManager` 和 `register_update` 是否同步清 key；`enc_enabled=false` 的隧道数据应明文透传 |
 | 重连或删除设备后旧公网端口仍可连接 | 检查 `CloseTunnelsByClient` 是否在 reauth、pending 转 authorized、readLoop 退出、删除设备路径调用 |
 
+## 并发与背压
+
+- 服务端每个公网连接由独立 goroutine 读取，并把 Agent 返回的数据放入该连接的 32 槽有序队列，由独立 writer 写回 TCP。
+- Agent 每个本地连接同样使用独立有序写队列；WebSocket 收包线程只做解密/入队，不在本地服务写阻塞时停摆。
+- 队列满时先做有限等待（15s）；仍无空间才关闭该连接，避免静默丢 TCP 字节。慢客户端会短暂共同背压 WebSocket，但不会导致其他连接数据被截断。
+- 服务端不再在隧道数据热路径上查 `StateStore`：加密开关缓存在 `Client` 的原子字段。
+
 ## 测试注意
 
-- `go test ./internal/...` 运行所有单元测试
-- `go vet ./internal/...` 静态检查
+- `go test ./...` 运行所有单元测试
+- `go test -race ./internal/...` 竞态检查
+- `go vet ./...` 静态检查
+- `go run golang.org/x/tools/cmd/deadcode@latest ./...` 检查不可达代码
 - `go build ./...` 确认编译通过

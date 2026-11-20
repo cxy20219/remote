@@ -1,229 +1,125 @@
-# GoRemote 配置字段参考
+# GoRemote 配置参考
 
-## 服务端配置 (server.yaml)
-
-### server
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `host` | string | `0.0.0.0` | 监听地址 |
-| `port` | int | `8080` | 监听端口 |
-| `tls.enabled` | bool | `false` | 是否启用 TLS；启用后默认要求 TLS 1.3 |
-| `tls.cert` | string | - | TLS 证书文件路径 |
-| `tls.key` | string | - | TLS 私钥文件路径 |
-
-### auth
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `key` | string | `CHANGE-ME-auth-key` | 旧版共享密钥字段；零配置架构下不再作为 Agent 身份主路径 |
-
-### admin
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `password` | string | `CHANGE-ME-admin-password` | 旧版配置密码字段；零配置架构下首次启动会随机生成 admin 密码并写入 bcrypt hash |
-
-### security
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `allowed_origins` | []string | `[]` | WebSocket Origin 白名单；空配置只允许无 Origin 的 Agent 请求，拒绝浏览器 Origin；配置值需为完整 Origin（如 `https://admin.example.com:8443`） |
-| `login_rate_limit` | int | `5` | 每分钟每 IP 最大登录尝试次数（0=禁用） |
-| `max_body_size_mb` | int | `10` | HTTP 请求体最大大小（MB，运行时修改立即生效；0=禁用限制） |
-| `max_conn_per_min` | int | `10` | WebSocket 连接和隧道端口每分钟每 IP 最大连接数（防扫描，0=禁用） |
-| `global_whitelist` | []string | `[]` | 全局 IP 白名单，支持 CIDR（如 `192.168.1.0/24`）；白名单内 IP 绕过所有限流检查 |
-| `blacklist_threshold` | int | `100` | 累计限流违规次数阈值；达到后 IP 自动拉黑，后续请求直接拒绝（0=禁用自动拉黑） |
-| `--state-key` / `GOREMOTE_STATE_KEY` | string | 空 | 状态文件敏感字段加密密钥；支持 `hex:<32字节hex>`、`base64:<32字节base64>` 或 32 字符以上随机字符串；建议使用环境变量而不是命令行参数 |
-
-> 启用 `state_key` 后，`server-state.json` 中的服务端签名私钥、管理员密码 hash 和设备隧道密钥会以 AES-256-GCM 加密保存。已有明文状态在带 key 启动后会自动重写为加密格式；之后启动必须提供同一个 key。
-
-### heartbeat
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `interval` | int | `30` | 心跳检测间隔（秒） |
-| `timeout` | int | `90` | 心跳超时时间（秒） |
-
-### log
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `level` | string | `info` | 日志级别：debug/info/warn/error |
-| `file` | string | - | 日志文件路径（空=stdout） |
-| `max_size_mb` | int | `50` | 单个日志文件最大大小，仅 `file` 非空时生效 |
-| `max_backups` | int | `5` | 保留的历史日志文件数量，仅 `file` 非空时生效 |
-
-### tunnel
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enabled` | bool | `true` | 是否启用隧道功能 |
-| `public_host` | string | - | API 返回的公网地址 |
-| `default_local_addr` | string | `127.0.0.1` | 默认内网目标地址 |
-| `port_range_start` | int | `10000` | 公网端口范围起始 |
-| `port_range_end` | int | `20000` | 公网端口范围结束 |
-| `max_tunnels_per_client` | int | `10` | 每客户端最大隧道数 |
-
-### swagger
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enabled` | bool | `true` | 是否启用 Swagger UI（生产环境建议 false） |
+服务端采用零配置文件设计：启动参数只控制监听、TLS、数据目录和日志；端口范围、限流、心跳、白名单等运行时可调项保存在 `server-state.json`，通过 Web 面板或 `/api/settings` 修改并立即生效。
 
 ---
 
-## 客户端配置 (agent.yaml)
+## 服务端启动参数
 
-### server
-
-| 字段 | 类型 | 默认值 | 说明 |
+| 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `address` | string | `localhost:8080` | 服务端 WebSocket 地址 |
-| `tls.enabled` | bool | `false` | 是否启用 TLS；启用后默认要求 TLS 1.3 |
-| `tls.ca` | string | - | CA 证书路径（用于验证服务端证书） |
-| `tls.insecure_skip_verify` | bool | `false` | 跳过服务端证书验证（仅测试用；仍要求 TLS 1.3） |
+| `--host` | string | `0.0.0.0` | HTTP/HTTPS 监听地址；仅本机使用时建议 `127.0.0.1` |
+| `--port` | int | `8080` | 管理面与 Agent WebSocket 监听端口 |
+| `--data` | string | `./data` | `server-state.json` 所在目录（自动创建，权限 0700） |
+| `--tls-cert` | string | 空 | TLS 证书路径；与 `--tls-key` 同时提供才启用 TLS 1.3 |
+| `--tls-key` | string | 空 | TLS 私钥路径 |
+| `--tunnel` | bool | `true` | 是否启用隧道功能 |
+| `--swagger` | bool | `true` | 是否启用 Swagger UI（仅认证后可访问） |
+| `--allowed-origins` | string | 空 | 允许打开 `/ws` 的浏览器 Origin，逗号分隔，如 `https://admin.example.com`；空值只允许无 Origin 的 Agent 连接 |
+| `--state-key` | string | 空 | 状态文件敏感字段加密密钥；优先使用环境变量 `GOREMOTE_STATE_KEY` |
+| `--log-level` | string | `info` | `debug` / `info` / `warn` / `error` |
+| `--log-file` | string | 空 | 空=JSON 日志写 stdout；文件权限 0600 |
+| `--log-max-size-mb` | int | `50` | 单个日志文件轮转阈值 |
+| `--log-max-backups` | int | `5` | 保留的历史日志文件数量 |
 
-### auth
+> `--state-key` 的值会出现在进程命令行中，生产环境优先使用 `GOREMOTE_STATE_KEY`。
+> 明文监听在公网接口且未启用 TLS 时，服务端会输出安全告警；管理 Cookie 和 Agent 控制消息在链路上不加密。
 
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `key` | string | - | 注册认证密钥（须与服务端一致） |
+### 状态加密密钥格式
 
-### agent
+| 形式 | 示例 | 说明 |
+|------|------|------|
+| 原始字符串 | 32 字符以上随机串 | 经 SHA-256 派生为 32 字节密钥 |
+| hex | `hex:<64位hex>` | 必须解码为 32 字节 |
+| base64 | `base64:<32字节base64>` | 必须解码为 32 字节 |
 
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `hostname` | string | 自动检测 | 客户端主机名 |
-| `os` | string | 自动检测 | 客户端操作系统 |
-
-### heartbeat
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `interval` | int | `30` | 心跳间隔（秒） |
-
-### reconnect
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `interval` | int | `5` | 初始重连间隔（秒） |
-| `max_attempts` | int | `0` | 最大重连次数（0=无限） |
-| `max_interval` | int | `60` | 最大重连间隔（秒） |
-
-### log
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `level` | string | `info` | 日志级别 |
-| `file` | string | - | 日志文件路径（空=stdout） |
-| `max_size_mb` | int | `50` | 单个日志文件最大大小，仅 `file` 非空时生效 |
-| `max_backups` | int | `5` | 保留的历史日志文件数量，仅 `file` 非空时生效 |
+启用后 `server-state.json` 中的服务端签名私钥、管理员密码 hash、设备隧道密钥写入 `encrypted` 字段；旧明文状态会自动重写为加密格式，之后启动必须提供同一密钥。
 
 ---
 
-## 配置模板
+## 运行时设置（`GET/PUT /api/settings`）
 
-### 开发环境（最小配置）
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `port_range_start` | `10000` | 公网隧道端口范围起始 |
+| `port_range_end` | `20000` | 公网隧道端口范围结束 |
+| `max_tunnels_per_client` | `10` | 每设备最大隧道数；0=不限制 |
+| `default_local_addr` | `127.0.0.1` | 创建隧道时未填写 `local_addr` 的默认值 |
+| `public_host` | 空 | API 返回的隧道公网地址；空=使用请求 Host |
+| `max_conn_per_min` | `10` | 每 IP 每分钟 WebSocket 连接/公网隧道连接数；0=禁用限流 |
+| `login_rate_limit` | `5` | 每 IP 每分钟管理员登录尝试数；0=禁用限流 |
+| `blacklist_threshold` | `100` | 1 小时内累计限流违规自动拉黑阈值；0=禁用；自动拉黑 24 小时后过期 |
+| `global_whitelist` | `[]` | 全局 IP/CIDR 白名单；命中后绕过限流与黑名单检查 |
+| `max_body_size_mb` | `10` | HTTP 请求体上限（MB）；0=禁用限制 |
+| `heartbeat_interval` | `30` | 服务端心跳检查周期（秒） |
+| `heartbeat_timeout` | `90` | 客户端心跳超时（秒）；运行中修改会在下一次读循环生效 |
 
-**server.yaml**:
+> 修改设置使用部分更新语义：未提交的字段保持不变。端口范围、限流、黑名单阈值、心跳和全局白名单会立即应用到运行中的服务端。
+> 管理员登录失败锁定为**按来源 IP**（连续 10 次失败锁定 5 分钟），不会因其他地址的攻击而全局锁死管理员。
+
+---
+
+## 服务端状态文件
+
+`<data>/server-state.json` 保存：
+
+- 服务端 ed25519 签名密钥（用于给 `register_ok` / `register_update` 签名）
+- 管理员 bcrypt 密码 hash（首次启动生成 24 字符随机密码，仅打印一次，不落盘明文）
+- 设备身份、审批状态、设备 DH 公钥、设备白名单、隧道加密密钥
+- 运行时设置
+
+写入采用临时文件 + rename 原子替换；每 3 秒检查脏标记异步落盘，`SIGINT/SIGTERM` 时同步 flush。
+
+---
+
+## Agent 启动参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--server` | string | `localhost:8080` | 服务端地址 |
+| `--tls` | bool | `false` | 使用 WSS；启用后要求 TLS 1.3 |
+| `--tls-ca` | string | 空 | 自定义 CA 证书路径 |
+| `--tls-insecure` | bool | `false` | 跳过证书校验（仅测试；启动时告警） |
+| `--config` | string | 空 | YAML 配置文件路径；CLI 参数优先 |
+| `--identity-dir` | string | `$HOME/.goremote` | 身份密钥与设备 ID 存储目录（0700/0600） |
+| `--log-level` | string | `info` | 日志级别 |
+| `--log-file` | string | 空 | 日志文件路径 |
+| `--log-max-size-mb` | int | `50` | 日志轮转阈值 |
+| `--log-max-backups` | int | `5` | 历史日志数量 |
+
+服务端地址变化时，Agent 会清空 `client_id`、设备密钥缓存、加密开关和服务器签名公钥 pin，重新注册到新服务端。
+
+---
+
+## Agent YAML 配置
+
+`--config` 指向的文件支持以下字段；未配置项使用默认值。
+
 ```yaml
 server:
-  host: "0.0.0.0"
-  port: 8080
-
-auth:
-  key: "CHANGE-ME-auth-key"
-
-tunnel:
-  public_host: "localhost"
-  port_range_start: 10000
-  port_range_end: 20000
-```
-
-**agent.yaml**:
-```yaml
-server:
-  address: "localhost:8080"
-
-auth:
-  key: "CHANGE-ME-auth-key"
-
-reconnect:
-  interval: 5
-  max_interval: 60
-```
-
-### 生产环境（完整配置）
-
-**server.yaml**:
-```yaml
-server:
-  host: "0.0.0.0"
-  port: 8080
+  address: server.example.com:8080
   tls:
     enabled: true
-    cert: "server.crt"
-    key: "server.key"
-
-auth:
-  key: "your-production-secret-key"
-
-admin:
-  password: "your-admin-password"
-
-security:
-  login_rate_limit: 5
-  max_body_size_mb: 10
-  max_conn_per_min: 10
-  global_whitelist:
-    - "10.0.0.0/8"
-  blacklist_threshold: 100
-
-heartbeat:
-  interval: 30
-  timeout: 90
-
-log:
-  level: "info"
-  max_size_mb: 50
-  max_backups: 5
-
-tunnel:
-  enabled: true
-  public_host: "your-public-ip"
-  port_range_start: 10000
-  port_range_end: 20000
-  max_tunnels_per_client: 10
-
-swagger:
-  enabled: false
-```
-
-**agent.yaml**:
-```yaml
-server:
-  address: "your-server:8080"
-  tls:
-    enabled: true
-    ca: "server.crt"
-
-auth:
-  key: "your-production-secret-key"
+    ca: /path/to/ca.pem
+    insecure_skip_verify: false
 
 agent:
-  hostname: "internal-server"
-  os: "linux"
+  hostname: my-host        # 空=自动检测
+  os: linux                # 空=自动检测
 
 heartbeat:
-  interval: 30
+  interval: 30             # 秒
 
 reconnect:
-  interval: 5
-  max_interval: 60
+  interval: 5              # 初始退避（秒）
+  max_attempts: 0          # 0=无限
+  max_interval: 60         # 退避上限（秒）
 
 log:
-  level: "info"
+  level: info
+  file: /var/log/goremote-agent.log
   max_size_mb: 50
   max_backups: 5
 ```
+
+> Agent 的 ed25519/x25519 身份保存在 `identity` 文件中；删除该文件等价于重新注册一台新设备。
