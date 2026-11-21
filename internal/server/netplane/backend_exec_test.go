@@ -184,4 +184,3 @@ func TestExecBackendHandshakesParseDump(t *testing.T) {
 		t.Fatalf("never-handshaked peer should be 0, got %d", ages["peer-b"])
 	}
 }
-

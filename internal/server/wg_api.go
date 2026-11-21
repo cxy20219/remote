@@ -533,14 +533,14 @@ func (s *Server) handleAPIGetVPNStatus(c *gin.Context) {
 	settings := s.stateStore.GetSettings()
 	if s.netplane == nil {
 		c.JSON(http.StatusOK, gin.H{
-			"iface":       wgInterfaceName,
-			"endpoint":    net.JoinHostPort(s.advertisedTunnelHost(c.Request.Host), strconv.Itoa(settings.WGListen)),
-			"cidr":        settings.WGCIDR,
-			"listen":      settings.WGListen,
-			"gen":         0,
-			"applied":     0,
-			"infra_error": "wireguard networking is not enabled",
-			"blocked":     "",
+			"iface":                    wgInterfaceName,
+			"endpoint":                 net.JoinHostPort(s.advertisedTunnelHost(c.Request.Host), strconv.Itoa(settings.WGListen)),
+			"cidr":                     settings.WGCIDR,
+			"listen":                   settings.WGListen,
+			"gen":                      0,
+			"applied":                  0,
+			"infra_error":              "wireguard networking is not enabled",
+			"blocked":                  "",
 			"state_encryption_enabled": s.stateStore.EncryptionEnabled(),
 			"acl_ready":                false,
 			"peers":                    []vpnPeerStatus{},
