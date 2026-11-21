@@ -800,7 +800,14 @@ func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 		duration = time.Duration(req.Duration) * time.Minute
 	}
 
-	s.blacklist.AddManual(req.IP, reason, duration)
+	if err := s.blacklist.AddManual(req.IP, reason, duration); err != nil {
+		message := "failed to persist the blacklist entry; the IP was not blocked"
+		if errors.Is(err, ErrBlacklistFull) {
+			message = "blacklist is full and contains only manual entries; remove some entries before adding new ones"
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": message})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"ip":      req.IP,
@@ -819,7 +826,10 @@ func (s *Server) handleAPIRemoveBlacklist(c *gin.Context) {
 		ip = parsed.String()
 	}
 
-	s.blacklist.Remove(ip)
+	if err := s.blacklist.Remove(ip); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist the blacklist removal; the IP is still blocked"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "IP removed from blacklist"})
 }
 

@@ -120,7 +120,7 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 		setupMgr:          setupMgr,
 		cryptoMgr:         cryptoMgr,
 		deviceMgr:         deviceMgr,
-		blacklist:         NewBlacklistManager(settings.BlacklistThreshold),
+		blacklist:         NewBlacklistManager(settings.BlacklistThreshold, filepath.Join(filepath.Dir(statePath), "blacklist.json")),
 		loginLimiter:      NewRateLimiter(settings.LoginRateLimit, time.Minute),
 		setupLimiter:      NewRateLimiter(setupRateLimit, setupRateWindow),
 		adminWriteLimiter: NewRateLimiter(adminWriteLimit, adminWriteWindow),

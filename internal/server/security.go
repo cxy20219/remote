@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -95,10 +96,22 @@ func validateIPList(entries []string) error {
 	return nil
 }
 
+// 黑名单来源。淘汰只允许碰 auto：手动封禁必须一直有效到管理员手动解除，
+// 否则攻击者只要用流量把表填满，就能把管理员封掉的 IP 洗掉。
+const (
+	blacklistSourceManual = "manual"
+	blacklistSourceAuto   = "auto"
+)
+
+// ErrBlacklistFull 表示表里全是手动条目且已到上限，不能再插入（也绝不淘汰
+// 手动条目）。
+var ErrBlacklistFull = errors.New("blacklist is full of manual entries; remove some entries before adding more")
+
 // BlacklistEntry represents a single blacklisted IP with metadata.
 type BlacklistEntry struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
+	Source    string    `json:"source,omitempty"`
 	AddedAt   time.Time `json:"added_at"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
@@ -116,6 +129,16 @@ type BlacklistManager struct {
 	threshold int
 	stopCh    chan struct{}
 	stopOnce  sync.Once
+
+	// path 为空表示只在内存里跑（测试）；saveMu 串行化写盘，dirty 表示
+	// 有自动拉黑还没落盘，wake 用来通知批量落盘协程。flushDelay 在构造后
+	// 不再修改，测试用 newBlacklistManager 注入更短的窗口。
+	path       string
+	flushDelay time.Duration
+	saveMu     sync.Mutex
+	dirty      bool
+	wake       chan struct{}
+	wg         sync.WaitGroup
 }
 
 type violationState struct {
@@ -123,15 +146,34 @@ type violationState struct {
 	lastSeen time.Time
 }
 
-// NewBlacklistManager creates a new BlacklistManager with the given auto-blacklist threshold.
-func NewBlacklistManager(threshold int) *BlacklistManager {
+// NewBlacklistManager creates a BlacklistManager that persists entries to path.
+// path == "" keeps the manager memory-only. A corrupt or unreadable file never
+// prevents startup: it is logged, quarantined, and the manager starts empty.
+func NewBlacklistManager(threshold int, path string) *BlacklistManager {
+	return newBlacklistManager(threshold, path, blacklistFlushDelay)
+}
+
+// newBlacklistManager 允许测试注入更短的批量写窗口；生产路径用
+// NewBlacklistManager 的默认值。
+func newBlacklistManager(threshold int, path string, flushDelay time.Duration) *BlacklistManager {
 	bm := &BlacklistManager{
-		entries:   make(map[string]*BlacklistEntry),
-		violation: make(map[string]*violationState),
-		threshold: threshold,
-		stopCh:    make(chan struct{}),
+		entries:    make(map[string]*BlacklistEntry),
+		violation:  make(map[string]*violationState),
+		threshold:  threshold,
+		stopCh:     make(chan struct{}),
+		path:       path,
+		flushDelay: flushDelay,
+		wake:       make(chan struct{}, 1),
 	}
-	go bm.cleanupLoop()
+	if err := bm.load(); err != nil {
+		slog.Error("failed to load blacklist; starting with an empty list", "error", err, "path", path)
+	}
+	bm.wg.Add(2)
+	go func() {
+		defer bm.wg.Done()
+		bm.cleanupLoop()
+	}()
+	go bm.autoFlushLoop()
 	return bm
 }
 
@@ -174,62 +216,153 @@ const (
 // Returns true if the IP was auto-blacklisted.
 func (bm *BlacklistManager) AddViolation(ip string) bool {
 	bm.mu.Lock()
-	defer bm.mu.Unlock()
-
-	if bm.threshold <= 0 {
-		return false
-	}
-
-	if entry, exists := bm.entries[ip]; exists && !entry.IsExpired() {
-		return false
-	}
-
-	now := time.Now()
-	violation := bm.violation[ip]
-	if violation == nil {
-		violation = &violationState{}
-		bm.violation[ip] = violation
-	}
-	violation.count++
-	violation.lastSeen = now
-	if violation.count >= bm.threshold {
-		bm.entries[ip] = &BlacklistEntry{
-			IP:        ip,
-			Reason:    "auto: rate-limit violations reached threshold",
-			AddedAt:   now,
-			ExpiresAt: now.Add(autoBlacklistDuration),
+	threshold := bm.threshold
+	blacklisted := false
+	logOverflow := false
+	if threshold > 0 {
+		if entry, exists := bm.entries[ip]; !exists || entry.IsExpired() {
+			now := time.Now()
+			violation := bm.violation[ip]
+			if violation == nil {
+				violation = &violationState{}
+				bm.violation[ip] = violation
+			}
+			violation.count++
+			violation.lastSeen = now
+			if violation.count >= threshold {
+				// 替换同一 IP 的过期条目不会让表变长，不需要腾位置。
+				_, replacing := bm.entries[ip]
+				ok := true
+				if !replacing {
+					_, ok = bm.makeRoomLocked()
+				}
+				if !ok {
+					// 表满且全是手动条目：放弃这次自动拉黑，绝不淘汰手动封禁。
+					// 保留违规计数，等空间释放后下一次违规再试。
+					logOverflow = violation.count == threshold
+				} else {
+					bm.entries[ip] = &BlacklistEntry{
+						IP:        ip,
+						Reason:    "auto: rate-limit violations reached threshold",
+						Source:    blacklistSourceAuto,
+						AddedAt:   now,
+						ExpiresAt: now.Add(autoBlacklistDuration),
+					}
+					delete(bm.violation, ip)
+					// 自动拉黑不在这里写盘：攻击期间每个 IP 都写一次会放大 IO，
+					// 交给 autoFlushLoop 攒 3 秒一批。
+					bm.dirty = true
+					blacklisted = true
+				}
+			}
 		}
-		delete(bm.violation, ip)
-		slog.Warn("IP auto-blacklisted", "ip", ip, "threshold", bm.threshold)
-		return true
 	}
-	return false
+	bm.mu.Unlock()
+
+	if logOverflow {
+		slog.Warn("blacklist is full of manual entries; skipped auto-blacklisting",
+			"ip", ip, "max", blacklistMaxEntries)
+	}
+	if !blacklisted {
+		return false
+	}
+	slog.Warn("IP auto-blacklisted", "ip", ip, "threshold", threshold)
+	bm.signalFlush()
+	return true
 }
 
-// AddManual adds an IP to the blacklist manually.
-func (bm *BlacklistManager) AddManual(ip string, reason string, duration time.Duration) {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
-
+// AddManual adds an IP to the blacklist manually and persists it synchronously.
+// A failed write rolls the entry (and any entry evicted to make room) back, so
+// memory and disk never disagree. It refuses to evict manual entries: when the
+// table is full of them the caller gets ErrBlacklistFull.
+func (bm *BlacklistManager) AddManual(ip string, reason string, duration time.Duration) error {
 	entry := &BlacklistEntry{
 		IP:      ip,
 		Reason:  reason,
+		Source:  blacklistSourceManual,
 		AddedAt: time.Now(),
 	}
 	if duration > 0 {
-		entry.ExpiresAt = time.Now().Add(duration)
+		entry.ExpiresAt = entry.AddedAt.Add(duration)
 	}
+
+	bm.mu.Lock()
+	var evicted []evictedEntry
+	if _, exists := bm.entries[ip]; !exists {
+		var ok bool
+		evicted, ok = bm.makeRoomLocked()
+		if !ok {
+			bm.mu.Unlock()
+			return ErrBlacklistFull
+		}
+	}
+	previous, hadEntry := bm.entries[ip]
+	previousViolation, hadViolation := bm.violation[ip]
 	bm.entries[ip] = entry
 	delete(bm.violation, ip)
+	bm.mu.Unlock()
+
+	if err := bm.persist(); err != nil {
+		bm.mu.Lock()
+		bm.rollbackInsertLocked(ip, entry, previous, hadEntry, previousViolation, hadViolation)
+		bm.restoreEvictedLocked(evicted)
+		bm.mu.Unlock()
+		slog.Error("failed to persist manual blacklist entry; rolled back", "ip", ip, "error", err)
+		return err
+	}
 	slog.Info("IP manually blacklisted", "ip", ip, "reason", reason)
+	return nil
 }
 
-// Remove removes an IP from the blacklist.
-func (bm *BlacklistManager) Remove(ip string) {
+// rollbackInsertLocked 回滚一次失败的插入。只有当前值仍是本次写入的指针时
+// 才恢复：并发操作若已改过这个 IP，它的成功不能被覆盖。
+func (bm *BlacklistManager) rollbackInsertLocked(ip string, installed, previous *BlacklistEntry, hadEntry bool, previousViolation *violationState, hadViolation bool) {
+	if bm.entries[ip] != installed {
+		return
+	}
+	if hadEntry {
+		bm.entries[ip] = previous
+	} else {
+		delete(bm.entries, ip)
+	}
+	if hadViolation {
+		bm.violation[ip] = previousViolation
+	}
+}
+
+// rollbackRemovalLocked 回滚一次失败的删除。只有 IP 仍然缺席时才恢复：
+// 并发的 AddManual 可能已经重新加回并成功落盘，不能覆盖它。
+func (bm *BlacklistManager) rollbackRemovalLocked(ip string, previous *BlacklistEntry, hadEntry bool, previousViolation *violationState, hadViolation bool) {
+	if _, exists := bm.entries[ip]; exists {
+		return
+	}
+	if hadEntry {
+		bm.entries[ip] = previous
+	}
+	if hadViolation {
+		bm.violation[ip] = previousViolation
+	}
+}
+
+// Remove removes an IP from the blacklist and persists the change synchronously.
+// A failed write restores the entry, so a reported success always means the
+// removal survives a restart.
+func (bm *BlacklistManager) Remove(ip string) error {
 	bm.mu.Lock()
-	defer bm.mu.Unlock()
+	previous, hadEntry := bm.entries[ip]
+	previousViolation, hadViolation := bm.violation[ip]
 	delete(bm.entries, ip)
 	delete(bm.violation, ip)
+	bm.mu.Unlock()
+
+	if err := bm.persist(); err != nil {
+		bm.mu.Lock()
+		bm.rollbackRemovalLocked(ip, previous, hadEntry, previousViolation, hadViolation)
+		bm.mu.Unlock()
+		slog.Error("failed to persist blacklist removal; restored", "ip", ip, "error", err)
+		return err
+	}
+	return nil
 }
 
 // List returns all current blacklist entries (excluding expired ones).
@@ -291,12 +424,17 @@ func (bm *BlacklistManager) cleanupExpired() {
 	}
 }
 
+// Stop 停掉后台协程并把还没落盘的自动条目补写一次。
 func (bm *BlacklistManager) Stop() {
 	if bm == nil {
 		return
 	}
 	bm.stopOnce.Do(func() {
 		close(bm.stopCh)
+		bm.wg.Wait()
+		if err := bm.flush(); err != nil {
+			slog.Error("failed to flush blacklist on shutdown", "error", err)
+		}
 	})
 }
 

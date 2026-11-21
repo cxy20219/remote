@@ -41,13 +41,13 @@ func TestRateLimiterSetLimitAppliesImmediately(t *testing.T) {
 }
 
 func TestBlacklistManagerStopIsIdempotent(t *testing.T) {
-	bm := NewBlacklistManager(1)
+	bm := NewBlacklistManager(1, "")
 	bm.Stop()
 	bm.Stop()
 }
 
 func TestBlacklistManagerRetainsRecentViolations(t *testing.T) {
-	bm := NewBlacklistManager(10)
+	bm := NewBlacklistManager(10, "")
 	bm.AddViolation("192.0.2.55")
 	bm.cleanupExpired()
 	if got := bm.AllViolations()["192.0.2.55"]; got != 1 {
@@ -57,7 +57,7 @@ func TestBlacklistManagerRetainsRecentViolations(t *testing.T) {
 }
 
 func TestBlacklistManagerAutoBlacklistExpires(t *testing.T) {
-	bm := NewBlacklistManager(1)
+	bm := NewBlacklistManager(1, "")
 	bm.mu.Lock()
 	bm.entries["192.0.2.56"] = &BlacklistEntry{
 		IP:        "192.0.2.56",

@@ -160,7 +160,7 @@ func TestUpdateBlacklistThresholdPersistsSettings(t *testing.T) {
 	store := newTestStateStore(defaultSettings())
 	srv := &Server{
 		stateStore: store,
-		blacklist:  NewBlacklistManager(100),
+		blacklist:  NewBlacklistManager(100, ""),
 	}
 
 	rec := httptest.NewRecorder()
