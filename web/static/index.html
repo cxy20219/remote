@@ -63,17 +63,21 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 thead th{text-align:left;padding:10px 14px;color:#94a3b8;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;border-bottom:2px solid #f1f5f9;background:#fafbfc}
 tbody td{padding:12px 14px;border-bottom:1px solid #f1f5f9;color:#475569}
 tbody tr:hover td{background:#f8fafc}
+.row-actions{white-space:nowrap}
 
-.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap}
 .badge-online{background:#f0fdf4;color:#16a34a}
 .badge-active{background:#eff6ff;color:#2563eb}
 .badge-pending{background:#fffbeb;color:#d97706}
-.badge-online::before,.badge-active::before,.badge-pending::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge-online::before,.badge-active::before,.badge-pending::before,.badge-err::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
 .badge-offline{background:#f1f5f9;color:#94a3b8}
+.badge-err{background:#fef2f2;color:#dc2626}
 .badge-enc-on{background:#f0fdf4;color:#16a34a;font-size:11px;padding:2px 8px;border-radius:4px}
 .badge-enc-off{background:#f1f5f9;color:#94a3b8;font-size:11px;padding:2px 8px;border-radius:4px}
 
-.port-highlight{font-family:'SF Mono','Cascadia Code','Consolas',monospace;color:#3b82f6;font-weight:700;font-size:14px}
+.port-highlight{font-family:'SF Mono','Cascadia Code','Consolas',monospace;color:#3b82f6;font-weight:700;font-size:14px;white-space:nowrap}
+/* 定长 token 不折行，避免加状态列后把端口/ID 拆成两行 */
+#tunnels code,#tunnels .mono,#tunnels .tunnel-exposure{white-space:nowrap}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
@@ -152,6 +156,7 @@ code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;b
 .topbar{flex-direction:column;align-items:flex-start}
 table{font-size:11px}
 th,td{padding:8px 8px}
+.row-actions{white-space:normal}
 .settings-grid{grid-template-columns:1fr}
 .drawer{width:100vw;max-width:100vw;right:-100vw}
 }
@@ -900,36 +905,63 @@ function tunnelListenAddr(t) {
   return '公网:' + port;
 }
 
+// 隧道状态：active 表示已绑定、可转发；其余表示「定义已保存，但当前不可用」。
+const TUNNEL_STATUS = {
+  active: { label: '已连接', cls: 'badge-online' },
+  waiting_device: { label: '等待设备', cls: 'badge-pending' },
+  port_conflict: { label: '端口被占用', cls: 'badge-err' },
+  out_of_range: { label: '端口超出范围', cls: 'badge-err' },
+  apply_failed: { label: '建立失败', cls: 'badge-err' }
+};
+// 旧后端不返回 status 时按 active 处理，避免把在线隧道误显示成异常。
+function tunnelStatusValue(t) {
+  const status = t && t.status;
+  return (typeof status === 'string' && status) ? status : 'active';
+}
+function tunnelStatusLabel(status) {
+  return (TUNNEL_STATUS[status] || { label: status }).label;
+}
+function tunnelStatusBadge(t) {
+  const status = tunnelStatusValue(t);
+  const meta = TUNNEL_STATUS[status] || { label: status, cls: 'badge-err' };
+  const title = (t && t.last_error) ? ' title="' + esc(t.last_error) + '"' : '';
+  return '<span class="badge ' + meta.cls + '"' + title + '>' + esc(meta.label) + '</span>';
+}
+
 async function loadTunnels() {
   try {
     if (deviceList.length === 0) await loadDevices();
     const { response, data } = await apiJSON('/api/tunnels');
     if (!response.ok || !data) throw new Error('load failed');
-    document.getElementById('stat-tunnels').textContent = data.total || 0;
-    if (!data.tunnels || !data.tunnels.length) {
+    const tunnels = data.tunnels || [];
+    // 列表已包含离线定义，统计卡只数真正在转发的隧道。
+    document.getElementById('stat-tunnels').textContent = tunnels.filter(t => tunnelStatusValue(t) === 'active').length;
+    if (!tunnels.length) {
       document.getElementById('tunnels').innerHTML = '<div class="empty">暂无隧道</div>';
       return;
     }
-    const rows = data.tunnels.map(t => {
+    const rows = tunnels.map(t => {
       const tunnelId = t.tunnel_id || '';
       const clientId = t.client_id || '';
       const device = deviceList.find(x => x.id === clientId);
-      const host = device ? (device.name || device.hostname) : clientId.substring(0, 12) + '…';
+      const host = t.client_name || (device ? (device.name || device.hostname) : clientId.substring(0, 12) + '…');
       const exposure = tunnelExposureValue(t);
       const localAddr = t.local_addr || '';
       const localPort = Number(t.local_port) || 0;
       const publicPort = Number(t.public_port) || 0;
       const protocol = String(t.protocol || '').toUpperCase();
-      return '<tr><td><code>' + esc(tunnelId.substring(0, 18)) + '&hellip;</code></td><td>' + esc(host) +
-        '</td><td>' + esc(tunnelExposureLabel(exposure)) + '</td><td><span class="port-highlight">' + esc(tunnelListenAddr(t)) +
-        '</span></td><td><span class="mono">' + esc(localAddr) + ':' + localPort + '</span></td><td>' + esc(protocol) +
-        '</td><td>' + esc(fmtDate(t.created_at)) + '</td><td>' +
+      const actions =
+        (tunnelStatusValue(t) === 'active' ? '' : '<button class="btn btn-ghost" onclick="retryTunnel(' + jsArg(tunnelId) + ')">重试</button> ') +
         '<button class="btn btn-ghost" onclick="openEditModal(' + jsArg(tunnelId) + ',' + jsArg(localAddr) + ',' + localPort + ',' +
         jsArg(t.protocol) + ',' + publicPort + ',' + jsArg(exposure) + ')">编辑</button> ' +
-        '<button class="btn btn-danger" onclick="deleteTunnel(' + jsArg(tunnelId) + ')">删除</button></td></tr>';
+        '<button class="btn btn-danger" onclick="deleteTunnel(' + jsArg(tunnelId) + ')">删除</button>';
+      return '<tr><td><code>' + esc(tunnelId.substring(0, 18)) + '&hellip;</code></td><td>' + esc(host) +
+        '</td><td class="tunnel-exposure">' + esc(tunnelExposureLabel(exposure)) + '</td><td><span class="port-highlight">' + esc(tunnelListenAddr(t)) +
+        '</span></td><td><span class="mono">' + esc(localAddr) + ':' + localPort + '</span></td><td>' + esc(protocol) +
+        '</td><td>' + esc(fmtDate(t.created_at)) + '</td><td>' + tunnelStatusBadge(t) + '</td><td class="row-actions">' + actions + '</td></tr>';
     }).join('');
     document.getElementById('tunnels').innerHTML =
-      '<table><thead><tr><th>隧道 ID</th><th>设备</th><th>入口类型</th><th>监听入口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      '<table><thead><tr><th>隧道 ID</th><th>设备</th><th>入口类型</th><th>监听入口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
   } catch (e) {
     document.getElementById('tunnels').innerHTML = '<div class="empty">加载失败</div>';
   }
@@ -948,7 +980,15 @@ async function createTunnel() {
       body: JSON.stringify({ client_id: clientId, local_addr: localAddr, local_port: localPort, protocol: protocol, exposure: exposure })
     });
     if (response.ok) {
-      toast('隧道创建成功 · ' + ((data && (data.access_addr || data.public_port)) || ''));
+      // 定义已落盘即成功；未 active 是常态（设备没上线、端口暂不可用），不能报成错误。
+      const status = tunnelStatusValue(data || {});
+      if (status === 'active') {
+        toast('隧道创建成功 · ' + ((data && (data.access_addr || data.public_port)) || ''));
+      } else if (status === 'waiting_device') {
+        toast('已保存，等待设备上线');
+      } else {
+        toast('已保存 · ' + tunnelStatusLabel(status));
+      }
       loadTunnels(); loadPortStatus();
     } else {
       toast(errorText(data, '创建失败'), 'error');
@@ -962,6 +1002,22 @@ async function deleteTunnel(id) {
     const { response, data } = await apiJSON('/api/tunnels/' + encodeURIComponent(id), { method: 'DELETE' });
     if (response.ok) { toast('已删除'); loadTunnels(); loadPortStatus(); }
     else toast(errorText(data, '删除失败'), 'error');
+  } catch (e) { toast('网络错误', 'error'); }
+}
+
+async function retryTunnel(id) {
+  try {
+    const { response, data } = await apiJSON('/api/tunnels/' + encodeURIComponent(id) + '/retry', { method: 'POST' });
+    if (response.ok) {
+      const status = tunnelStatusValue(data || {});
+      if (status === 'active') toast('隧道已恢复连接');
+      else toast('已重试 · ' + tunnelStatusLabel(status));
+      loadTunnels(); loadPortStatus();
+    } else if (response.status === 409) {
+      toast('设备不在线', 'error');
+    } else {
+      toast(errorText(data, '重试失败'), 'error');
+    }
   } catch (e) { toast('网络错误', 'error'); }
 }
 
