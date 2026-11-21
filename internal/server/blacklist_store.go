@@ -125,6 +125,9 @@ func (bm *BlacklistManager) persist() error {
 		entries = append(entries, *entry)
 	}
 	bm.dirty = false
+	// 记下这次快照覆盖到的变更序号：写盘成功后，针对更早变更的回滚都会
+	// 被拒绝（磁盘已经反映了它们）。
+	snapshotSeq := bm.changeSeq
 	bm.mu.Unlock()
 
 	// 固定顺序：同样的集合写出同样的字节，便于 diff 与排障。
@@ -191,6 +194,13 @@ func (bm *BlacklistManager) persist() error {
 		bm.restoreDirty()
 		return fmt.Errorf("sync blacklist directory: %w", syncErr)
 	}
+	// 只有真的写成功才更新：此后更早的删除/淘汰回滚都要放弃，因为它们要
+	// 恢复的条目在磁盘上已经不存在了。
+	bm.mu.Lock()
+	if snapshotSeq > bm.lastDurableSeq {
+		bm.lastDurableSeq = snapshotSeq
+	}
+	bm.mu.Unlock()
 	return nil
 }
 
@@ -247,6 +257,9 @@ func (bm *BlacklistManager) autoFlushLoop() {
 type evictedEntry struct {
 	entry     *BlacklistEntry
 	violation *violationState
+	// changeSeq 是这次淘汰的变更序号：回滚时用它确认淘汰之后没有更晚的
+	// 变更成功落盘。
+	changeSeq uint64
 }
 
 // makeRoomLocked 在插入前腾出至少一个位置：先清已过期条目，再按 AddedAt
@@ -262,7 +275,7 @@ func (bm *BlacklistManager) makeRoomLocked() ([]evictedEntry, bool) {
 	var evicted []evictedEntry
 	for ip, entry := range bm.entries {
 		if entry.IsExpired() {
-			evicted = append(evicted, evictedEntry{entry: entry, violation: bm.violation[ip]})
+			evicted = append(evicted, evictedEntry{entry: entry, violation: bm.violation[ip], changeSeq: bm.nextChangeSeqLocked()})
 			delete(bm.entries, ip)
 			delete(bm.violation, ip)
 		}
@@ -294,18 +307,22 @@ func (bm *BlacklistManager) evictOldestAutoLocked(target int) []evictedEntry {
 		if victim == nil {
 			break
 		}
-		evicted = append(evicted, evictedEntry{entry: victim, violation: bm.violation[victimIP]})
+		evicted = append(evicted, evictedEntry{entry: victim, violation: bm.violation[victimIP], changeSeq: bm.nextChangeSeqLocked()})
 		delete(bm.entries, victimIP)
 		delete(bm.violation, victimIP)
 	}
 	return evicted
 }
 
-// restoreEvictedLocked 把因腾位置被删掉的条目放回去。期间若已有同名 IP
-// 被别的操作写入，则不覆盖（那是更新的状态）。
+// restoreEvictedLocked 把因腾位置被删掉的条目放回去。回滚前必须先确认「当前
+// 状态仍是本次淘汰造成的中间态」：
+//   - 同名 IP 已被别的操作写入：那是更新的状态，不覆盖；
+//   - 本次淘汰之后已有成功落盘的快照：例如并发的 Remove 把 X 删掉并写进了
+//     磁盘，此时恢复 X 等于撤销那次成功的删除，而且下次 flush 还会把 X 写回
+//     文件（审计探针：remove_err=<nil> 之后 Stop 磁盘上又出现 X）。放弃回滚。
 func (bm *BlacklistManager) restoreEvictedLocked(evicted []evictedEntry) {
 	for _, item := range evicted {
-		if _, exists := bm.entries[item.entry.IP]; exists {
+		if bm.entries[item.entry.IP] != nil || bm.rollbackSupersededLocked(item.changeSeq) {
 			continue
 		}
 		bm.entries[item.entry.IP] = item.entry

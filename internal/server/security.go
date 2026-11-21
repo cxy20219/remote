@@ -139,6 +139,16 @@ type BlacklistManager struct {
 	dirty      bool
 	wake       chan struct{}
 	wg         sync.WaitGroup
+
+	// 回滚保护。changeSeq 单调递增，每次可回滚的变更（删除、腾位置淘汰）取
+	// 一个号；lastDurableSeq 是最近一次成功落盘的快照所覆盖到的变更序号
+	// （persist 取快照时记录，写完才更新）。回滚只在确认「磁盘还没反映本次
+	// 变更」时执行：lastDurableSeq >= 本次变更序号说明那次成功写盘发生在本次
+	// 变更之后，磁盘上已经没有被删掉/淘汰的条目，此时恢复内存旧值等于撤销
+	// 一次已经成功的删除（审计发现：并发 Remove 成功后，失败方的回滚会把
+	// 条目复活并在下次 flush 时写回磁盘）。
+	changeSeq      uint64
+	lastDurableSeq uint64
 }
 
 type violationState struct {
@@ -303,15 +313,32 @@ func (bm *BlacklistManager) AddManual(ip string, reason string, duration time.Du
 	bm.mu.Unlock()
 
 	if err := bm.persist(); err != nil {
+		// 回滚决策与写盘串行化：若有另一个写盘正在进行，等它落定再判断。
+		// 它成功的话 lastDurableSeq 会更新，说明磁盘已经反映了本次变更。
+		bm.saveMu.Lock()
 		bm.mu.Lock()
 		bm.rollbackInsertLocked(ip, entry, previous, hadEntry, previousViolation, hadViolation)
 		bm.restoreEvictedLocked(evicted)
 		bm.mu.Unlock()
+		bm.saveMu.Unlock()
 		slog.Error("failed to persist manual blacklist entry; rolled back", "ip", ip, "error", err)
 		return err
 	}
 	slog.Info("IP manually blacklisted", "ip", ip, "reason", reason)
 	return nil
+}
+
+// nextChangeSeqLocked 为一次可回滚的变更（删除、腾位置淘汰）取号。除启动
+// 阶段（load，后台协程还没起来、没有并发）外，调用方必须持有 bm.mu。
+func (bm *BlacklistManager) nextChangeSeqLocked() uint64 {
+	bm.changeSeq++
+	return bm.changeSeq
+}
+
+// rollbackSupersededLocked 报告本次变更是否已经被一次成功落盘的快照覆盖：
+// 覆盖了就说明磁盘已经反映了这次变更，回滚必须放弃。调用方持有 bm.mu。
+func (bm *BlacklistManager) rollbackSupersededLocked(changeSeq uint64) bool {
+	return changeSeq <= bm.lastDurableSeq
 }
 
 // rollbackInsertLocked 回滚一次失败的插入。只有当前值仍是本次写入的指针时
@@ -330,16 +357,20 @@ func (bm *BlacklistManager) rollbackInsertLocked(ip string, installed, previous 
 	}
 }
 
-// rollbackRemovalLocked 回滚一次失败的删除。只有 IP 仍然缺席时才恢复：
-// 并发的 AddManual 可能已经重新加回并成功落盘，不能覆盖它。
-func (bm *BlacklistManager) rollbackRemovalLocked(ip string, previous *BlacklistEntry, hadEntry bool, previousViolation *violationState, hadViolation bool) {
-	if _, exists := bm.entries[ip]; exists {
+// rollbackRemovalLocked 回滚一次失败的删除。只有「当前状态仍是本次删除造成的
+// 中间态」时才恢复，否则放弃：
+//   - IP 已被别的操作重新加回：那是更新的状态，不能覆盖；
+//   - 本次删除之后已有成功落盘的快照：磁盘上那条已经被删掉了，那次成功的
+//     删除不能被撤销（审计发现：两个并发 Remove，失败的那个发现 IP 缺席就
+//     把条目恢复，等于撤销了另一个）。
+func (bm *BlacklistManager) rollbackRemovalLocked(ip string, previous *BlacklistEntry, previousViolation *violationState, changeSeq uint64) {
+	if bm.entries[ip] != nil || bm.rollbackSupersededLocked(changeSeq) {
 		return
 	}
-	if hadEntry {
+	if previous != nil {
 		bm.entries[ip] = previous
 	}
-	if hadViolation {
+	if previousViolation != nil {
 		bm.violation[ip] = previousViolation
 	}
 }
@@ -349,16 +380,21 @@ func (bm *BlacklistManager) rollbackRemovalLocked(ip string, previous *Blacklist
 // removal survives a restart.
 func (bm *BlacklistManager) Remove(ip string) error {
 	bm.mu.Lock()
-	previous, hadEntry := bm.entries[ip]
-	previousViolation, hadViolation := bm.violation[ip]
+	changeSeq := bm.nextChangeSeqLocked()
+	previous := bm.entries[ip]
+	previousViolation := bm.violation[ip]
 	delete(bm.entries, ip)
 	delete(bm.violation, ip)
 	bm.mu.Unlock()
 
 	if err := bm.persist(); err != nil {
+		// 同 AddManual：回滚决策和写盘串行化，避免把内存恢复到磁盘上已经不
+		// 存在的旧状态。
+		bm.saveMu.Lock()
 		bm.mu.Lock()
-		bm.rollbackRemovalLocked(ip, previous, hadEntry, previousViolation, hadViolation)
+		bm.rollbackRemovalLocked(ip, previous, previousViolation, changeSeq)
 		bm.mu.Unlock()
+		bm.saveMu.Unlock()
 		slog.Error("failed to persist blacklist removal; restored", "ip", ip, "error", err)
 		return err
 	}

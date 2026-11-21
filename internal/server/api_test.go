@@ -1,10 +1,14 @@
 package server
 
 import (
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -245,5 +249,70 @@ func TestHandleAPIChangeAdminPassword(t *testing.T) {
 	}
 	if !store.VerifyAdminPassword("NewPassword1!") {
 		t.Fatal("new password should verify")
+	}
+}
+
+// API 契约：duration_minutes 必须有范围校验。没有上限时
+// time.Duration(minutes)*time.Minute 会溢出成非正数，而 AddManual 只在
+// duration > 0 时设过期时间，于是「拉黑 1 分钟」的请求会变成永久封禁。
+func TestAddBlacklistAPIValidatesDurationRange(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cases := []struct {
+		name     string
+		minutes  string
+		wantCode int
+		wantSpan time.Duration // 期望的封禁时长；0 表示永久
+	}{
+		{name: "zero is permanent", minutes: "0", wantCode: http.StatusOK},
+		{name: "one minute", minutes: "1", wantCode: http.StatusOK, wantSpan: time.Minute},
+		{name: "one year", minutes: "525600", wantCode: http.StatusOK, wantSpan: 525600 * time.Minute},
+		{name: "one year plus one", minutes: "525601", wantCode: http.StatusBadRequest},
+		{name: "negative rejected", minutes: "-1", wantCode: http.StatusBadRequest},
+		{name: "max int64 rejected", minutes: strconv.FormatInt(math.MaxInt64, 10), wantCode: http.StatusBadRequest},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bm := NewBlacklistManager(0, "")
+			defer bm.Stop()
+			srv := &Server{blacklist: bm}
+
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			body := fmt.Sprintf(`{"ip":"203.0.113.9","duration_minutes":%s}`, tc.minutes)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/security/blacklist", strings.NewReader(body))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+
+			srv.handleAPIAddBlacklist(ctx)
+
+			if recorder.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, tc.wantCode, recorder.Body.String())
+			}
+			if tc.wantCode != http.StatusOK {
+				if bm.IsBlacklisted("203.0.113.9") {
+					t.Fatal("a rejected duration must not blacklist the IP")
+				}
+				if !strings.Contains(recorder.Body.String(), "525600") {
+					t.Fatalf("the error should name the accepted range, got %s", recorder.Body.String())
+				}
+				return
+			}
+
+			entries := bm.List()
+			if len(entries) != 1 {
+				t.Fatalf("entries = %+v, want the added IP", entries)
+			}
+			entry := entries[0]
+			if tc.wantSpan == 0 {
+				if !entry.ExpiresAt.IsZero() {
+					t.Fatalf("duration 0 must stay permanent, got expires_at=%v", entry.ExpiresAt)
+				}
+				return
+			}
+			if got := entry.ExpiresAt.Sub(entry.AddedAt); got != tc.wantSpan {
+				t.Fatalf("ban span = %v, want %v (expires_at=%v)", got, tc.wantSpan, entry.ExpiresAt)
+			}
+		})
 	}
 }

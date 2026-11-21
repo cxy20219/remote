@@ -793,6 +793,10 @@ func (s *Server) handleAPIGetBlacklist(c *gin.Context) {
 	})
 }
 
+// blacklistMaxDurationMinutes 是手动封禁时长（duration_minutes）的上限：一年。
+// 0 表示永久。上限的意义是防溢出，见 handleAPIAddBlacklist。
+const blacklistMaxDurationMinutes = 525600
+
 func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 	var req struct {
 		IP       string `json:"ip"`
@@ -818,6 +822,14 @@ func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 	reason := req.Reason
 	if reason == "" {
 		reason = "manual"
+	}
+
+	// 必须校验范围：没有上限时 time.Duration(minutes)*time.Minute 会溢出成
+	// 非正数，而 AddManual 只在 duration > 0 时设过期时间，结果一条「拉黑
+	// 1 分钟」的请求会变成永久封禁。0 表示永久，最长一年。
+	if req.Duration < 0 || req.Duration > blacklistMaxDurationMinutes {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "duration_minutes must be in range 0-525600 (0 means permanent, at most one year)"})
+		return
 	}
 
 	var duration time.Duration

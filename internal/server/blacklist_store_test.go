@@ -30,6 +30,38 @@ func readBlacklistFile(t *testing.T, path string) blacklistFile {
 	return file
 }
 
+// blacklistFileHasIP 直接读磁盘文件、不经过 BlacklistManager：测「调用方拿到
+// 成功之后，磁盘上到底有没有这条」。返回 error 而不是 Fatal，方便在并发
+// 测试的 worker 协程里用。
+func blacklistFileHasIP(path, ip string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	var file blacklistFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return false, fmt.Errorf("decode blacklist file %q: %w", data, err)
+	}
+	for _, entry := range file.Entries {
+		if entry.IP == ip {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// requireBlacklistFileHasIP 断言磁盘上的黑名单里有（或没有）指定 IP。
+func requireBlacklistFileHasIP(t *testing.T, path, ip string, want bool) {
+	t.Helper()
+	got, err := blacklistFileHasIP(path, ip)
+	if err != nil {
+		t.Fatalf("read blacklist file: %v", err)
+	}
+	if got != want {
+		t.Fatalf("%s present on disk = %v, want %v", ip, got, want)
+	}
+}
+
 func writeBlacklistFixture(t *testing.T, path string, entries []BlacklistEntry) []byte {
 	t.Helper()
 	data, err := json.Marshal(blacklistFile{Version: blacklistFileVersion, Entries: entries})
@@ -64,9 +96,13 @@ func TestBlacklistManualEntrySurvivesRestart(t *testing.T) {
 	if err := bm.AddManual("203.0.113.7", "manual ban", 0); err != nil {
 		t.Fatalf("add manual: %v", err)
 	}
+	// 同步落盘的契约：AddManual 返回时磁盘上就必须已经有这条，不能靠 Stop
+	// 或别的协程的批量 flush 兜底（独立读取方直接读文件）。
+	requireBlacklistFileHasIP(t, path, "203.0.113.7", true)
 	if err := bm.AddManual("203.0.113.8", "one hour", time.Hour); err != nil {
 		t.Fatalf("add manual with duration: %v", err)
 	}
+	requireBlacklistFileHasIP(t, path, "203.0.113.8", true)
 	bm.Stop()
 
 	// 手动操作是同步落盘：返回时文件必须已经在，权限也必须是约定的值。
@@ -185,10 +221,46 @@ func TestBlacklistAutoEntriesAreFlushedInBackground(t *testing.T) {
 }
 
 // 生产窗口固定为 3 秒：注入参数只给测试用，别把线上改成 50ms 也没人发现。
+// 这条只钉默认常量；「批量落盘循环真的用了注入的窗口」由下面两条行为用例
+// 约束——只改这里的话，把 autoFlushLoop 里的 delay 写死仍然能骗过去。
 func TestBlacklistFlushWindowIsThreeSeconds(t *testing.T) {
 	if blacklistFlushDelay != 3*time.Second {
 		t.Fatalf("production blacklist flush window = %v, want 3s", blacklistFlushDelay)
 	}
+}
+
+// 批量落盘必须真的用 bm.flushDelay，而不是某个写死的值。两条子用例把注入
+// 窗口夹在两个互斥的区间里：短窗口实例必须在很短时间内落盘，长窗口实例在
+// 这段时间内绝不能落盘。任何单一写死的值都会违反其中一条（写死 300ms 违反
+// 前者之外的另一条，写死 3s 违反前者），所以这条用例能锁住行为而不是常量。
+func TestBlacklistFlushHonoursInjectedWindow(t *testing.T) {
+	t.Run("short window flushes quickly", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "blacklist.json")
+		bm := newBlacklistManager(1, path, 50*time.Millisecond)
+		defer bm.Stop()
+
+		if !bm.AddViolation("198.51.100.30") {
+			t.Fatal("threshold 1 should blacklist on the first violation")
+		}
+		// 写死成 3s 之类的长窗口会在这里超时。
+		waitForFile(t, path, 600*time.Millisecond)
+	})
+
+	t.Run("long window does not flush early", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "blacklist.json")
+		bm := newBlacklistManager(1, path, 3*time.Second)
+		defer bm.Stop()
+
+		if !bm.AddViolation("198.51.100.31") {
+			t.Fatal("threshold 1 should blacklist on the first violation")
+		}
+		// 写死成 300ms 之类的短窗口会在这里提前落盘。900ms 仍远小于注入的
+		// 3s，留足 CI 抖动余量。
+		time.Sleep(900 * time.Millisecond)
+		if _, err := os.Stat(path); err == nil {
+			t.Fatal("the file was written before the injected 3s window elapsed")
+		}
+	})
 }
 
 func TestBlacklistLoadDropsExpiredEntries(t *testing.T) {
@@ -481,16 +553,17 @@ func TestBlacklistRollbackDoesNotClobberConcurrentSuccess(t *testing.T) {
 		t.Fatal("rollback overwrote a concurrent successful write")
 	}
 
-	// 删除失败的回滚：只有在 IP 仍然缺席时才恢复。
+	// 删除失败的回滚：只有在 IP 仍然缺席、且之后没有更晚的成功变更时才恢复。
 	removed := &BlacklistEntry{IP: "192.0.2.32", Reason: "still blocked", Source: blacklistSourceManual}
 	bm.mu.Lock()
-	bm.rollbackRemovalLocked("192.0.2.32", removed, true, nil, false)
+	changeSeq := bm.nextChangeSeqLocked()
+	bm.rollbackRemovalLocked("192.0.2.32", removed, nil, changeSeq)
 	if bm.entries["192.0.2.32"] != removed {
 		t.Fatal("a failed removal must restore the entry when the IP is still absent")
 	}
 	newerRemoval := &BlacklistEntry{IP: "192.0.2.32", Reason: "concurrent re-add", Source: blacklistSourceManual}
 	bm.entries["192.0.2.32"] = newerRemoval
-	bm.rollbackRemovalLocked("192.0.2.32", removed, true, nil, false)
+	bm.rollbackRemovalLocked("192.0.2.32", removed, nil, changeSeq)
 	current = bm.entries["192.0.2.32"]
 	bm.mu.Unlock()
 	if current != newerRemoval {
@@ -498,8 +571,109 @@ func TestBlacklistRollbackDoesNotClobberConcurrentSuccess(t *testing.T) {
 	}
 }
 
-// 每一步返回 nil 的操作都必须在重启后成立：不能出现「接口说成功了，内存
-// 或磁盘里却没有」。
+// 审计探针（真 bug）：makeRoom 淘汰条目 X → 并发的 Remove(X) 返回 nil 并落盘
+// → 本次插入写盘失败回滚。旧实现只看「IP 是否缺席」就把 X 放回内存，Stop 时
+// 又被写回磁盘，等于把那次已经成功的删除永久撤销（探针结果：
+// remove_err=<nil> memory_blocked=true disk_has=false → Stop 后 disk_has=true）。
+//
+// 中间态用真实路径构造：腾位置走 makeRoomLocked，删除走 Remove（真写盘）；
+// 回滚调用的是 AddManual 失败分支里的同一个函数，不依赖调度概率。
+func TestBlacklistEvictionRollbackDoesNotResurrectConcurrentRemoval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data", "blacklist.json")
+	const victim = "198.18.0.0"
+	base := time.Now().Add(-time.Duration(blacklistMaxEntries) * time.Second)
+	entries := make([]BlacklistEntry, 0, blacklistMaxEntries)
+	entries = append(entries, BlacklistEntry{
+		IP:        victim,
+		Reason:    "oldest auto",
+		Source:    blacklistSourceAuto,
+		AddedAt:   base,
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	for i := 0; i < blacklistMaxEntries-1; i++ {
+		entries = append(entries, BlacklistEntry{
+			IP:      fmt.Sprintf("198.19.%d.%d", i/256, i%256),
+			Reason:  "manual",
+			Source:  blacklistSourceManual,
+			AddedAt: base.Add(time.Duration(i+1) * time.Second),
+		})
+	}
+	writeBlacklistFixture(t, path, entries)
+
+	bm := NewBlacklistManager(1, path)
+	defer bm.Stop()
+
+	// 1) AddManual 插入前的腾位置：最旧的 auto 条目被淘汰（仍在磁盘上）。
+	bm.mu.Lock()
+	evicted, ok := bm.makeRoomLocked()
+	bm.mu.Unlock()
+	if !ok || len(evicted) != 1 || evicted[0].entry.IP != victim {
+		t.Fatalf("makeRoomLocked evicted %+v, want just %s", evicted, victim)
+	}
+
+	// 2) 并发的 Remove(victim) 成功并落盘：这一步是真实现、真写盘。
+	if err := bm.Remove(victim); err != nil {
+		t.Fatalf("concurrent remove: %v", err)
+	}
+	requireBlacklistFileHasIP(t, path, victim, false)
+
+	// 3) 本次插入写盘失败后的回滚。
+	bm.mu.Lock()
+	bm.restoreEvictedLocked(evicted)
+	bm.mu.Unlock()
+
+	// 4) 那次成功的删除不能被撤销：内存里没有，Stop 之后磁盘上也不能再出现。
+	if bm.IsBlacklisted(victim) {
+		t.Fatal("rollback resurrected an entry that a concurrent Remove had deleted and persisted")
+	}
+	bm.Stop()
+	requireBlacklistFileHasIP(t, path, victim, false)
+}
+
+// 审计探针（同一类问题）：两个并发 Remove，先删的那个写盘失败、后删的成功
+// 落盘。失败方的回滚不能把这个 IP 恢复，否则等于撤销了另一个的成功。
+func TestBlacklistRemovalRollbackDoesNotUndoConcurrentSuccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blacklist.json")
+	bm := NewBlacklistManager(1, path)
+	defer bm.Stop()
+
+	const ip = "192.0.2.60"
+	if err := bm.AddManual(ip, "concurrent", 0); err != nil {
+		t.Fatalf("add manual: %v", err)
+	}
+
+	// 1) 失败的删除先完成内存删除、还没写盘（这就是 Remove 落盘前的中间态）。
+	bm.mu.Lock()
+	previous := bm.entries[ip]
+	previousViolation := bm.violation[ip]
+	changeSeq := bm.nextChangeSeqLocked()
+	delete(bm.entries, ip)
+	delete(bm.violation, ip)
+	bm.mu.Unlock()
+
+	// 2) 并发的 Remove(ip) 成功并落盘（真实现、真写盘）。
+	if err := bm.Remove(ip); err != nil {
+		t.Fatalf("concurrent remove: %v", err)
+	}
+	requireBlacklistFileHasIP(t, path, ip, false)
+
+	// 3) 失败的删除回滚。
+	bm.mu.Lock()
+	bm.rollbackRemovalLocked(ip, previous, previousViolation, changeSeq)
+	bm.mu.Unlock()
+
+	if bm.IsBlacklisted(ip) {
+		t.Fatal("a failed removal must not undo a concurrent successful removal")
+	}
+	bm.Stop()
+	requireBlacklistFileHasIP(t, path, ip, false)
+}
+
+// 每一步返回 nil 的操作都必须在返回时就已经落到磁盘上：不能出现「接口说
+// 成功了，内存或磁盘里却没有」。落盘校验在操作返回后立刻用一个独立读取方
+// （直接读文件，不经过 BlacklistManager）完成，不依赖 Stop 或别的协程的
+// flush——旧用例只在 Stop 之后重启校验，把 AddManual 的同步写改成交给批量
+// 协程也能骗过去（别的 worker 的 AddViolation 触发 flush 会顺手带上它）。
 func TestBlacklistConcurrentAddRemove(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	bm := newBlacklistManager(2, path, 50*time.Millisecond)
@@ -516,12 +690,20 @@ func TestBlacklistConcurrentAddRemove(t *testing.T) {
 				switch i % 3 {
 				case 0:
 					if err := bm.AddManual(ip, "concurrent", time.Hour); err == nil {
+						// 同步落盘：返回成功必须先出现在磁盘上。
+						if has, err := blacklistFileHasIP(path, ip); err != nil || !has {
+							t.Errorf("AddManual(%s) reported success but the entry is not on disk (has=%v, err=%v)", ip, has, err)
+						}
 						mu.Lock()
 						expected[ip] = true
 						mu.Unlock()
 					}
 				case 1:
 					if err := bm.Remove(ip); err == nil {
+						// 删除同理：返回成功就必须已经从磁盘上消失。
+						if has, err := blacklistFileHasIP(path, ip); err != nil || has {
+							t.Errorf("Remove(%s) reported success but the entry is still on disk (has=%v, err=%v)", ip, has, err)
+						}
 						mu.Lock()
 						expected[ip] = false
 						mu.Unlock()
