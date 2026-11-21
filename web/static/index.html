@@ -78,6 +78,8 @@ tbody tr:hover td{background:#f8fafc}
 .port-highlight{font-family:'SF Mono','Cascadia Code','Consolas',monospace;color:#3b82f6;font-weight:700;font-size:14px;white-space:nowrap}
 /* 定长 token 不折行，避免加状态列后把端口/ID 拆成两行 */
 #tunnels code,#tunnels .mono,#tunnels .tunnel-exposure{white-space:nowrap}
+/* 设备名可能很长（默认主机名），限定列宽并省略，完整值放在 title 里，避免把操作列挤出卡片 */
+#tunnels td.tunnel-device{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
@@ -955,7 +957,7 @@ async function loadTunnels() {
         '<button class="btn btn-ghost" onclick="openEditModal(' + jsArg(tunnelId) + ',' + jsArg(localAddr) + ',' + localPort + ',' +
         jsArg(t.protocol) + ',' + publicPort + ',' + jsArg(exposure) + ')">编辑</button> ' +
         '<button class="btn btn-danger" onclick="deleteTunnel(' + jsArg(tunnelId) + ')">删除</button>';
-      return '<tr><td><code>' + esc(tunnelId.substring(0, 18)) + '&hellip;</code></td><td>' + esc(host) +
+      return '<tr><td><code>' + esc(tunnelId.substring(0, 18)) + '&hellip;</code></td><td class="tunnel-device" title="' + esc(host) + '">' + esc(host) +
         '</td><td class="tunnel-exposure">' + esc(tunnelExposureLabel(exposure)) + '</td><td><span class="port-highlight">' + esc(tunnelListenAddr(t)) +
         '</span></td><td><span class="mono">' + esc(localAddr) + ':' + localPort + '</span></td><td>' + esc(protocol) +
         '</td><td>' + esc(fmtDate(t.created_at)) + '</td><td>' + tunnelStatusBadge(t) + '</td><td class="row-actions">' + actions + '</td></tr>';
