@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -355,9 +354,17 @@ func (s *StateStore) Save() error {
 	return nil
 }
 
-// writeState 原子落盘：写 tmp → fsync → rename → fsync 目录。返回 nil 表示
-// 这份 state 扛得住进程重启；掉电是尽力而为——rename 之后目录 fsync 失败
-// 会返回错误，但磁盘上的文件可能已经更新（只有 EIO 一类故障会走到这里）。
+// syncDir 把 rename 落进目录项。单独抽出来是为了让测试能注入失败；生产
+// 实现就是 f.Sync()。
+var syncDir = func(f *os.File) error { return f.Sync() }
+
+// writeState 原子落盘：写 tmp → fsync → rename → fsync 目录。
+//
+// rename 成功即视为落盘成功：磁盘上的 state 已换成新内容，进程重启一定
+// 读到它。rename 之后目录 fsync 失败只影响“掉电后 rename 还在不在”，这种情况
+// 只记 WARN，不回滚内存、也不返回错误——否则会出现“接口报 500、磁盘却是
+// 新内容，重启后改动又生效”的自相矛盾。返回错误只可能是 rename 之前失败
+// （写 tmp / chmod / file.Sync / rename 本身），那时磁盘仍是旧内容。
 func (s *StateStore) writeState(state ServerState) error {
 	if s.path == "" {
 		return nil
@@ -404,16 +411,19 @@ func (s *StateStore) writeState(state ServerState) error {
 		os.Remove(tmp)
 		return err
 	}
-	// rename 本身也要落盘，否则掉电后可能又看到旧文件。少数平台不支持对
-	// 目录 fsync（EINVAL/ENOTSUP），这类“平台不支持”不算写入失败。
+	// rename 已经生效：从这里开始磁盘就是新内容了。目录 fsync 只是让这次
+	// rename 也扛住掉电，失败不上报、不回滚。
 	dirFile, err := os.Open(dir)
 	if err != nil {
-		return err
+		slog.Warn("state file renamed but the directory could not be opened for fsync; durable across process restarts, power loss may roll back",
+			"dir", dir, "error", err)
+		return nil
 	}
-	syncErr := dirFile.Sync()
+	syncErr := syncDir(dirFile)
 	dirFile.Close()
-	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) && !errors.Is(syncErr, syscall.ENOTSUP) {
-		return fmt.Errorf("sync state directory: %w", syncErr)
+	if syncErr != nil {
+		slog.Warn("state file renamed but the directory could not be synced; durable across process restarts, power loss may roll back",
+			"dir", dir, "error", syncErr)
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -231,5 +232,36 @@ func TestDefaultBlacklistThresholdIsTen(t *testing.T) {
 	}
 	if got := legacy.GetSettings().BlacklistThreshold; got != 100 {
 		t.Fatalf("an existing threshold of 100 must be preserved, got %d", got)
+	}
+}
+
+// rename 成功之后目录 fsync 失败不能让 Save 报错：磁盘上已经是新内容了，
+// 报错会让调用方回滚内存，变成「接口 500、重启后改动却生效」。
+func TestWriteStateIgnoresDirSyncFailureAfterRename(t *testing.T) {
+	_, store := newTestConfig(t)
+	store.AddDevice(&DeviceState{ID: "dev-before", Name: "dev-before", Status: deviceStatusAuthorized})
+	if err := store.Save(); err != nil {
+		t.Fatalf("baseline save: %v", err)
+	}
+
+	previous := syncDir
+	syncDir = func(*os.File) error { return syscall.EIO }
+	t.Cleanup(func() { syncDir = previous })
+
+	store.AddDevice(&DeviceState{ID: "dev-after", Name: "dev-after", Status: deviceStatusAuthorized})
+	if err := store.Save(); err != nil {
+		t.Fatalf("a directory fsync failure after rename must not fail Save: %v", err)
+	}
+	if store.GetDeviceByID("dev-after") == nil {
+		t.Fatal("the device must stay in memory: a post-rename fsync failure must not roll back")
+	}
+
+	// 磁盘上也已经是新内容：模拟进程重启（重新 Load）必须看得到。
+	reloaded := NewStateStore(store.path)
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.GetDeviceByID("dev-after") == nil {
+		t.Fatal("the state file must already contain the new device after the rename")
 	}
 }
