@@ -25,6 +25,7 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"goremote/internal/common"
+	"goremote/internal/server/netplane"
 )
 
 const (
@@ -83,6 +84,13 @@ type Server struct {
 	stopped     bool
 
 	maxBodyBytes atomic.Int64
+
+	// 组网（WireGuard）：netplane 是唯一写内核的一方；wgLocks 是 per-device
+	// 操作锁（只有 HTTP 写接口持锁，后台 reconcile 不取，见 netplane 注释）。
+	netplane  *netplane.Plane
+	wgLocksMu sync.Mutex
+	wgLocks   map[string]*sync.Mutex
+	wgHubMu   sync.Mutex
 }
 
 func NewServer(config *Config, staticFS embed.FS) *Server {
@@ -137,6 +145,13 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	}
 	s.globalWhitelist.Store(newIPMatcher(settings.GlobalWhitelist))
 	s.applyRuntimeSettings(settings)
+
+	// 组网：即使没有设备绑定也可以构造；reconcile 在没有 peer 时不碰内核。
+	s.netplane = netplane.New(netplane.Config{
+		Store:    stateStore,
+		Backend:  netplane.NewExecBackend(wgInterfaceName),
+		ACLReady: false, // nft 规则在第二批；状态接口如实报告，不假装已生效
+	})
 
 	s.upgrader = websocket.Upgrader{
 		CheckOrigin:     s.buildOriginChecker(config.Security.AllowedOrigins),
@@ -202,6 +217,9 @@ func (s *Server) Start() error {
 	s.stateStore.StartSyncLoop()
 
 	s.engine.Use(gin.Recovery())
+	// 摘二次认证凭据必须早于任何可能 panic 的中间件：gin 的 Recovery 只脱敏
+	// Authorization，X-Reauth-* 若留在请求头上会原文进 stderr。
+	s.engine.Use(reauthHeaderMiddleware())
 	s.engine.Use(SecurityHeadersMiddleware())
 	s.engine.Use(DynamicBodySizeLimitMiddleware(func() int64 {
 		return s.maxBodyBytes.Load()
@@ -272,6 +290,10 @@ func (s *Server) Start() error {
 		protected.DELETE("/api/devices/:id", s.handleAPIDeleteDevice)
 		protected.PUT("/api/devices/:id/config", s.handleAPIUpdateDeviceConfig)
 		protected.PUT("/api/devices/:id/regen-key", s.handleAPIRegenKey)
+		// 组网写接口：先限流（429 早于 bcrypt），再二次认证（403），最后进 handler。
+		protected.PUT("/api/devices/:id/vpn", adminWrite, s.reauthMiddleware(), s.handleAPIPutDeviceVPN)
+		protected.DELETE("/api/devices/:id/vpn", adminWrite, s.reauthMiddleware(), s.handleAPIDeleteDeviceVPN)
+		protected.GET("/api/vpn/status", s.handleAPIGetVPNStatus)
 		protected.GET("/api/settings", s.handleAPIGetSettings)
 		protected.PUT("/api/settings", s.handleAPIUpdateSettings)
 
@@ -282,6 +304,26 @@ func (s *Server) Start() error {
 		})
 		if s.config.Swagger.Enabled {
 			protected.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		}
+	}
+
+	// 首轮 reconcile 在监听之前完成（最长 10s）；失败不阻塞面板启动，
+	// fail closed 由 infraErr 表达，VPN 写接口一律 503。
+	//
+	// 组网已配置但 state 未加密时拒绝启动 netplane（实现须知 #6）：hub 私钥
+	// 是唯一能对所有设备做主动 MITM 的密钥，不能以 0600 明文落盘后照常运行。
+	// 面板继续服务，状态接口用 blocked=STATE_ENCRYPTION_REQUIRED 给 banner。
+	if s.netplane != nil {
+		if s.vpnEncryptionBlocked() {
+			slog.Error("wireguard networking is disabled: state encryption is required while wireguard is configured; set GOREMOTE_STATE_KEY (at least 32 characters) or --state-key, then restart")
+			s.netplane.RefuseStart("STATE_ENCRYPTION_REQUIRED", stateEncryptionRequiredMessage)
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			s.netplane.Start(ctx)
+			cancel()
+			if detail := s.netplane.InfraError(); detail != "" {
+				slog.Warn("wireguard initial reconcile failed; VPN writes will answer 503 until it recovers", "error", detail)
+			}
 		}
 	}
 
@@ -383,6 +425,9 @@ func (s *Server) Stop() error {
 		s.clients.RemoveAll()
 		if s.deviceMgr != nil {
 			s.deviceMgr.CloseAllPendingConns()
+		}
+		if s.netplane != nil {
+			s.netplane.Stop()
 		}
 		s.stateStore.Stop()
 		s.wg.Wait()

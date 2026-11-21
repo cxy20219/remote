@@ -38,6 +38,9 @@ type sensitiveStatePlain struct {
 	TOTPSecret         string   `json:"totp_secret,omitempty"`
 	TOTPRecoveryHashes []string `json:"totp_recovery_hashes,omitempty"`
 	TOTPLastStep       int64    `json:"totp_last_step,omitempty"`
+
+	// hub 的 WireGuard 私钥与 TOTP 同等级：配了 state 密钥时只存在于密文里。
+	WGHubPrivkey string `json:"wg_hub_privkey,omitempty"`
 }
 
 func (s *StateStore) SetEncryptionKey(rawKey string) error {
@@ -88,6 +91,7 @@ func (s *StateStore) encryptSensitiveState(state *ServerState) error {
 		TOTPSecret:         state.TOTPSecret,
 		TOTPRecoveryHashes: state.TOTPRecoveryHashes,
 		TOTPLastStep:       state.TOTPLastStep,
+		WGHubPrivkey:       state.WGHubPrivkey,
 	}
 	for _, device := range state.Devices {
 		if device.EncKey != "" {
@@ -118,6 +122,7 @@ func (s *StateStore) encryptSensitiveState(state *ServerState) error {
 	state.TOTPSecret = ""
 	state.TOTPRecoveryHashes = nil
 	state.TOTPLastStep = 0
+	state.WGHubPrivkey = ""
 	for i := range state.Devices {
 		state.Devices[i].EncKey = ""
 	}
@@ -171,6 +176,7 @@ func (s *StateStore) decryptSensitiveState(state *ServerState) error {
 	state.TOTPSecret = plain.TOTPSecret
 	state.TOTPRecoveryHashes = plain.TOTPRecoveryHashes
 	state.TOTPLastStep = plain.TOTPLastStep
+	state.WGHubPrivkey = plain.WGHubPrivkey
 	for i := range state.Devices {
 		if encKey, ok := plain.DeviceEncKeys[state.Devices[i].ID]; ok {
 			state.Devices[i].EncKey = encKey

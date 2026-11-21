@@ -299,21 +299,19 @@ func (dm *DeviceManager) DenyDevice(deviceID string) error {
 	return nil
 }
 
-func (dm *DeviceManager) DeleteDevice(deviceID string) error {
+// ForgetDeviceRuntime drops the in-memory state of a device whose record is
+// already gone from the state store. The record itself is removed by the
+// caller so it can order the WireGuard revoke and the fsync before this point.
+func (dm *DeviceManager) ForgetDeviceRuntime(deviceID string) {
 	dm.mu.Lock()
 	info := dm.pendingConns[deviceID]
 	delete(dm.pendingConns, deviceID)
-	if !dm.store.RemoveDevice(deviceID) {
-		dm.mu.Unlock()
-		return fmt.Errorf("device not found: %s", deviceID)
-	}
 	dm.mu.Unlock()
 
 	dm.cryptoMgr.RemoveKey(deviceID)
 	if info != nil {
 		closeClientConn(info.Client)
 	}
-	return nil
 }
 
 func (dm *DeviceManager) RegenerateEncKey(deviceID string) (*DeviceState, string, string, error) {
