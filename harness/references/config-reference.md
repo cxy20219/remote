@@ -49,7 +49,7 @@
 | `public_host` | 空 | API 返回的隧道公网地址；空=使用请求 Host |
 | `max_conn_per_min` | `10` | 每 IP 每分钟 WebSocket 连接/公网隧道连接数；0=禁用限流 |
 | `login_rate_limit` | `5` | 每 IP 每分钟管理员登录尝试数；0=禁用限流 |
-| `blacklist_threshold` | `100` | 1 小时内累计限流违规自动拉黑阈值；0=禁用；自动拉黑 24 小时后过期 |
+| `blacklist_threshold` | `10` | 1 小时内累计限流违规自动拉黑阈值；0=禁用；自动拉黑 24 小时后过期 |
 | `global_whitelist` | `[]` | 全局 IP/CIDR 白名单；命中后绕过限流与黑名单检查 |
 | `max_body_size_mb` | `10` | HTTP 请求体上限（MB）；0=禁用限制 |
 | `heartbeat_interval` | `30` | 服务端心跳检查周期（秒） |

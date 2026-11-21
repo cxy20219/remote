@@ -73,7 +73,7 @@ Agent:    自动进入工作状态 → 可在 Web UI 创建隧道、管理配置
     "port_range_end": 20000,
     "max_conn_per_min": 10,
     "login_rate_limit": 5,
-    "blacklist_threshold": 100,
+    "blacklist_threshold": 10,
     "global_whitelist": ["10.0.0.0/8"]
   },
   "devices": [

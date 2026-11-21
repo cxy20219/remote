@@ -92,7 +92,7 @@ func defaultSettings() ServerSettings {
 		DefaultLocalAddr:    "127.0.0.1",
 		MaxConnPerMin:       10,
 		LoginRateLimit:      5,
-		BlacklistThreshold:  100,
+		BlacklistThreshold:  10,
 		GlobalWhitelist:     []string{},
 		MaxBodySizeMB:       defaultMaxBodySizeMB,
 		HeartbeatInterval:   30,

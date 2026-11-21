@@ -205,3 +205,31 @@ func TestStateStoreRequiresKeyForEncryptedState(t *testing.T) {
 		t.Fatalf("Load without key err = %v, want %v", err, ErrStateEncryptionKeyRequired)
 	}
 }
+
+func TestDefaultBlacklistThresholdIsTen(t *testing.T) {
+	if got := defaultSettings().BlacklistThreshold; got != 10 {
+		t.Fatalf("default blacklist threshold = %d, want 10", got)
+	}
+
+	store := NewStateStore(filepath.Join(t.TempDir(), "server-state.json"))
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := store.GetSettings().BlacklistThreshold; got != 10 {
+		t.Fatalf("a fresh store should start with blacklist threshold 10, got %d", got)
+	}
+
+	// 已有部署里存下来的 100 是显式配置，不会被新默认值静默覆盖；
+	// 升级后需要在面板「安全 → 黑名单管理」或 PUT /api/security/blacklist-threshold 改一次。
+	legacyPath := filepath.Join(t.TempDir(), "legacy-state.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"settings":{"blacklist_threshold":100},"devices":[]}`), 0o600); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+	legacy := NewStateStore(legacyPath)
+	if err := legacy.Load(); err != nil {
+		t.Fatalf("load legacy state: %v", err)
+	}
+	if got := legacy.GetSettings().BlacklistThreshold; got != 100 {
+		t.Fatalf("an existing threshold of 100 must be preserved, got %d", got)
+	}
+}

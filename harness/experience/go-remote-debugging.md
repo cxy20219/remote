@@ -234,7 +234,7 @@ sort.Slice(tunnels, func(i, j int) bool {
 服务端支持基于累计限流违规的自动 IP 黑名单：
 
 ```powershell
-# 1. 降低阈值以便快速触发（默认100）
+# 1. 降低阈值以便快速触发（默认10）
 curl.exe -k -b cookies.txt -s -X PUT "http://server:8080/api/security/blacklist-threshold" `
   -H "Content-Type: application/json" -d '{"threshold":3}'
 
@@ -421,7 +421,7 @@ curl.exe -k -b cookies.txt -s -X PUT "http://server:8080/api/security/global-whi
 
 ### 9.3 自动拉黑触发条件
 
-1. 每 IP 限流违规累计达阈值（`blacklist_threshold`，默认 100）
+1. 每 IP 限流违规累计达阈值（`blacklist_threshold`，默认 10）
 2. 违规计数跨窗口累积（不随时间窗口重置）
 3. 手动添加的 IP 可设 `expires_at`（`duration_minutes` 字段）
 4. 黑名单 IP 直接被拒绝，不再执行限流检查
