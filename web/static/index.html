@@ -145,8 +145,64 @@ code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;b
 .settings-grid .sg-item label{font-size:12px;color:#64748b;font-weight:500}
 .settings-grid .sg-item input,.settings-grid .sg-item select{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;font-size:13px;color:#334155}
 
+/* WireGuard 组网 */
+.vpn-banner{display:flex;gap:10px;padding:12px 14px;border-radius:10px;font-size:13px;line-height:1.6;margin-bottom:14px;color:#1e293b}
+.vpn-banner.info{background:#eff6ff;border:1px solid rgba(59,130,246,.35)}
+.vpn-banner.warn{background:#fffbeb;border:1px solid rgba(245,158,11,.35)}
+.vpn-banner.err{background:#fef2f2;border:1px solid rgba(239,68,68,.35)}
+.vpn-banner-icon{font-size:16px;line-height:1.4;flex-shrink:0}
+.vpn-banner.info .vpn-banner-icon{color:#3b82f6}
+.vpn-banner.warn .vpn-banner-icon{color:#f59e0b}
+.vpn-banner.err .vpn-banner-icon{color:#ef4444}
+.vpn-banner-body{min-width:0;flex:1}
+.vpn-banner-title{font-weight:600}
+.vpn-banner-text{margin-top:2px;color:#475569}
+.vpn-banner-detail{margin-top:4px;font-size:12px;color:#475569;word-break:break-all}
+.vpn-banner-detail.mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px}
+.vpn-banner .btn{margin-top:8px}
+.vpn-status-bar{margin-bottom:14px;padding:12px 16px;background:#f8fafc;box-shadow:none;border:1px solid #f1f5f9}
+.vpn-status-bar .port-bar-value{font-size:15px}
+.vpn-status-bar .port-bar-label{color:#64748b}
+.vpn-status-bar .port-bar-value{overflow-wrap:anywhere}
+.vpn-status-bar .mono{word-break:break-all}
+.vpn-table-wrap{overflow-x:auto}
+#vpn-card .card-header{flex-wrap:wrap;gap:8px}
+#vpn-card .card-header>div{display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+.vpn-acl-tag{margin-left:6px;font-weight:600}
+.vpn-sync-warn::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:#f59e0b;margin-right:5px;vertical-align:middle}
+.vpn-cmd{display:flex;align-items:center;gap:8px;background:#f1f5f9;border-radius:8px;padding:10px 12px;margin-bottom:8px}
+.vpn-cmd code{background:none;padding:0;font-size:12px;color:#1e293b;flex:1;overflow-x:auto;white-space:nowrap}
+.vpn-hint{font-size:12px;color:#64748b;line-height:1.6;margin-bottom:14px}
+.vpn-check{font-size:12px;color:#475569;margin-top:4px;min-height:16px}
+.vpn-check .ok{color:#16a34a;margin-right:4px}
+.vpn-inline-error{font-size:12px;color:#1e293b;margin-top:4px;min-height:16px}
+.vpn-inline-error .vpn-err-icon{color:#ef4444;margin-right:4px}
+.vpn-pre{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;white-space:pre;overflow-x:auto;color:#1e293b;margin:8px 0 12px;tab-size:2}
+.vpn-notes{font-size:12px;color:#475569;line-height:1.7;padding-left:18px;margin:0 0 12px}
+.vpn-modal{width:480px;max-height:88vh;overflow-y:auto}
+.vpn-modal h3{margin-bottom:16px}
+.vpn-section-label{font-size:13px;font-weight:600;color:#1e293b;margin:16px 0 8px}
+.vpn-section-label:first-child{margin-top:0}
+.vpn-role-note{font-size:12px;color:#64748b;margin-top:4px;line-height:1.6}
+.vpn-result-grid{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;color:#64748b}
+.vpn-result-grid b{color:#1e293b;font-size:13px;font-weight:600}
+.vpn-warn-line{font-size:12px;color:#1e293b;background:#fffbeb;border:1px solid rgba(245,158,11,.35);border-radius:8px;padding:8px 10px;margin-top:10px;line-height:1.6}
+.vpn-refresh-status{font-size:12px;color:#64748b;cursor:pointer;margin-right:10px;display:none}
+.vpn-refresh-status.show{display:inline}
+.vpn-peer-error{display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;font-size:12px;color:#1e293b}
+.vpn-peer-error .vpn-err-icon{color:#ef4444}
+.vpn-link{color:#1e293b;text-decoration:underline;cursor:pointer}
+.vpn-unbind-list{font-size:13px;color:#475569;line-height:1.9;margin:0 0 14px;padding-left:20px}
+.vpn-unbind-list strong{color:#1e293b;font-weight:600}
+.vpn-lock-note{font-size:12px;color:#64748b;margin-top:8px}
+.vpn-empty-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+
 @media(max-width:768px){
 .stats{grid-template-columns:1fr 1fr}
+.vpn-status-bar{flex-wrap:wrap;gap:8px}
+.vpn-status-bar .port-bar-divider{display:none}
+.vpn-status-bar .port-bar-item{flex:1 1 45%}
+.vpn-modal{max-width:92%}
 .form-row{flex-direction:column}
 .form-group input,.form-group select{width:100%}
 .topbar{flex-direction:column;align-items:flex-start}
@@ -228,6 +284,19 @@ th,td{padding:8px 8px}
       <span class="refresh-dot" title="每10秒自动刷新">&#8635;</span>
     </div>
     <div id="devices"><div class="empty">加载中...</div></div>
+  </div>
+
+  <!-- WireGuard VPN -->
+  <div class="card" id="vpn-card">
+    <div class="card-header">
+      <h2><span class="dot ok" id="vpn-dot"></span>&#128225; 设备组网 · WireGuard</h2>
+      <div style="display:flex;align-items:center">
+        <button class="btn btn-ghost" id="vpn-reconcile-btn" onclick="reconcileVPN()" style="margin-right:8px">重新对齐</button>
+        <span class="vpn-refresh-status" id="vpn-refresh-status" onclick="loadVPN()">状态刷新失败，点此重试</span>
+        <span class="refresh-dot" title="每10秒自动刷新">&#8635;</span>
+      </div>
+    </div>
+    <div id="vpn-body"><div class="empty">加载中...</div></div>
   </div>
 
   <!-- Create Tunnel -->
@@ -401,6 +470,14 @@ th,td{padding:8px 8px}
       <button class="btn btn-primary" onclick="saveDeviceConfig()">保存</button>
       <button class="btn btn-danger" onclick="regenDeviceKey()" style="margin-left:auto">重新生成密钥</button>
     </div>
+  </div>
+</div>
+
+<!-- WireGuard VPN Modal -->
+<div class="modal-overlay" id="vpn-modal">
+  <div class="modal vpn-modal" role="dialog" aria-modal="true" aria-labelledby="vpn-modal-title">
+    <h3 id="vpn-modal-title">设备组网</h3>
+    <div id="vpn-modal-body"></div>
   </div>
 </div>
 
@@ -578,11 +655,13 @@ async function changeAdminPassword() {
 
 // --- Two-factor authentication (TOTP) ---
 let totpEnabled = false;
+let totpStatusLoaded = false;
 
 async function loadTOTPStatus() {
   try {
     const { response, data } = await apiJSON('/api/admin/totp');
     if (!response.ok || !data) return;
+    totpStatusLoaded = true;
     totpEnabled = !!data.enabled;
     document.getElementById('totp-status-text').textContent = totpEnabled
       ? '已启用：登录需要「密码 + 动态码」。恢复码剩余 ' + (data.recovery_codes_left || 0) + ' 个。'
@@ -786,6 +865,7 @@ function renderDevices() {
       : '<span class="badge badge-offline">离线</span>';
     return '<tr><td><strong>' + esc(name) + '</strong></td><td>' + esc(d.hostname) + '</td><td>' + esc(d.os) + '</td><td>' +
       encBadge + '</td><td>' + onBadge + '</td><td style="font-size:12px">' + esc(fmtDate(d.approved_at, false)) + '</td><td>' +
+      '<button class="btn btn-ghost" onclick="openVPNModal(' + jsArg(d.id) + ')">组网</button> ' +
       '<button class="btn btn-ghost" onclick="openDeviceModal(' + jsArg(d.id) + ')">配置</button> ' +
       '<button class="btn btn-danger" onclick="deleteDevice(' + jsArg(d.id) + ',' + jsArg(name) + ')">删除</button>' +
       '</td></tr>';
@@ -1185,6 +1265,1116 @@ async function logout() {
   window.location.href = '/login.html';
 }
 
+// --- WireGuard VPN ---
+let vpnStatus = null;
+let vpnTemplates = {};
+let vpnReconcileResult = null;
+let vpnSlowTimer = null;
+let vpnAuthTicker = null;
+let vpnModal = vpnBlankModal();
+let vpnFocusTarget = '';
+
+function vpnBlankModal() {
+  return {
+    id: '', device: null, mode: 'closed', binding: null, result: null,
+    error: '', errorCode: '', errorDetail: '',
+    role: 'client', pubkey: '', password: '', totp: '',
+    submitting: false, slow: false, action: 'bind',
+    authLockUntil: 0, totpUnavailable: false,
+    privatePanel: false, privateHint: '', keyNotice: '',
+    trigger: null
+  };
+}
+
+function vpnDeviceName(device) {
+  if (!device) return '未命名设备';
+  return device.name || device.hostname || String(device.id || '').substring(0, 12);
+}
+
+function vpnPeerName(peer) {
+  return peer.name || (String(peer.device_id || '').substring(0, 12) + '…');
+}
+
+function vpnState(status) {
+  if (!status) return 'loading';
+  if (status.blocked) return 'blocked';
+  if (status.infra_error) return 'infra';
+  if (status.state_encryption_enabled === false) return 'disabled';
+  if (status.acl_ready === false || status.link_up === false) return 'warn';
+  return 'ok';
+}
+
+function vpnRelTime(seconds) {
+  const sec = Math.max(1, Number(seconds) || 0);
+  if (sec < 60) return Math.round(sec) + ' 秒';
+  if (sec < 3600) return Math.round(sec / 60) + ' 分钟';
+  if (sec < 86400) return Math.round(sec / 3600) + ' 小时';
+  return Math.round(sec / 86400) + ' 天';
+}
+
+function vpnBytes(value) {
+  let bytes = Number(value) || 0;
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let index = 0;
+  while (bytes >= 1024 && index < units.length - 1) {
+    bytes /= 1024;
+    index++;
+  }
+  const digits = index === 0 ? 0 : (bytes >= 100 ? 0 : 1);
+  return bytes.toFixed(digits) + ' ' + units[index];
+}
+
+function vpnBanner(type, title, text, detail, detailMono) {
+  const icon = type === 'info' ? '⌘' : '⚠';
+  return '<div class="vpn-banner ' + type + '">' +
+    '<div class="vpn-banner-icon">' + icon + '</div>' +
+    '<div class="vpn-banner-body">' +
+    '<div class="vpn-banner-title">' + esc(title) + '</div>' +
+    (text ? '<div class="vpn-banner-text">' + esc(text) + '</div>' : '') +
+    (detail ? '<div class="vpn-banner-detail' + (detailMono ? ' mono' : '') + '">' + esc(detail) + '</div>' : '') +
+    '</div></div>';
+}
+
+function vpnBlockedText(code) {
+  if (code === 'STATE_ENCRYPTION_REQUIRED') {
+    return '组网已配置过，但 GOREMOTE_STATE_KEY 未设置，服务端拒绝启动 WireGuard 接口（hub 私钥不允许明文落盘）。在服务端设置环境变量 GOREMOTE_STATE_KEY（至少 32 字符）或启动参数 --state-key，然后重启。重启后本页会自动恢复，不需要重新绑定。';
+  }
+  return '服务端拒绝了组网（' + code + '）。请检查服务端日志与配置，处理后点右上刷新。';
+}
+
+function vpnStatusBar(status) {
+  const peers = Array.isArray(status.peers) ? status.peers : [];
+  const gen = Number(status.gen) || 0;
+  const applied = Number(status.applied) || 0;
+  let sync;
+  if (gen === 0 && applied === 0) {
+    sync = '<span style="color:#64748b">尚未应用</span>';
+  } else if (gen === applied) {
+    sync = esc('已同步 · gen ' + gen);
+  } else {
+    sync = '<span class="vpn-sync-warn">' + esc('同步中 · ' + applied + '/' + gen) + '</span>';
+  }
+  const peersCell = String(peers.length) + (status.acl_ready === true
+    ? ' <span class="badge badge-enc-on vpn-acl-tag">转发限制已启用</span>' : '');
+  const monoOrDash = value => value ? '<span class="mono">' + esc(value) + '</span>' : '—';
+  const item = (label, valueHtml) => '<div class="port-bar-item"><div><div class="port-bar-label">' +
+    esc(label) + '</div><div class="port-bar-value">' + valueHtml + '</div></div></div>';
+  return '<div class="port-bar vpn-status-bar">' +
+    item('接口', monoOrDash(status.iface)) + '<div class="port-bar-divider"></div>' +
+    item('Endpoint', monoOrDash(status.endpoint)) + '<div class="port-bar-divider"></div>' +
+    item('网段', monoOrDash(status.cidr)) + '<div class="port-bar-divider"></div>' +
+    item('监听', status.listen ? esc(status.listen) : '—') + '<div class="port-bar-divider"></div>' +
+    item('同步', sync) + '<div class="port-bar-divider"></div>' +
+    item('参与设备', peersCell) +
+    '</div>';
+}
+
+function vpnHandshakeCell(peer) {
+  if (!peer.enabled) return '<span class="badge badge-offline">已停用</span>';
+  const age = Number(peer.handshake_age) || 0;
+  if (age <= 0) {
+    return '<span class="badge badge-offline" title="绑定后还没有出现过握手。若设备已启动并导入配置，通常 3 分钟内会出现第一次。">尚未握手</span>';
+  }
+  const abs = new Date(Date.now() - age * 1000).toLocaleString();
+  const rel = vpnRelTime(age) + '前';
+  if (age <= 180) return '<span class="badge badge-online" title="最近握手 ' + esc(abs) + '">在线 · ' + esc(rel) + '</span>';
+  if (age <= 3600) return '<span class="badge badge-pending" title="最近握手 ' + esc(abs) + '">' + esc(rel) + '</span>';
+  return '<span class="badge badge-offline" title="最近握手 ' + esc(abs) + '">' + esc(rel) + '</span>';
+}
+
+function vpnPeerSyncCell(peer) {
+  if (peer.wg_error) {
+    return '<span class="vpn-peer-error" title="' + esc(peer.wg_error) + '"><span class="vpn-err-icon">⚠</span> ' + esc(peer.wg_error) + '</span>';
+  }
+  const version = Number(peer.wg_version) || 0;
+  const applied = Number(peer.applied_version) || 0;
+  if (version > applied) {
+    return '<span style="color:#64748b" title="期望版本 ' + version + '，已应用 ' + applied + '">同步中</span>';
+  }
+  return '<span style="color:#64748b">已生效</span>';
+}
+
+function vpnPeersTable(status) {
+  const peers = Array.isArray(status.peers) ? status.peers : [];
+  if (!peers.length) {
+    return '<div class="empty">还没有设备加入组网<br><span style="font-size:12px">在上方「已授权设备」里找到目标设备，点「组网」开始绑定。</span></div>';
+  }
+  const showTraffic = peers.some(p => Object.prototype.hasOwnProperty.call(p, 'rx_bytes') || Object.prototype.hasOwnProperty.call(p, 'tx_bytes'));
+  const head = '<thead><tr><th>设备</th><th>组网地址</th><th>角色</th><th>握手</th><th>同步</th>' +
+    (showTraffic ? '<th>流量</th>' : '') + '<th>操作</th></tr></thead>';
+  const rows = peers.map(peer => {
+    const roleTitle = peer.role === 'endpoint' ? 'endpoint：作为组网出口的设备' : 'client：普通设备（手机、笔记本、NAS）';
+    let traffic = '';
+    if (showTraffic) {
+      const rx = Number(peer.rx_bytes) || 0;
+      const tx = Number(peer.tx_bytes) || 0;
+      traffic = '<td><span class="mono" title="服务端发出 ' + tx + ' 字节，收到 ' + rx + ' 字节">↑ ' +
+        esc(vpnBytes(tx)) + ' ↓ ' + esc(vpnBytes(rx)) + '</span></td>';
+    }
+    return '<tr><td><strong>' + esc(vpnPeerName(peer)) + '</strong></td>' +
+      '<td><span class="mono">' + esc(peer.wg_ip || '—') + '/32</span></td>' +
+      '<td><span class="mono" style="color:#64748b" title="' + esc(roleTitle) + '">' + esc(peer.role || '—') + '</span></td>' +
+      '<td>' + vpnHandshakeCell(peer) + '</td>' +
+      '<td>' + vpnPeerSyncCell(peer) + '</td>' + traffic +
+      '<td><button class="btn btn-ghost" onclick="openVPNModal(' + jsArg(peer.device_id) + ')">管理</button></td></tr>';
+  }).join('');
+  return '<div class="vpn-table-wrap"><table>' + head + '<tbody>' + rows + '</tbody></table></div>';
+}
+
+async function loadVPN() {
+  try {
+    const { response, data } = await apiJSON('/api/vpn/status');
+    if (!response.ok || !data) throw new Error('load failed');
+    vpnStatus = data;
+    const retry = document.getElementById('vpn-refresh-status');
+    if (retry) retry.classList.remove('show');
+    renderVPNCard();
+  } catch (e) {
+    const dot = document.getElementById('vpn-dot');
+    if (dot) dot.className = 'dot warn';
+    const retry = document.getElementById('vpn-refresh-status');
+    if (retry && vpnStatus) retry.classList.add('show');
+    if (!vpnStatus) {
+      document.getElementById('vpn-body').innerHTML =
+        '<div class="empty">状态加载失败，<span class="vpn-link" onclick="loadVPN()">点此重试</span></div>';
+    }
+  }
+}
+
+function renderVPNCard() {
+  const status = vpnStatus;
+  if (!status) return;
+  const state = vpnState(status);
+  const dot = document.getElementById('vpn-dot');
+  dot.className = 'dot ' + ((state === 'blocked' || state === 'infra') ? 'err' : (state === 'ok' ? 'ok' : 'warn'));
+  const body = document.getElementById('vpn-body');
+  let html = '';
+  if (state === 'blocked') {
+    html += vpnBanner('err', '组网已被服务端停用：状态文件没有加密', vpnBlockedText(status.blocked));
+    body.innerHTML = html + vpnStatusBar(status) + vpnReconcileResultHTML() + vpnPeersTable(status);
+    return;
+  }
+  if (state === 'infra') {
+    html += vpnBanner('err', 'WireGuard 基础设施不可用', status.infra_error,
+      '常见原因：内核没加载 wireguard 模块、没有 wg 命令、进程权限不足。处理完点右上刷新。', true);
+    body.innerHTML = html + vpnStatusBar(status) + vpnReconcileResultHTML() + vpnPeersTable(status);
+    return;
+  }
+  if (state === 'disabled') {
+    body.innerHTML = vpnBanner('info', '还没启用状态加密，组网目前不可写',
+      '绑定公钥会把 hub 私钥写进状态文件，所以服务端要求先加密状态：GOREMOTE_STATE_KEY（至少 32 字符）或 --state-key，然后重启。加密只影响新写入；已有的设备/隧道数据在重启后会迁移到加密状态。') +
+      vpnHealthBanners(status) + vpnReconcileResultHTML();
+    return;
+  }
+  html += vpnHealthBanners(status);
+  body.innerHTML = html + vpnStatusBar(status) + vpnReconcileResultHTML() + vpnPeersTable(status);
+}
+
+// 链路与 ACL 是持续的异常事实；即使状态加密未开启，也要把真实原因露出来。
+function vpnHealthBanners(status) {
+  let html = '';
+  if (status.link_up === false) {
+    html += vpnBanner('warn', '组网链路未建立', status.link_error || '服务端报告链路未启用。',
+      '总状态：异常。可点右上刷新，或检查内核与 ACL。');
+  }
+  if (status.acl_ready === false) {
+    html += vpnBanner('warn', '转发限制未就绪',
+      status.acl_warning || '组网互通已经生效，但服务端还没有下发 nft 规则：peer 之间的访问目前不受 ACL 约束。需要限制时请先用设备级的隧道白名单。');
+  }
+  return html;
+}
+
+function vpnReconcileResultHTML() {
+  const result = vpnReconcileResult;
+  if (!result) return '';
+  const infra = result.infra_error ? result.infra_error : '—';
+  return '<div class="vpn-hint" id="vpn-reconcile-result">重新对齐结果：<span class="mono">gen=' +
+    esc(result.gen ?? '—') + ' applied=' + esc(result.applied ?? '—') +
+    ' acl_ready=' + esc(String(result.acl_ready)) + ' infra_error=' + esc(infra) + '</span></div>';
+}
+
+// 组网弹窗
+function vpnSetFocus(id) { vpnFocusTarget = id; }
+
+function vpnApplyFocus() {
+  if (!vpnFocusTarget) return;
+  const el = document.getElementById(vpnFocusTarget);
+  vpnFocusTarget = '';
+  if (!el) return;
+  try { el.focus(); } catch (e) { /* ignore */ }
+}
+
+async function ensureTOTPStatus() {
+  if (totpStatusLoaded) return;
+  try {
+    const { response, data } = await apiJSON('/api/admin/totp');
+    if (response.ok && data) {
+      totpStatusLoaded = true;
+      totpEnabled = !!data.enabled;
+    }
+  } catch (e) { /* fall back to password-only confirm */ }
+}
+
+async function openVPNModal(id) {
+  const device = deviceList.find(x => x.id === id) || null;
+  vpnModal = vpnBlankModal();
+  vpnModal.id = id;
+  vpnModal.device = device;
+  vpnModal.trigger = document.activeElement;
+  document.getElementById('vpn-modal-title').textContent = '设备组网 · ' + vpnDeviceName(device);
+  document.getElementById('vpn-modal-body').innerHTML = '<div class="empty">加载中...</div>';
+  document.getElementById('vpn-modal').classList.add('show');
+
+  await ensureVPNStatus();
+  if (!vpnStatus) {
+    vpnModal.mode = 'error';
+    vpnModal.error = '无法获取组网状态';
+    vpnModal.errorDetail = '请检查网络后重试。';
+    vpnSetFocus('vpn-modal-error');
+    renderVPNModal();
+    return;
+  }
+  const state = vpnState(vpnStatus);
+  if (state === 'blocked' || state === 'infra' || state === 'disabled') {
+    vpnModal.mode = 'gate';
+    vpnSetFocus('vpn-gate-retry');
+    renderVPNModal();
+    return;
+  }
+  await vpnLoadBindingForModal();
+}
+
+async function ensureVPNStatus() {
+  if (vpnStatus) return;
+  await loadVPN();
+}
+
+async function vpnLoadBindingForModal() {
+  try {
+    const { response, data } = await apiJSON('/api/devices/' + encodeURIComponent(vpnModal.id) + '/vpn');
+    if (response.ok && data) {
+      vpnModal.binding = data;
+      vpnTemplates[vpnModal.id] = data.template || '';
+      vpnModal.mode = 'detail';
+      vpnSetFocus('vpn-detail-close');
+      renderVPNModal();
+      return;
+    }
+    const message = (data && data.error) || '';
+    if (response.status === 404 && /no wireguard binding/i.test(message)) {
+      vpnModal.mode = 'form';
+      vpnModal.role = 'client';
+      vpnSetFocus('vpn-pubkey');
+      renderVPNModal();
+      return;
+    }
+    vpnModal.mode = 'error';
+    vpnModal.error = message || '无法读取设备组网绑定';
+    vpnModal.errorDetail = response.status === 404 ? '设备不存在或已被删除，请刷新设备列表后重试。' : '请检查网络后重试。';
+    vpnSetFocus('vpn-modal-error');
+    renderVPNModal();
+  } catch (e) {
+    vpnModal.mode = 'error';
+    vpnModal.error = '网络错误，请重试';
+    renderVPNModal();
+  }
+}
+
+function retryVPNModal() {
+  const id = vpnModal.id;
+  const trigger = vpnModal.trigger;
+  openVPNModal(id).then(() => { if (vpnModal) vpnModal.trigger = trigger; });
+}
+
+function closeVPNModal() {
+  if (vpnModal && vpnModal.submitting) return;
+  stopVPNAuthTicker();
+  stopVPNSubmitTimers();
+  const trigger = vpnModal ? vpnModal.trigger : null;
+  document.getElementById('vpn-modal').classList.remove('show');
+  vpnModal = vpnBlankModal();
+  if (trigger && typeof trigger.focus === 'function') {
+    try { trigger.focus(); } catch (e) { /* ignore */ }
+  }
+}
+
+function renderVPNModal() {
+  const body = document.getElementById('vpn-modal-body');
+  const title = document.getElementById('vpn-modal-title');
+  const name = vpnDeviceName(vpnModal.device);
+  stopVPNAuthTicker();
+  switch (vpnModal.mode) {
+    case 'gate':
+      title.textContent = '设备组网 · ' + name;
+      body.innerHTML = vpnGateHTML() + '<div class="vpn-empty-actions">' +
+        '<button class="btn btn-ghost" onclick="closeVPNModal()">关闭</button>' +
+        '<button class="btn btn-primary" id="vpn-gate-retry" onclick="retryVPNModal()">刷新状态</button></div>';
+      break;
+    case 'form':
+      title.textContent = '设备组网 · ' + name;
+      renderVPNForm();
+      break;
+    case 'confirm':
+      title.textContent = vpnModal.action === 'delete' ? '确认解绑 · 管理员确认'
+        : (vpnModal.action === 'reconcile' ? '重新对齐 · 管理员确认' : '需要管理员确认');
+      renderVPNConfirm();
+      break;
+    case 'result':
+      title.textContent = '已加入组网';
+      renderVPNResult();
+      break;
+    case 'detail':
+      title.textContent = '设备组网 · ' + name;
+      renderVPNDetail();
+      break;
+    case 'confirm-unbind':
+      title.textContent = '移出组网 · ' + name;
+      renderVPNUnbindConfirm();
+      break;
+    case 'error':
+      title.textContent = '设备组网 · ' + name;
+      body.innerHTML = vpnErrorBanner() + '<div class="vpn-empty-actions">' +
+        '<button class="btn btn-ghost" onclick="closeVPNModal()">关闭</button>' +
+        '<button class="btn btn-primary" onclick="retryVPNModal()">重试</button></div>';
+      break;
+    default:
+      body.innerHTML = '<div class="empty">加载中...</div>';
+  }
+  vpnApplyFocus();
+}
+
+function vpnGateHTML() {
+  const status = vpnStatus || {};
+  const state = vpnState(status);
+  if (state === 'blocked') {
+    return vpnBanner('err', '组网已被服务端停用：状态文件没有加密', vpnBlockedText(status.blocked));
+  }
+  if (state === 'infra') {
+    return vpnBanner('err', 'WireGuard 基础设施不可用', status.infra_error,
+      '常见原因：内核没加载 wireguard 模块、没有 wg 命令、进程权限不足。处理完点「刷新状态」。', true);
+  }
+  return vpnBanner('info', '还没启用状态加密，组网目前不可写',
+    '绑定公钥会把 hub 私钥写进状态文件，所以服务端要求先加密状态：GOREMOTE_STATE_KEY（至少 32 字符）或 --state-key，然后重启。加密只影响新写入；已有的设备/隧道数据在重启后会迁移到加密状态。');
+}
+
+function vpnValidatePubkey(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return { status: 'empty', msg: '请输入公钥' };
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) ||
+      !(value.length === 43 || (value.length === 44 && value.endsWith('=')))) {
+    return { status: 'error', msg: '公钥应为 44 个字符的 Base64（以 = 结尾）' };
+  }
+  let binary;
+  try {
+    binary = atob(value + '='.repeat((4 - value.length % 4) % 4));
+  } catch (e) {
+    return { status: 'error', msg: '这串不是有效的 Base64 公钥，请重新复制' };
+  }
+  if (binary.length !== 32) {
+    return { status: 'error', msg: '这串不是有效的 Base64 公钥，请重新复制' };
+  }
+  const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+  if ((bytes[0] & 0x07) === 0 && (bytes[31] & 0xC0) === 0x40) {
+    return { status: 'private', msg: '这个值看起来是私钥，已拒绝保存' };
+  }
+  return { status: 'ok' };
+}
+
+function vpnUpdatePubCheck(showError) {
+  const input = document.getElementById('vpn-pubkey');
+  const check = document.getElementById('vpn-pubcheck');
+  const error = document.getElementById('vpn-pubkey-error');
+  if (!input || !check || !error) return;
+  check.innerHTML = '';
+  error.innerHTML = '';
+  if (!input.value.trim()) return;
+  const result = vpnValidatePubkey(input.value);
+  if (result.status === 'ok') {
+    check.innerHTML = '<span class="ok">✓</span>格式正确';
+  } else if (result.status === 'private') {
+    if (showError) error.innerHTML = '<span class="vpn-err-icon">⚠</span>' + esc(result.msg);
+  } else if (showError) {
+    error.innerHTML = '<span class="vpn-err-icon">⚠</span>' + esc(result.msg);
+  }
+}
+
+function vpnErrorBanner() {
+  if (!vpnModal.error) return '';
+  let action = '';
+  if (vpnModal.errorCode === 'PUBKEY_IN_USE' || vpnModal.errorCode === 'PUBKEY_LOOKS_LIKE_PRIVATE_KEY') {
+    action = '<button class="btn btn-ghost" onclick="vpnRestartKey()">重新生成密钥对</button>';
+  } else if (vpnModal.errorCode === 'ROLE_LOCKED') {
+    action = '<button class="btn btn-ghost" onclick="vpnStartUnbind()">去解绑</button>';
+  }
+  return '<div class="vpn-banner err" role="alert" id="vpn-modal-error" tabindex="-1">' +
+    '<div class="vpn-banner-icon">⚠</div><div class="vpn-banner-body">' +
+    '<div class="vpn-banner-title">操作失败</div>' +
+    '<div class="vpn-banner-text">' + esc(vpnModal.error) + '</div>' +
+    (vpnModal.errorDetail ? '<div class="vpn-banner-detail">' + esc(vpnModal.errorDetail) + '</div>' : '') +
+    action + '</div></div>';
+}
+
+function vpnPrivatePanel() {
+  return '<div class="vpn-banner warn">' +
+    '<div class="vpn-banner-icon">⚠</div><div class="vpn-banner-body">' +
+    '<div class="vpn-banner-title">这个值看起来是私钥，已拒绝保存</div>' +
+    '<div class="vpn-banner-text">这里要的是 <strong>Public key</strong>（wg pubkey 的输出），不是 privatekey 的内容。' +
+    '如果你确认复制的是公钥，可能是命中了约 6% 的误判——这把密钥的随机字节恰好和私钥特征相同。</div>' +
+    '<div class="vpn-banner-detail">解决办法：重新执行一次 wg genkey | tee privatekey | wg pubkey，贴新的公钥；' +
+    '客户端用户删掉那条隧道重新创建，复制新的 Public key。同一个公钥反复提交会一直失败，这不是网络问题。</div>' +
+    (vpnModal.privateHint ? '<div class="vpn-banner-detail">' + esc(vpnModal.privateHint) + '</div>' : '') +
+    '<button class="btn btn-ghost" onclick="vpnRestartKey()">重新生成密钥对</button>' +
+    '</div></div>';
+}
+
+function renderVPNForm() {
+  const rebind = !!vpnModal.binding;
+  const role = rebind ? (vpnModal.binding.role || 'client') : (vpnModal.role || 'client');
+  let html = '';
+  if (vpnModal.error) html += vpnErrorBanner();
+  if (vpnModal.privatePanel) html += vpnPrivatePanel();
+  html += '<div class="vpn-section-label">' + (rebind ? '① 重新生成一把' : '① 在你自己的设备上生成密钥对') + '</div>';
+  html += '<div class="vpn-cmd" id="vpn-command" tabindex="0"><code>wg genkey | tee privatekey | wg pubkey</code>' +
+    '<button class="btn btn-ghost" onclick="copyVPNCommand(this)">复制命令</button></div>';
+  html += '<div class="vpn-hint">' + (rebind
+    ? '旧公钥会立即失效，设备需要用新配置重新连接。输出的最后一行是公钥；privatekey 留在本机（建议 chmod 600），不要粘贴到这里。'
+    : '输出的最后一行是公钥。privatekey 留在本机（建议 chmod 600），不要粘贴到这里。官方客户端（Windows / macOS / iOS / Android）不需要命令行：新建隧道时会自己生成密钥对，复制它显示的 Public key 即可。') + '</div>';
+  if (vpnModal.keyNotice) html += '<div class="vpn-check">' + esc(vpnModal.keyNotice) + '</div>';
+  html += '<div class="vpn-section-label">② 粘贴公钥</div>';
+  html += '<div class="form-group" style="margin-bottom:0"><input type="text" id="vpn-pubkey" value="' +
+    esc(vpnModal.pubkey) + '" placeholder="44 位 Base64，以 = 结尾" autocomplete="off" spellcheck="false">' +
+    '<div class="vpn-check" id="vpn-pubcheck"></div>' +
+    '<div class="vpn-inline-error" id="vpn-pubkey-error" role="alert"></div></div>';
+  html += '<div class="vpn-hint" style="margin-top:6px">公钥以 = 结尾，43 或 44 个字符；这里只收 Public key。</div>';
+  html += '<div class="vpn-section-label">③ 角色</div>';
+  html += '<div class="form-group" style="margin-bottom:0"><select id="vpn-role"' + (rebind ? ' disabled' : '') + '>' +
+    '<option value="client"' + (role === 'client' ? ' selected' : '') + '>client</option>' +
+    '<option value="endpoint"' + (role === 'endpoint' ? ' selected' : '') + '>endpoint</option></select></div>';
+  html += '<div class="vpn-role-note">' + (rebind
+    ? '角色已锁定为 ' + esc(role) + '；要换成另一角色请先解绑。'
+    : 'client —— 普通设备（手机、笔记本、NAS）；endpoint —— 作为组网出口的设备（对端需要开启转发）。角色在首次绑定后固定。') + '</div>';
+  html += '<div class="modal-actions"><button class="btn btn-ghost" onclick="closeVPNModal()">取消</button>' +
+    '<button class="btn btn-primary" id="vpn-form-submit" onclick="vpnFormSubmit()">绑定并生成配置</button></div>';
+  document.getElementById('vpn-modal-body').innerHTML = html;
+
+  const input = document.getElementById('vpn-pubkey');
+  const select = document.getElementById('vpn-role');
+  if (input) {
+    input.addEventListener('input', () => {
+      vpnModal.pubkey = input.value;
+      vpnUpdatePubCheck(false);
+    });
+    input.addEventListener('blur', () => {
+      if (input.value.trim()) vpnUpdatePubCheck(true);
+    });
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); vpnFormSubmit(); }
+    });
+  }
+  if (select) select.addEventListener('change', () => { vpnModal.role = select.value; });
+  vpnUpdatePubCheck(false);
+}
+
+async function vpnFormSubmit() {
+  const input = document.getElementById('vpn-pubkey');
+  const select = document.getElementById('vpn-role');
+  if (!input) return;
+  const result = vpnValidatePubkey(input.value);
+  if (result.status === 'empty') {
+    document.getElementById('vpn-pubkey-error').innerHTML =
+      '<span class="vpn-err-icon">⚠</span>请输入公钥';
+    input.focus();
+    return;
+  }
+  if (result.status === 'private') {
+    vpnModal.pubkey = input.value.trim();
+    vpnModal.privatePanel = true;
+    vpnModal.privateHint = '';
+    vpnModal.error = '';
+    vpnModal.errorCode = '';
+    vpnSetFocus('vpn-command');
+    renderVPNModal();
+    return;
+  }
+  if (result.status === 'error') {
+    document.getElementById('vpn-pubkey-error').innerHTML =
+      '<span class="vpn-err-icon">⚠</span>' + esc(result.msg);
+    input.focus();
+    return;
+  }
+  vpnModal.pubkey = input.value.trim();
+  vpnModal.role = select ? select.value : vpnModal.role;
+  vpnModal.error = '';
+  vpnModal.errorCode = '';
+  vpnModal.errorDetail = '';
+  vpnModal.action = 'bind';
+  await ensureTOTPStatus();
+  vpnModal.mode = 'confirm';
+  vpnSetFocus(totpEnabled ? 'vpn-reauth-totp' : 'vpn-reauth-password');
+  renderVPNModal();
+}
+
+function vpnUpdateConfirmButton() {
+  const button = document.getElementById('vpn-confirm-submit');
+  if (!button) return;
+  const password = document.getElementById('vpn-reauth-password');
+  const code = document.getElementById('vpn-reauth-totp');
+  const lock = Math.max(0, Math.ceil((vpnModal.authLockUntil - Date.now()) / 1000));
+  const needsTOTP = totpEnabled;
+  const missing = !password || !password.value || (needsTOTP && (!code || !code.value.trim()));
+  button.disabled = vpnModal.submitting || vpnModal.totpUnavailable || lock > 0 || missing;
+  if (vpnModal.submitting) {
+    button.textContent = vpnModal.slow ? '仍在等待内核应用…' : '处理中…';
+  } else if (lock > 0) {
+    button.textContent = '请等待 ' + lock + ' 秒';
+  } else {
+    button.textContent = vpnModal.action === 'delete' ? '确认解绑'
+      : (vpnModal.action === 'reconcile' ? '确认对齐' : '确认绑定');
+  }
+  const note = document.getElementById('vpn-auth-lock-note');
+  if (note) {
+    if (lock > 0) note.textContent = '尝试次数过多，请稍后再试。';
+    else if (vpnModal.totpUnavailable) note.textContent = '两步验证状态异常，暂时无法验证动态码；请检查服务端 TOTP 配置。';
+    else note.textContent = '';
+  }
+}
+
+function startVPNAuthTicker() {
+  stopVPNAuthTicker();
+  if (vpnModal.authLockUntil <= Date.now()) return;
+  vpnAuthTicker = setInterval(() => {
+    vpnUpdateConfirmButton();
+    if (vpnModal.authLockUntil <= Date.now()) stopVPNAuthTicker();
+  }, 1000);
+}
+
+function stopVPNAuthTicker() {
+  if (vpnAuthTicker) { clearInterval(vpnAuthTicker); vpnAuthTicker = null; }
+}
+
+function renderVPNConfirm() {
+  const action = vpnModal.action;
+  const name = vpnDeviceName(vpnModal.device);
+  let html = '';
+  if (vpnModal.error) html += vpnErrorBanner();
+  const intro = action === 'delete'
+    ? '即将把「' + esc(name) + '」移出组网，并立即断开该设备的组网连接。'
+    : (action === 'reconcile'
+      ? '即将触发一次全量 WireGuard reconcile：重装 ACL、同步所有 peer，并等待内核应用完成。'
+      : '即将为「' + esc(name) + '」绑定公钥并写入服务端组网配置。');
+  html += '<div class="vpn-hint" style="font-size:13px;color:#1e293b">' + intro + '</div>';
+  html += '<div class="form-group"><label>管理员密码</label><input type="password" id="vpn-reauth-password" autocomplete="current-password" value="' +
+    esc(vpnModal.password) + '"></div>';
+  if (totpEnabled) {
+    html += '<div class="form-group"><label>动态码</label><input type="text" id="vpn-reauth-totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字" value="' +
+      esc(vpnModal.totp) + '"></div>';
+  }
+  html += '<div class="vpn-lock-note" id="vpn-auth-lock-note"></div>';
+  const backLabel = action === 'reconcile' ? '取消' : '返回修改';
+  const submitLabel = action === 'delete' ? '确认解绑' : (action === 'reconcile' ? '确认对齐' : '确认绑定');
+  html += '<div class="modal-actions"><button class="btn btn-ghost" onclick="vpnConfirmBack()">' + backLabel + '</button>' +
+    '<button class="btn btn-primary" id="vpn-confirm-submit" onclick="vpnConfirmSubmit()">' +
+    submitLabel + '</button></div>';
+  document.getElementById('vpn-modal-body').innerHTML = html;
+
+  const password = document.getElementById('vpn-reauth-password');
+  const code = document.getElementById('vpn-reauth-totp');
+  if (password) {
+    password.addEventListener('input', () => { vpnModal.password = password.value; vpnUpdateConfirmButton(); });
+    password.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        if (code) code.focus(); else vpnConfirmSubmit();
+      }
+    });
+  }
+  if (code) {
+    code.addEventListener('input', () => { vpnModal.totp = code.value; vpnUpdateConfirmButton(); });
+    code.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); vpnConfirmSubmit(); }
+    });
+  }
+  vpnUpdateConfirmButton();
+  startVPNAuthTicker();
+}
+
+function vpnConfirmBack() {
+  if (vpnModal.submitting) return;
+  vpnModal.error = '';
+  vpnModal.errorCode = '';
+  vpnModal.errorDetail = '';
+  if (vpnModal.action === 'reconcile') {
+    closeVPNModal();
+    return;
+  }
+  if (vpnModal.action === 'delete') {
+    vpnModal.mode = 'detail';
+    vpnSetFocus('vpn-detail-close');
+  } else {
+    vpnModal.mode = 'form';
+    vpnSetFocus('vpn-pubkey');
+  }
+  renderVPNModal();
+}
+
+function startVPNSubmitTimers() {
+  stopVPNSubmitTimers();
+  vpnSlowTimer = setTimeout(() => {
+    if (!vpnModal.submitting) return;
+    vpnModal.slow = true;
+    vpnUpdateConfirmButton();
+  }, 6000);
+}
+
+function stopVPNSubmitTimers() {
+  if (vpnSlowTimer) { clearTimeout(vpnSlowTimer); vpnSlowTimer = null; }
+}
+
+async function vpnConfirmSubmit() {
+  if (vpnModal.submitting) return;
+  const password = document.getElementById('vpn-reauth-password');
+  const code = document.getElementById('vpn-reauth-totp');
+  if (!password || !password.value) { if (password) password.focus(); return; }
+  if (totpEnabled && (!code || !code.value.trim())) { if (code) code.focus(); return; }
+  vpnModal.password = password.value;
+  vpnModal.totp = code ? code.value.trim() : '';
+  vpnModal.submitting = true;
+  vpnModal.slow = false;
+  vpnModal.error = '';
+  vpnModal.errorCode = '';
+  vpnModal.errorDetail = '';
+  vpnUpdateConfirmButton();
+  startVPNSubmitTimers();
+  if (vpnModal.action === 'delete') await vpnDeleteRequest();
+  else if (vpnModal.action === 'reconcile') await vpnReconcileRequest();
+  else await vpnBindRequest();
+}
+
+async function reconcileVPN() {
+  await ensureTOTPStatus();
+  vpnModal = vpnBlankModal();
+  vpnModal.action = 'reconcile';
+  vpnModal.mode = 'confirm';
+  vpnModal.trigger = document.activeElement;
+  document.getElementById('vpn-modal').classList.add('show');
+  vpnSetFocus(totpEnabled ? 'vpn-reauth-totp' : 'vpn-reauth-password');
+  renderVPNModal();
+}
+
+async function vpnReconcileRequest() {
+  try {
+    const { response, data } = await apiJSON('/api/vpn/reconcile', { method: 'POST', headers: vpnAuthHeaders() });
+    vpnModal.submitting = false;
+    vpnModal.slow = false;
+    stopVPNSubmitTimers();
+    if (response.ok) {
+      vpnReconcileResult = data;
+      toast('已重新对齐');
+      closeVPNModal();
+      loadVPN();
+      return;
+    }
+    vpnHandleWriteError(data, response, 'reconcile');
+  } catch (e) {
+    vpnModal.submitting = false;
+    vpnModal.slow = false;
+    stopVPNSubmitTimers();
+    vpnModal.mode = 'confirm';
+    vpnModal.error = '网络错误，请重试';
+    renderVPNModal();
+    toast('网络错误，请重试', 'error');
+  }
+}
+
+function vpnAuthHeaders() {
+  const headers = { 'X-Reauth-Password': vpnModal.password };
+  if (vpnModal.totp) headers['X-Reauth-TOTP'] = vpnModal.totp;
+  return headers;
+}
+
+async function vpnBindRequest() {
+  try {
+    const headers = vpnAuthHeaders();
+    headers['Content-Type'] = 'application/json';
+    const { response, data } = await apiJSON('/api/devices/' + encodeURIComponent(vpnModal.id) + '/vpn', {
+      method: 'PUT', headers: headers,
+      body: JSON.stringify({ pubkey: vpnModal.pubkey, role: vpnModal.role })
+    });
+    vpnModal.submitting = false;
+    vpnModal.slow = false;
+    stopVPNSubmitTimers();
+    if (response.ok) {
+      vpnModal.result = data;
+      vpnTemplates[vpnModal.id] = data.template || '';
+      vpnModal.error = '';
+      vpnModal.mode = 'result';
+      vpnSetFocus('vpn-result-done');
+      renderVPNModal();
+      toast('已加入组网');
+      loadVPN();
+      loadDevices();
+      return;
+    }
+    vpnHandleWriteError(data, response, 'bind');
+  } catch (e) {
+    vpnModal.submitting = false;
+    vpnModal.slow = false;
+    stopVPNSubmitTimers();
+    vpnModal.mode = 'confirm';
+    vpnModal.error = '网络错误，请重试';
+    vpnModal.errorDetail = '';
+    vpnSetFocus('vpn-confirm-submit');
+    renderVPNModal();
+    toast('网络错误，请重试', 'error');
+  }
+}
+
+async function vpnDeleteRequest() {
+  try {
+    const response = await apiFetch('/api/devices/' + encodeURIComponent(vpnModal.id) + '/vpn', {
+      method: 'DELETE', headers: vpnAuthHeaders()
+    });
+    vpnModal.submitting = false;
+    vpnModal.slow = false;
+    stopVPNSubmitTimers();
+    if (response.ok) {
+      toast('已移出组网');
+      closeVPNModal();
+      loadVPN();
+      loadDevices();
+      return;
+    }
+    let data = null;
+    try { data = await response.json(); } catch (e) { data = null; }
+    if (!data || (!data.code && !data.error)) {
+      data = { error: '解绑失败', code: '' };
+      vpnModal.errorDetail = '内核里的 peer 可能已撤销；刷新后如果地址仍占用，重试一次解绑。';
+    }
+    vpnHandleWriteError(data, response, 'delete');
+  } catch (e) {
+    vpnModal.submitting = false;
+    vpnModal.slow = false;
+    stopVPNSubmitTimers();
+    vpnModal.mode = 'confirm';
+    vpnModal.error = '网络错误，请重试';
+    renderVPNModal();
+    toast('网络错误，请重试', 'error');
+  }
+}
+
+function vpnCodeExplanation(code, data) {
+  switch (code) {
+    case 'REAUTH_REQUIRED': return '需要管理员密码才能执行这个操作。';
+    case 'REAUTH_FAILED': return '管理员密码不正确。';
+    case 'REAUTH_TOTP_REQUIRED': return '这台服务器已启用两步验证，请补上动态码。';
+    case 'REAUTH_TOTP_FAILED': return '动态码不正确或已过期，请输入当前显示的 6 位码。';
+    case 'REAUTH_TOTP_UNAVAILABLE': return '两步验证状态异常，暂时无法验证动态码；请检查服务端 TOTP 配置。';
+    case 'REAUTH_LOCKED': return '尝试次数过多，请稍后再试。';
+    case 'INVALID_PUBKEY': return '公钥格式不对：应为 32 字节 Base64，43–44 个字符。';
+    case 'INVALID_ROLE': return '角色只能是 client 或 endpoint。';
+    case 'PUBKEY_IN_USE': return '这把公钥已经绑定在另一台设备上。先在那台设备解绑，或为这台重新生成密钥对。';
+    case 'ROLE_LOCKED': return '角色在首次绑定时就固定了，不能直接改。要换角色请先解绑。';
+    case 'CIDR_CONFLICT': return '组网网段与服务器公网地址重叠，服务端配置的 wg_cidr 需要换一段。';
+    case 'CIDR_LOCKED': return '已经绑定设备的情况下不能改网段。';
+    case 'POOL_EXHAUSTED': return '组网地址池已用尽。需要在服务端扩大 wg_cidr 并重启。';
+    case 'DEVICE_NOT_AUTHORIZED': return '这台设备还没通过审批，先批准再加入组网。';
+    case 'SUPERSEDED': return '这台设备刚被另一次操作改过，页面已刷新，请确认后重试。';
+    case 'STATE_ENCRYPTION_REQUIRED': return '状态文件没有加密，服务端拒绝写入 hub 私钥。设置 GOREMOTE_STATE_KEY 后重启。';
+    case 'PUBLIC_HOST_REQUIRED': return '服务端无法生成可达的 endpoint：请先在设置里填写 public_host。';
+    case 'WG_INFRA': return '内核侧不可用：' + ((data && data.detail) || '检查 wireguard 模块、wg 命令和进程权限。');
+    case 'LISTEN_PORT_CONFLICT': return '隧道端口范围包含了 WireGuard 的监听端口，先在设置里改端口范围。';
+    case 'WG_PEER_ERROR': return '内核拒绝了这条 peer。';
+    default: return data && data.detail ? data.detail : '';
+  }
+}
+
+function vpnHandleWriteError(data, response, kind) {
+  const code = (data && data.code) || '';
+  const message = (data && data.error) || '操作失败';
+  vpnModal.submitting = false;
+  vpnModal.slow = false;
+  stopVPNSubmitTimers();
+  vpnModal.error = message;
+  vpnModal.errorCode = code;
+  // 某些 500 错误没有稳定 code，调用方会先填好处理建议；这里不要用空解释覆盖它。
+  vpnModal.errorDetail = vpnCodeExplanation(code, data) || vpnModal.errorDetail || '';
+
+  // 这两个 404 没有稳定 code：设备没了、或者绑定已经被别处清掉。
+  if (!code && /device not found/i.test(message)) {
+    closeVPNModal();
+    toast('设备不存在或已被删除', 'error');
+    loadDevices();
+    loadVPN();
+    return;
+  }
+  if (!code && /no wireguard binding/i.test(message)) {
+    closeVPNModal();
+    toast('这台设备已经不在组网中');
+    loadVPN();
+    return;
+  }
+
+  switch (code) {
+    case 'REAUTH_REQUIRED':
+      vpnModal.password = '';
+      vpnModal.mode = 'confirm';
+      vpnSetFocus('vpn-reauth-password');
+      renderVPNModal();
+      return;
+    case 'REAUTH_FAILED':
+      vpnModal.password = '';
+      vpnModal.mode = 'confirm';
+      vpnSetFocus('vpn-reauth-password');
+      renderVPNModal();
+      return;
+    case 'REAUTH_TOTP_REQUIRED':
+      totpEnabled = true;
+      vpnModal.mode = 'confirm';
+      vpnSetFocus('vpn-reauth-totp');
+      renderVPNModal();
+      return;
+    case 'REAUTH_TOTP_FAILED':
+      vpnModal.totp = '';
+      vpnModal.mode = 'confirm';
+      vpnSetFocus('vpn-reauth-totp');
+      renderVPNModal();
+      return;
+    case 'REAUTH_TOTP_UNAVAILABLE':
+      vpnModal.totpUnavailable = true;
+      vpnModal.mode = 'confirm';
+      renderVPNModal();
+      return;
+    case 'REAUTH_LOCKED':
+      vpnModal.authLockUntil = Date.now() + 60000;
+      vpnModal.mode = 'confirm';
+      renderVPNModal();
+      return;
+    case 'PUBKEY_LOOKS_LIKE_PRIVATE_KEY':
+      vpnModal.mode = 'form';
+      vpnModal.privatePanel = true;
+      vpnModal.privateHint = (data && data.hint) || '';
+      vpnModal.error = '';
+      vpnModal.errorCode = '';
+      vpnModal.errorDetail = '';
+      vpnSetFocus('vpn-command');
+      renderVPNModal();
+      return;
+    case 'DEVICE_NOT_AUTHORIZED':
+      closeVPNModal();
+      toast('这台设备还没通过审批，先批准再加入组网', 'error');
+      const deviceTable = document.getElementById('devices');
+      if (deviceTable) deviceTable.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    case 'STATE_ENCRYPTION_REQUIRED':
+      if (kind === 'reconcile') {
+        closeVPNModal();
+        loadVPN();
+        toast('状态文件没有加密，无法重新对齐', 'error');
+        return;
+      }
+      loadVPN().then(() => {
+        vpnModal.mode = 'gate';
+        renderVPNModal();
+      });
+      return;
+    case 'SUPERSEDED':
+      loadVPN();
+      vpnModal.mode = 'confirm';
+      vpnSetFocus('vpn-confirm-submit');
+      renderVPNModal();
+      return;
+    case 'INVALID_PUBKEY':
+    case 'INVALID_ROLE':
+    case 'PUBKEY_IN_USE':
+    case 'ROLE_LOCKED':
+    case 'CIDR_CONFLICT':
+    case 'CIDR_LOCKED':
+    case 'POOL_EXHAUSTED':
+    case 'LISTEN_PORT_CONFLICT':
+      vpnModal.mode = 'form';
+      vpnSetFocus('vpn-modal-error');
+      renderVPNModal();
+      return;
+    default:
+      vpnModal.mode = 'confirm';
+      vpnSetFocus('vpn-modal-error');
+      renderVPNModal();
+  }
+}
+
+function vpnRestartKey() {
+  vpnModal.pubkey = '';
+  vpnModal.privatePanel = false;
+  vpnModal.privateHint = '';
+  vpnModal.error = '';
+  vpnModal.errorCode = '';
+  vpnModal.errorDetail = '';
+  vpnModal.keyNotice = '已重新开始，生成后把新的公钥贴进来。';
+  vpnModal.mode = 'form';
+  vpnSetFocus('vpn-command');
+  renderVPNModal();
+}
+
+function renderVPNResult() {
+  const result = vpnModal.result || {};
+  const template = result.template || '';
+  const notes = Array.isArray(result.notes) ? result.notes : [];
+  let html = '<div class="vpn-result-grid">' +
+    '<span>组网地址 <b class="mono">' + esc(result.wg_ip || '—') + '/32</b></span>' +
+    '<span>角色 <b class="mono">' + esc(result.role || '—') + '</b></span>' +
+    '<span>版本 <b>' + esc(result.applied || 0) + '</b></span></div>';
+  html += '<div class="vpn-hint" style="margin-bottom:6px">Endpoint <span class="mono" style="color:#1e293b">' +
+    esc(result.endpoint || '—') + '</span></div>';
+  html += '<div class="vpn-section-label" style="display:flex;justify-content:space-between;align-items:center">' +
+    '<span>配置（粘贴到你的设备）</span><button class="btn btn-ghost" onclick="copyVPNTemplate(this)">复制配置</button></div>';
+  html += '<pre class="vpn-pre" id="vpn-template" tabindex="0">' + esc(template) + '</pre>';
+  if (notes.length) {
+    html += '<ul class="vpn-notes">' + notes.map(note => '<li>' + esc(note) + '</li>').join('') + '</ul>';
+  }
+  if (result.endpoint_warning) {
+    html += vpnBanner('warn', 'Endpoint 可能不可达', result.endpoint_warning);
+  }
+  if (result.acl_ready === false) {
+    html += '<div class="vpn-warn-line">⚠ 转发限制未就绪（阶段 1）：peer 之间的访问目前不受 ACL 约束。</div>';
+  }
+  html += '<div class="modal-actions"><button class="btn btn-primary" id="vpn-result-done" onclick="vpnFinishResult()">完成</button></div>';
+  document.getElementById('vpn-modal-body').innerHTML = html;
+}
+
+function vpnFinishResult() {
+  closeVPNModal();
+  loadVPN();
+  loadDevices();
+}
+
+function vpnPeerForDevice(id) {
+  if (!vpnStatus || !Array.isArray(vpnStatus.peers)) return null;
+  return vpnStatus.peers.find(peer => peer.device_id === id) || null;
+}
+
+function renderVPNDetail() {
+  const binding = vpnModal.binding || {};
+  const peer = vpnPeerForDevice(vpnModal.id) || {};
+  let html = '';
+  if (vpnModal.error) html += vpnErrorBanner();
+  html += '<div class="vpn-result-grid">' +
+    '<span>组网地址 <b class="mono">' + esc(binding.wg_ip || '—') + '/32</b></span>' +
+    '<span>角色 <b class="mono">' + esc(binding.role || '—') + '</b></span>' +
+    '<span>状态 ' + (peer.device_id ? vpnHandshakeCell(peer) : '<span class="badge badge-offline">未上报</span>') + '</span></div>';
+  if (peer.pubkey_fingerprint) {
+    html += '<div class="vpn-hint">公钥指纹 <span class="mono" style="color:#475569">' + esc(peer.pubkey_fingerprint) + '</span>' +
+      ' · 同步 ' + vpnPeerSyncCell(peer) + '</div>';
+  }
+  if (binding.template) {
+    html += '<div class="vpn-section-label" style="display:flex;justify-content:space-between;align-items:center">' +
+      '<span>客户端配置</span><button class="btn btn-ghost" onclick="copyVPNTemplate(this)">复制配置</button></div>';
+    html += '<pre class="vpn-pre" id="vpn-template" tabindex="0">' + esc(binding.template) + '</pre>';
+  } else {
+    html += '<div class="vpn-hint">配置只在绑定成功时显示一次；如需重新获取，请点「更换公钥」重新生成（组网地址不变）。</div>';
+  }
+  if (binding.endpoint_warning) html += vpnBanner('warn', 'Endpoint 可能不可达', binding.endpoint_warning);
+  if (binding.acl_ready === false) {
+    html += '<div class="vpn-warn-line">⚠ 转发限制未就绪：peer 之间的访问目前不受 ACL 约束。</div>';
+  }
+  html += '<div class="modal-actions">' +
+    '<button class="btn btn-ghost" id="vpn-detail-close" onclick="closeVPNModal()">关闭</button>' +
+    '<button class="btn btn-ghost" onclick="vpnStartRebind()">更换公钥</button>' +
+    '<button class="btn btn-danger" onclick="vpnStartUnbind()">解绑</button></div>';
+  document.getElementById('vpn-modal-body').innerHTML = html;
+}
+
+function vpnStartRebind() {
+  vpnModal.pubkey = '';
+  vpnModal.role = (vpnModal.binding && vpnModal.binding.role) || 'client';
+  vpnModal.error = '';
+  vpnModal.errorCode = '';
+  vpnModal.errorDetail = '';
+  vpnModal.privatePanel = false;
+  vpnModal.keyNotice = '';
+  vpnModal.mode = 'form';
+  vpnSetFocus('vpn-pubkey');
+  renderVPNModal();
+}
+
+function vpnStartUnbind() {
+  vpnModal.error = '';
+  vpnModal.errorCode = '';
+  vpnModal.errorDetail = '';
+  vpnModal.mode = 'confirm-unbind';
+  vpnSetFocus('vpn-unbind-cancel');
+  renderVPNModal();
+}
+
+function renderVPNUnbindConfirm() {
+  const name = vpnDeviceName(vpnModal.device);
+  let html = '<div class="vpn-hint" style="font-size:13px;color:#1e293b">即将把「' + esc(name) + '」移出组网</div>';
+  html += '<ul class="vpn-unbind-list">' +
+    '<li>该设备的组网连接会<strong>立即断开</strong>，正在进行的组网访问会中断</li>' +
+    '<li>组网地址 ' + esc((vpnModal.binding && vpnModal.binding.wg_ip) || '') + ' 会被释放</li>' +
+    '<li>隧道、端口映射和其它功能不受影响</li>' +
+    '<li>重新加入需要重新粘贴公钥，地址会重新分配（通常与上次相同，但不保证）</li></ul>';
+  html += '<div class="modal-actions"><button class="btn btn-ghost" id="vpn-unbind-cancel" onclick="vpnConfirmBack()">取消</button>' +
+    '<button class="btn btn-danger" onclick="vpnUnbindContinue()">确认解绑</button></div>';
+  document.getElementById('vpn-modal-body').innerHTML = html;
+}
+
+function vpnUnbindContinue() {
+  vpnModal.action = 'delete';
+  vpnModal.password = '';
+  vpnModal.totp = '';
+  vpnModal.error = '';
+  vpnModal.errorCode = '';
+  vpnModal.errorDetail = '';
+  vpnModal.mode = 'confirm';
+  ensureTOTPStatus().then(() => {
+    vpnSetFocus(totpEnabled ? 'vpn-reauth-totp' : 'vpn-reauth-password');
+    renderVPNModal();
+  });
+}
+
+async function copyVPNCommand(button) {
+  await copyText('wg genkey | tee privatekey | wg pubkey', '命令已复制');
+  if (button) { button.textContent = '已复制'; setTimeout(() => { button.textContent = '复制命令'; }, 2000); }
+}
+
+async function copyVPNTemplate(button) {
+  const cached = vpnTemplates[vpnModal.id] || '';
+  const template = (vpnModal.result && vpnModal.result.template) ||
+    (vpnModal.binding && vpnModal.binding.template) || cached || '';
+  if (!template) { toast('没有可复制的配置，请重新获取', 'error'); return; }
+  await copyText(template, '配置已复制');
+  if (button) { button.textContent = '已复制'; setTimeout(() => { button.textContent = '复制配置'; }, 2000); }
+}
+
+async function copyText(text, successMessage) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    toast(successMessage);
+  } catch (e) {
+    toast('复制失败，请手动选择文本', 'error');
+  }
+}
+
+document.getElementById('vpn-modal').addEventListener('click', function (event) {
+  if (event.target === this) closeVPNModal();
+});
+document.addEventListener('keydown', function (event) {
+  if (event.key === 'Escape' && document.getElementById('vpn-modal').classList.contains('show')) {
+    closeVPNModal();
+  }
+});
+
 // --- Init ---
 checkAuth();
 checkHealth();
@@ -1192,7 +2382,8 @@ loadDevices();
 loadPendingDevices();
 loadTunnels();
 loadPortStatus();
-setInterval(() => { checkHealth(); loadDevices(); loadPendingDevices(); loadTunnels(); loadPortStatus(); }, 10000);
+loadVPN();
+setInterval(() => { checkHealth(); loadDevices(); loadPendingDevices(); loadTunnels(); loadPortStatus(); loadVPN(); }, 10000);
 </script>
 </body>
 </html>
