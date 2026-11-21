@@ -134,6 +134,8 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 
 	if config.Tunnel.Enabled {
 		s.tunnelManager = NewTunnelManager(s, settings.PortRangeStart, settings.PortRangeEnd)
+		// 定义先进内存占端口，不 bind：等设备 register_ok 之后重放。
+		s.tunnelManager.LoadDefinitions(stateStore.GetTunnels())
 	}
 	s.globalWhitelist.Store(newIPMatcher(settings.GlobalWhitelist))
 	s.applyRuntimeSettings(settings)
@@ -263,6 +265,7 @@ func (s *Server) Start() error {
 		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
 		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
+		protected.POST("/api/tunnels/:tunnel_id/retry", s.handleAPIRetryTunnel)
 		protected.GET("/api/port-status", s.handleAPIPortStatus)
 
 		protected.GET("/api/devices", s.handleAPIListDevices)
@@ -503,7 +506,7 @@ func (s *Server) pendingLoop(client *Client) {
 				"client_id", client.ClientID)
 			s.deviceMgr.DetachPendingConnIfMatch(client.ClientID, client)
 			if s.tunnelManager != nil {
-				s.tunnelManager.CloseTunnelsByClient(client.ClientID)
+				s.tunnelManager.DetachClient(client.ClientID, client)
 			}
 			okPayload, err := s.handler.registerOKPayloadForDevice(device)
 			if err != nil {
@@ -515,6 +518,11 @@ func (s *Server) pendingLoop(client *Client) {
 				slog.Warn("failed to send register_ok on approval", "client_id", client.ClientID, "error", err)
 			}
 			s.clients.Add(client)
+			// 审批接口可能已经拿走了发送权：CAS 失败时本次调用直接返回 nil，
+			// 但 register_ok 是否真的写成功要看写标记，不能看返回值。
+			if client.registerOKWritten.Load() {
+				s.scheduleTunnelRestore(client)
+			}
 			s.readLoop(client)
 			return
 		}
@@ -525,15 +533,34 @@ func (s *Server) pendingLoop(client *Client) {
 	}
 }
 
+// scheduleTunnelRestore 在 register_ok 写成功之后调度一次定义重放。
+// 每个连接只调度一次；restore 是异步的，握手路径只多一次 goroutine 调度。
+func (s *Server) scheduleTunnelRestore(client *Client) {
+	if s.tunnelManager == nil || client == nil {
+		return
+	}
+	// 结构性约束：没有 register_ok 写成功就不允许重放。调用点顺序错了
+	// （例如先调度后写）会在这里被挡住，而不是让 agent 静默丢消息。
+	if !client.registerOKWritten.Load() {
+		slog.Error("refusing to restore tunnels before register_ok was written", "client_id", client.ClientID)
+		return
+	}
+	if !client.markTunnelRestoreScheduled() {
+		return
+	}
+	go s.tunnelManager.RestoreClient(client)
+}
+
 func (s *Server) readLoop(client *Client) {
 	defer func() {
 		if client.ClientID != "" {
-			current := s.clients.IsCurrent(client.ClientID, client)
-			if current && s.tunnelManager != nil {
-				s.tunnelManager.CloseTunnelsByClient(client.ClientID)
-			}
-			if current {
-				s.clients.RemoveIfMatch(client.ClientID, client)
+			// 先摘连接再解绑：反过来会给并发的 restore 留一个“设备仍在线”
+			// 的窗口，迟到的 rebind 会留下没有主人的 listener。
+			if s.clients.RemoveIfMatch(client.ClientID, client) {
+				if s.tunnelManager != nil {
+					// 断开只解绑：定义与端口保留，重连后按原端口恢复。
+					s.tunnelManager.DetachClient(client.ClientID, client)
+				}
 				slog.Info("client disconnected", "client_id", client.ClientID)
 			} else {
 				slog.Debug("stale client connection closed", "client_id", client.ClientID)
@@ -555,6 +582,13 @@ func (s *Server) readLoop(client *Client) {
 		if !s.clients.TouchIfMatch(client.ClientID, client) {
 			slog.Debug("stale client connection dropped", "client_id", client.ClientID)
 			return
+		}
+
+		// 审批接口与 pending 循环可能同时到达 register_ok 成功的时刻：pending
+		// 循环当时可能还没看到写成功而被闸门拒绝。下一条消息（心跳）上补一次
+		// 调度，保证“设备一直在线但定义永远不恢复”不会发生。
+		if client.registerOKWritten.Load() && !client.tunnelRestoreScheduled.Load() {
+			s.scheduleTunnelRestore(client)
 		}
 
 		if err := s.handler.Handle(client, msg); err != nil {

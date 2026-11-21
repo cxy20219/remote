@@ -731,34 +731,62 @@ func TestHandleAgentData_EOFRemovesMatchingConn(t *testing.T) {
 	}, "expected matching EOF to remove connection")
 }
 
-func TestCloseTunnelsByClient_RemovesOnlyThatClientTunnels(t *testing.T) {
+func TestDetachClient_KeepsDefinitionsAndClosesListeners(t *testing.T) {
 	tm := NewTunnelManager(nil, 10000, 20000)
-	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a", ClientID: "client-1", PublicPort: 10001}
-	tm.tunnels["tunnel-b"] = &Tunnel{TunnelID: "tunnel-b", ClientID: "client-1", PublicPort: 10002}
-	tm.tunnels["tunnel-c"] = &Tunnel{TunnelID: "tunnel-c", ClientID: "client-2", PublicPort: 10003}
+	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a", ClientID: "client-1", PublicPort: 10001, Status: TunnelStatusActive}
+	tm.tunnels["tunnel-b"] = &Tunnel{TunnelID: "tunnel-b", ClientID: "client-1", PublicPort: 10002, Status: TunnelStatusActive}
+	tm.tunnels["tunnel-c"] = &Tunnel{TunnelID: "tunnel-c", ClientID: "client-2", PublicPort: 10003, Status: TunnelStatusActive}
 	tm.publicPorts[10001] = "tunnel-a"
 	tm.publicPorts[10002] = "tunnel-b"
 	tm.publicPorts[10003] = "tunnel-c"
 
-	tm.CloseTunnelsByClient("client-1")
+	listenerA, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	tm.listeners[10001] = listenerA
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	tm.extConns["conn-a"] = newExternalConn("conn-a", "tunnel-a", serverConn)
 
-	if _, ok := tm.GetTunnel("tunnel-a"); ok {
-		t.Fatal("expected tunnel-a to be closed")
+	tm.DetachClient("client-1", nil)
+
+	// 定义与端口保留，listener 与外部连接关闭：断开只解绑，不删定义。
+	for _, tunnelID := range []string{"tunnel-a", "tunnel-b"} {
+		tunnel, ok := tm.GetTunnel(tunnelID)
+		if !ok {
+			t.Fatalf("%s definition must survive a detach", tunnelID)
+		}
+		if tunnel.Status != TunnelStatusWaitingDevice {
+			t.Fatalf("%s status = %q, want %q", tunnelID, tunnel.Status, TunnelStatusWaitingDevice)
+		}
 	}
-	if _, ok := tm.GetTunnel("tunnel-b"); ok {
-		t.Fatal("expected tunnel-b to be closed")
+	if err := listenerA.Close(); err == nil {
+		t.Fatal("the listener should already be closed after detach")
 	}
-	if _, ok := tm.GetTunnel("tunnel-c"); !ok {
-		t.Fatal("expected other client's tunnel to remain")
+	if _, ok := tm.listeners[10001]; ok {
+		t.Fatal("the closed listener should be removed from the manager")
 	}
-	if _, ok := tm.publicPorts[10001]; ok {
-		t.Fatal("expected tunnel-a public port to be released")
+	if _, ok := tm.extConns["conn-a"]; ok {
+		t.Fatal("external connections should be closed on detach")
 	}
-	if _, ok := tm.publicPorts[10002]; ok {
-		t.Fatal("expected tunnel-b public port to be released")
+	if _, ok := tm.publicPorts[10001]; !ok {
+		t.Fatal("the public port must stay reserved after detach")
+	}
+	if _, ok := tm.publicPorts[10002]; !ok {
+		t.Fatal("the public port must stay reserved after detach")
+	}
+
+	// 其他设备的定义与状态完全不受影响。
+	other, ok := tm.GetTunnel("tunnel-c")
+	if !ok {
+		t.Fatal("another client's tunnel must not be detached")
+	}
+	if other.Status != TunnelStatusActive {
+		t.Fatalf("another client's tunnel status = %q, want active", other.Status)
 	}
 	if got := tm.publicPorts[10003]; got != "tunnel-c" {
-		t.Fatalf("expected tunnel-c public port to remain, got %q", got)
+		t.Fatalf("another client's public port = %q, want tunnel-c", got)
 	}
 }
 

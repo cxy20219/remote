@@ -522,14 +522,16 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		return
 	}
 
+	// 先选一个空闲端口并占位。listener 立刻关掉：真正的 bind 在定义落盘
+	// 之后由 applyTunnel 做（定义是真相，绑定是投影）。
 	publicPort, ln, err := s.tunnelManager.AllocatePortForExposure(exposure)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available ports"})
 		return
 	}
+	ln.Close()
 
 	tunnelID := generateUUID()
-
 	if err := s.tunnelManager.CreateTunnel(
 		tunnelID,
 		req.ClientID,
@@ -540,26 +542,20 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		publicPort,
 		exposure,
 	); err != nil {
-		ln.Close()
 		s.tunnelManager.ReleasePort(publicPort)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := s.tunnelManager.AcceptOnListener(publicPort, tunnelID, ln); err != nil {
-		s.tunnelManager.CloseTunnel(tunnelID)
+	// 定义已经落盘：apply 失败只把 status 标成 port_conflict/apply_failed，
+	// 不再回滚定义、也不把 HTTP 码改成 5xx。
+	tunnel, err := s.tunnelManager.ApplyTunnel(tunnelID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := sendTunnelOpen(client, tunnelID, req.LocalAddr, req.LocalPort, req.Protocol); err != nil {
-		_ = sendTunnelClose(client, tunnelID)
-		s.tunnelManager.CloseTunnel(tunnelID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send tunnel_open to agent"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"tunnel_id":   tunnelID,
 		"public_port": publicPort,
 		"access_addr": tunnelAccessAddr(s.advertisedTunnelHost(c.Request.Host), publicPort, exposure),
@@ -567,7 +563,12 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 		"local_addr":  req.LocalAddr,
 		"local_port":  req.LocalPort,
 		"protocol":    req.Protocol,
-	})
+		"status":      tunnel.Status,
+	}
+	if tunnel.LastError != "" {
+		response["last_error"] = tunnel.LastError
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (s *Server) advertisedTunnelHost(reqHost string) string {
@@ -634,16 +635,11 @@ func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
 		return
 	}
 
-	tunnelID := c.Param("tunnel_id")
-	tunnel, ok := s.tunnelManager.GetTunnel(tunnelID)
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "tunnel not found"})
-		return
-	}
-
-	_ = sendTunnelClose(tunnel.Client, tunnelID)
-
-	if err := s.tunnelManager.CloseTunnel(tunnelID); err != nil {
+	if _, err := s.tunnelManager.DeleteTunnel(c.Param("tunnel_id")); err != nil {
+		if errors.Is(err, errTunnelNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "tunnel not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -681,7 +677,36 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 
 	tunnel, err := s.tunnelManager.UpdateTunnel(tunnelID, req.LocalAddr, req.LocalPort, req.PublicPort, req.Protocol, req.Exposure)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		switch {
+		case errors.Is(err, errTunnelNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "tunnel not found"})
+		case errors.Is(err, errTunnelPersist):
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, tunnel)
+}
+
+// handleAPIRetryTunnel 手动重试一次绑定：已 active 幂等返回，设备离线 409。
+func (s *Server) handleAPIRetryTunnel(c *gin.Context) {
+	if !s.requireTunnel(c) {
+		return
+	}
+
+	tunnel, err := s.tunnelManager.RetryTunnel(c.Param("tunnel_id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, errTunnelNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "tunnel not found"})
+		case errors.Is(err, errTunnelOffline):
+			c.JSON(http.StatusConflict, gin.H{"error": "device is offline", "code": "DEVICE_OFFLINE"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
 
@@ -1001,6 +1026,11 @@ func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 	}
 
 	if err := s.deviceMgr.DenyDevice(deviceID); err != nil {
+		// 落盘失败是服务端故障（设备还在、拒绝没生效），不能报 400。
+		if errors.Is(err, errDevicePersist) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -1014,19 +1044,29 @@ func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 func (s *Server) handleAPIDeleteDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 
+	if s.stateStore.GetDeviceByID(deviceID) == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
+		return
+	}
+
+	// 先删定义并同步落盘：失败则设备与定义都不动。留在后面的 RemoveDevice
+	// 也是同步 Save，所以不存在「删完 3 秒内崩溃又复活」的窗口。
 	if s.tunnelManager != nil {
-		s.tunnelManager.CloseTunnelsByClient(deviceID)
+		if err := s.tunnelManager.RemoveClientTunnels(deviceID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete tunnel definitions"})
+			return
+		}
+	}
+
+	if err := s.deviceMgr.DeleteDevice(deviceID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete device"})
+		return
 	}
 
 	if client, ok := s.clients.Get(deviceID); ok {
 		_ = sendDeviceDeleted(client, "device deleted by admin")
 		closeClientConn(client)
 		s.clients.Remove(deviceID)
-	}
-
-	if err := s.deviceMgr.DeleteDevice(deviceID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{

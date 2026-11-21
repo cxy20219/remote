@@ -286,7 +286,16 @@ func (dm *DeviceManager) DenyDevice(deviceID string) error {
 	}
 	info := dm.pendingConns[deviceID]
 	delete(dm.pendingConns, deviceID)
-	if !dm.store.RemoveDevice(deviceID) {
+	removed, err := dm.store.RemoveDevice(deviceID)
+	if err != nil {
+		// 落盘失败：设备还在，pending 连接也要放回去。
+		if info != nil {
+			dm.pendingConns[deviceID] = info
+		}
+		dm.mu.Unlock()
+		return err
+	}
+	if !removed {
 		dm.mu.Unlock()
 		return fmt.Errorf("device not found: %s", deviceID)
 	}
@@ -303,7 +312,15 @@ func (dm *DeviceManager) DeleteDevice(deviceID string) error {
 	dm.mu.Lock()
 	info := dm.pendingConns[deviceID]
 	delete(dm.pendingConns, deviceID)
-	if !dm.store.RemoveDevice(deviceID) {
+	removed, err := dm.store.RemoveDevice(deviceID)
+	if err != nil {
+		if info != nil {
+			dm.pendingConns[deviceID] = info
+		}
+		dm.mu.Unlock()
+		return err
+	}
+	if !removed {
 		dm.mu.Unlock()
 		return fmt.Errorf("device not found: %s", deviceID)
 	}

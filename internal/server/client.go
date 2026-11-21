@@ -27,7 +27,13 @@ type Client struct {
 	// the tunnel data path never has to hit the state store.
 	encEnabled     atomic.Bool
 	registerOKSent atomic.Bool
-	writeMu        sync.Mutex
+	// registerOKWritten 只在 register_ok 真正写成功之后置位：隧道重放必须
+	// 严格晚于它，否则 agent 会把 tunnel_open 当未知消息丢掉。
+	registerOKWritten atomic.Bool
+	// tunnelRestoreScheduled 保证一个连接只调度一次定义重放（审批接口与
+	// pending 循环可能同时到达 register_ok 成功的时刻）。
+	tunnelRestoreScheduled atomic.Bool
+	writeMu                sync.Mutex
 }
 
 // ClientInfo is an immutable snapshot exposed by the admin API.
@@ -53,6 +59,16 @@ func (c *Client) EncryptionEnabled() bool {
 // pending-loop transition sends register_ok to a given connection.
 func (c *Client) markRegisterOKSent() bool {
 	return c.registerOKSent.CompareAndSwap(false, true)
+}
+
+// markRegisterOKWritten 记录 register_ok 已成功写入连接。
+func (c *Client) markRegisterOKWritten() {
+	c.registerOKWritten.Store(true)
+}
+
+// markTunnelRestoreScheduled 保证每个连接只调度一次 tunnel 定义重放。
+func (c *Client) markTunnelRestoreScheduled() bool {
+	return c.tunnelRestoreScheduled.CompareAndSwap(false, true)
 }
 
 type ClientManager struct {

@@ -5,11 +5,13 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -18,6 +20,10 @@ import (
 )
 
 const stateSyncInterval = 3 * time.Second
+
+// errDevicePersist 标记「设备内存状态已经改好，但落盘失败」。API 层据此
+// 返回 500：磁盘故障不是客户端错误。
+var errDevicePersist = errors.New("device state could not be persisted")
 
 type ServerSettings struct {
 	PortRangeStart      int      `json:"port_range_start"`
@@ -49,12 +55,26 @@ type DeviceState struct {
 	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
 }
 
+// TunnelState 是隧道的持久化定义。只含定义字段：运行时绑定（Client、
+// listener）、派生的 bind_addr 与 status/last_error 都不落盘。
+type TunnelState struct {
+	TunnelID   string    `json:"tunnel_id"`
+	ClientID   string    `json:"client_id"`
+	Protocol   string    `json:"protocol"`
+	LocalAddr  string    `json:"local_addr"`
+	LocalPort  int       `json:"local_port"`
+	PublicPort int       `json:"public_port"`
+	Exposure   string    `json:"exposure"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 type ServerState struct {
 	ServerSignPrivkey string          `json:"server_sign_privkey"`
 	ServerSignPubkey  string          `json:"server_sign_pubkey"`
 	AdminPasswordHash string          `json:"admin_password_hash"`
 	Settings          ServerSettings  `json:"settings"`
 	Devices           []DeviceState   `json:"devices"`
+	Tunnels           []TunnelState   `json:"tunnels,omitempty"`
 	Encrypted         *EncryptedState `json:"encrypted,omitempty"`
 
 	// 管理员两步验证（TOTP）。配置了 state 加密密钥时，这三项会被搬进
@@ -173,6 +193,9 @@ func cloneServerState(state *ServerState) ServerState {
 		for i := range state.Devices {
 			cloned.Devices[i] = cloneDevice(state.Devices[i])
 		}
+	}
+	if state.Tunnels != nil {
+		cloned.Tunnels = append([]TunnelState(nil), state.Tunnels...)
 	}
 	if state.Encrypted != nil {
 		encrypted := *state.Encrypted
@@ -332,6 +355,9 @@ func (s *StateStore) Save() error {
 	return nil
 }
 
+// writeState 原子落盘：写 tmp → fsync → rename → fsync 目录。返回 nil 表示
+// 这份 state 扛得住进程重启；掉电是尽力而为——rename 之后目录 fsync 失败
+// 会返回错误，但磁盘上的文件可能已经更新（只有 EIO 一类故障会走到这里）。
 func (s *StateStore) writeState(state ServerState) error {
 	if s.path == "" {
 		return nil
@@ -346,16 +372,50 @@ func (s *StateStore) writeState(state ServerState) error {
 	}
 
 	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-
-	return os.Rename(tmp, s.path)
+	discard := func(err error) error {
+		file.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return discard(err)
+	}
+	// OpenFile 的权限只在创建时生效，残留的 .tmp 可能带着旧权限。
+	if err := file.Chmod(0o600); err != nil {
+		return discard(err)
+	}
+	if err := file.Sync(); err != nil {
+		return discard(err)
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	// rename 本身也要落盘，否则掉电后可能又看到旧文件。少数平台不支持对
+	// 目录 fsync（EINVAL/ENOTSUP），这类“平台不支持”不算写入失败。
+	dirFile, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := dirFile.Sync()
+	dirFile.Close()
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) && !errors.Is(syncErr, syscall.ENOTSUP) {
+		return fmt.Errorf("sync state directory: %w", syncErr)
+	}
+	return nil
 }
 
 func (s *StateStore) StartSyncLoop() {
@@ -535,24 +595,87 @@ func (s *StateStore) UpdateDevice(id string, fn func(*DeviceState)) bool {
 	return false
 }
 
-func (s *StateStore) RemoveDevice(id string) bool {
+// RemoveDevice 删除设备并同步落盘：删除后 3 秒内崩溃不能让设备复活，所以
+// 返回前必须完成 Save。保存失败时把设备放回列表并返回错误。
+func (s *StateStore) RemoveDevice(id string) (bool, error) {
+	removed, device := s.takeDeviceLocked(id)
+	if !removed {
+		return false, nil
+	}
+	if err := s.Save(); err != nil {
+		s.restoreRemovedDevice(device)
+		return true, fmt.Errorf("%w: %v", errDevicePersist, err)
+	}
+	return true, nil
+}
+
+// takeDeviceLocked 把设备从内存列表摘掉。用 defer 解锁：这段里任何 panic
+// 都不能把 s.mu 永久带走（整个 StateStore 会随之失去响应）。
+func (s *StateStore) takeDeviceLocked(id string) (bool, DeviceState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.deviceIndex == nil {
 		s.rebuildDeviceIndexLocked()
 	}
 	for i, d := range s.state.Devices {
-		if d.ID == id {
-			s.state.Devices = append(s.state.Devices[:i], s.state.Devices[i+1:]...)
-			delete(s.deviceIndex, id)
-			for j := i; j < len(s.state.Devices); j++ {
-				s.deviceIndex[s.state.Devices[j].ID] = j
-			}
-			s.dirty = true
-			return true
+		if d.ID != id {
+			continue
+		}
+		s.state.Devices = append(s.state.Devices[:i], s.state.Devices[i+1:]...)
+		delete(s.deviceIndex, id)
+		for j := i; j < len(s.state.Devices); j++ {
+			s.deviceIndex[s.state.Devices[j].ID] = j
+		}
+		s.dirty = true
+		return true, d
+	}
+	return false, DeviceState{}
+}
+
+// restoreRemovedDevice 把 Save 失败的设备放回列表。删除与回滚之间可能有
+// 并发的删除/新增，删除时记下的下标已经不可信（往更短的切片里插会 panic，
+// 而 panic 发生在持锁区间会把整个 StateStore 锁死），所以这里按 ID 确认
+// 设备确实缺席后再追加。列表顺序不是 state 的语义，追加是安全的。
+func (s *StateStore) restoreRemovedDevice(device DeviceState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.state.Devices {
+		if d.ID == device.ID {
+			return
 		}
 	}
-	return false
+	s.state.Devices = append(s.state.Devices, device)
+	s.rebuildDeviceIndexLocked()
+	s.dirty = true
+}
+
+// GetTunnels 返回持久化的隧道定义副本。
+func (s *StateStore) GetTunnels() []TunnelState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.state.Tunnels == nil {
+		return nil
+	}
+	return append([]TunnelState(nil), s.state.Tunnels...)
+}
+
+// ReplaceTunnels 用给定定义替换持久层并同步落盘。保存失败时恢复旧列表，让
+// 调用方的内存回滚与磁盘保持一致。
+func (s *StateStore) ReplaceTunnels(tunnels []TunnelState) error {
+	s.mu.Lock()
+	previous := s.state.Tunnels
+	s.state.Tunnels = append([]TunnelState(nil), tunnels...)
+	s.dirty = true
+	s.mu.Unlock()
+
+	if err := s.Save(); err != nil {
+		s.mu.Lock()
+		s.state.Tunnels = previous
+		s.dirty = true
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *StateStore) GetServerSignPrivkey() ed25519.PrivateKey {

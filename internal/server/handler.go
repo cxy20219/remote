@@ -144,25 +144,34 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 		return h.sendRegisterFail(client, err.Error())
 	}
 
-	if h.server.tunnelManager != nil {
-		h.server.tunnelManager.CloseTunnelsByClient(device.ID)
-	}
 	client.ClientID = device.ID
 	client.Hostname = device.Hostname
 	client.OS = device.OS
 	client.SetEncryptionEnabled(h.server.deviceEncryptionActive(device))
 	h.server.clients.Add(client)
 	h.server.deviceMgr.RemovePendingConn(client.ClientID)
+	if h.server.tunnelManager != nil {
+		// 只解绑，不删定义：register_ok 之后要按原端口重放。必须在新连接
+		// 登记之后解绑——DetachClient 靠“当前连接是不是我”区分迟到的收尾。
+		h.server.tunnelManager.DetachClient(device.ID, client)
+	}
 
 	slog.Info("client reconnected",
 		"client_id", device.ID,
 		"hostname", device.Hostname)
 
 	payloadJSON, _ := json.Marshal(okPayload)
-	return client.WriteJSON(common.Message{
+	if err := client.WriteJSON(common.Message{
 		Type:    "register_ok",
 		Payload: payloadJSON,
-	})
+	}); err != nil {
+		return err
+	}
+	// 必须在 register_ok 写成功之后才重放 tunnel_open：agent 在注册期间
+	// 对未知消息是直接丢弃的（agent/agent.go 的 default 分支）。
+	client.markRegisterOKWritten()
+	h.server.scheduleTunnelRestore(client)
+	return nil
 }
 
 func (h *Handler) registerOKPayloadForDevice(device *DeviceState) (common.RegisterOKPayload, error) {
@@ -224,7 +233,11 @@ func (s *Server) sendRegisterOK(client *Client, payload common.RegisterOKPayload
 	if err != nil {
 		return err
 	}
-	return client.WriteJSON(common.Message{Type: "register_ok", Payload: payloadJSON})
+	if err := client.WriteJSON(common.Message{Type: "register_ok", Payload: payloadJSON}); err != nil {
+		return err
+	}
+	client.markRegisterOKWritten()
+	return nil
 }
 
 func (h *Handler) handlePing(client *Client) error {
