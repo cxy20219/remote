@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1585,5 +1587,124 @@ func TestStaleApplyFailureDoesNotCloseTheNewApplyListener(t *testing.T) {
 	}
 	if seqAfter != staleSeq {
 		t.Fatalf("applySeq changed from %d to %d, want it stable per attempt", staleSeq, seqAfter)
+	}
+}
+
+// blockingDetachHandler 只在“隧道解绑完成”这条日志上停住调用方：解绑把
+// listener 关掉、定义标回 waiting_device 之后，收尾还没走到“摘连接”。
+// 这一段正是收尾顺序的差别所在，用它把窗口拉长到可确定断言。
+type blockingDetachHandler struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *blockingDetachHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *blockingDetachHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "tunnel definitions detached from device" {
+		return nil
+	}
+	select {
+	case h.entered <- struct{}{}:
+	default:
+	}
+	<-h.release
+	return nil
+}
+
+func (h *blockingDetachHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *blockingDetachHandler) WithGroup(string) slog.Handler      { return h }
+
+// 回归保护：readLoop 的收尾必须是「先摘连接、再解绑」。顺序反过来时，
+// 解绑完成到摘连接之间“设备仍算在线”，迟到的重放会重新绑上 listener，
+// 而收尾不会再去关它——设备已离线却留着监听。
+//
+// 这里用真实的 readLoop 跑完整流程，并在解绑日志处把收尾停住，确定性地
+// 在窗口内触发一次重放。旧顺序下这个重放会绑定成功，用例变红。
+func TestReadLoopTeardownRemovesConnectionBeforeDetach(t *testing.T) {
+	_, store := newTestConfig(t)
+	store.AddDevice(&DeviceState{ID: "dev-1", Name: "dev-1", Status: deviceStatusAuthorized})
+	clients := NewClientManager()
+	clients.SetStore(store)
+	srv := &Server{stateStore: store, clients: clients}
+	tm := NewTunnelManager(srv, testTunnelPortStart, testTunnelPortEnd)
+	srv.tunnelManager = tm
+	t.Cleanup(tm.CloseAll)
+
+	if err := tm.CreateTunnel("tunnel-1", "dev-1", nil, "tcp", "127.0.0.1", 22, testTunnelPortStart, "public"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	serverConn, _ := newTestWebsocketPair(t)
+	client := &Client{ClientID: "dev-1", Conn: serverConn}
+	clients.Add(client)
+	if _, err := tm.ApplyTunnel("tunnel-1"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, ok := tm.listeners[testTunnelPortStart]; !ok {
+		t.Fatal("sanity: the tunnel should be listening before the disconnect")
+	}
+
+	handler := &blockingDetachHandler{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(handler.release) }) }
+	t.Cleanup(func() {
+		release()
+		slog.SetDefault(previous)
+	})
+
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		srv.readLoop(client)
+	}()
+
+	// 半关读方向：readLoop 立刻读到 EOF 进入收尾，但写方向还能成功——
+	// 这样旧顺序下迟到的 tunnel_open 才写得出去，才会真的留下 listener。
+	tcp, ok := serverConn.UnderlyingConn().(*net.TCPConn)
+	if !ok {
+		t.Fatalf("test websocket is not plain TCP: %T", serverConn.UnderlyingConn())
+	}
+	if err := tcp.CloseRead(); err != nil {
+		t.Fatalf("half close: %v", err)
+	}
+
+	select {
+	case <-handler.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the teardown never reached its detach log line")
+	}
+
+	// 此刻解绑已经做完（listener 已关、定义 waiting_device）。两种顺序的
+	// 全部区别就在这一行：正确顺序下连接已经摘掉，旧顺序下还算“在线”。
+	if clients.IsCurrent("dev-1", client) {
+		t.Fatal("the connection must already be removed when the detach runs")
+	}
+	if _, ok := tm.listeners[testTunnelPortStart]; ok {
+		t.Fatal("sanity: the detach should have closed the listener")
+	}
+	tm.RestoreClient(client)
+	if _, ok := tm.listeners[testTunnelPortStart]; ok {
+		t.Fatal("a restore between detach and remove bound a listener for an offline device")
+	}
+
+	release()
+	select {
+	case <-loopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("readLoop did not finish its teardown")
+	}
+
+	// 收尾之后：连接已摘、定义仍 waiting_device、没有 listener。
+	if clients.IsCurrent("dev-1", client) {
+		t.Fatal("the connection must be removed by the teardown")
+	}
+	if _, ok := tm.listeners[testTunnelPortStart]; ok {
+		t.Fatal("the teardown must not leave a listener behind")
+	}
+	if tunnel, _ := tm.GetTunnel("tunnel-1"); tunnel.Status != TunnelStatusWaitingDevice {
+		t.Fatalf("status = %q, want waiting_device", tunnel.Status)
 	}
 }
