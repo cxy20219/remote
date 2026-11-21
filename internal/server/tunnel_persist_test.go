@@ -1708,3 +1708,104 @@ func TestReadLoopTeardownRemovesConnectionBeforeDetach(t *testing.T) {
 		t.Fatalf("status = %q, want waiting_device", tunnel.Status)
 	}
 }
+
+// UpdateTunnel 与 apply 交错：apply 已经 bind、卡在 sendTunnelOpen 时改端口，
+// 更新流程会关掉旧 listener；这次 apply 必须在定义变更时被作废，否则它写成功
+// 之后会把状态改回 active——面板显示“已连接”，实际一条监听都没有。
+//
+// 这里用 writeMu 把在途的 apply 确定性地停在写 tunnel_open 之前，再让更新
+// 流程走完定义改写，断言最终状态自洽（active 就一定有监听）。
+func TestUpdateTunnelDuringApplyKeepsStatusHonest(t *testing.T) {
+	_, store := newTestConfig(t)
+	store.AddDevice(&DeviceState{ID: "dev-1", Name: "dev-1", Status: deviceStatusAuthorized})
+	clients := NewClientManager()
+	clients.SetStore(store)
+	serverConn, agentConn := newTestWebsocketPair(t)
+	client := &Client{ClientID: "dev-1", Conn: serverConn}
+	clients.Add(client)
+
+	tm := newTunnelTestManager(t, store, clients, testTunnelPortStart, testTunnelPortEnd)
+	if err := tm.CreateTunnel("tunnel-1", "dev-1", client, "tcp", "127.0.0.1", 22, testTunnelPortStart, "public"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tm.ApplyTunnel("tunnel-1"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	readAgentMessage(t, agentConn, "tunnel_open", 2*time.Second)
+
+	oldPort := testTunnelPortStart
+	newPort := testTunnelPortStart + 1
+
+	// 制造“apply 已 bind、卡在 sendTunnelOpen”的在途状态：先解绑，再让
+	// 重放去绑定，并卡住它的写。
+	client.writeMu.Lock()
+	tm.DetachClient("dev-1", client)
+	applyDone := make(chan struct{})
+	go func() {
+		defer close(applyDone)
+		_, _ = tm.applyTunnel("tunnel-1", client)
+	}()
+	waitForCondition(t, 2*time.Second, func() bool {
+		tm.mu.RLock()
+		defer tm.mu.RUnlock()
+		_, bound := tm.listeners[oldPort]
+		return bound
+	}, "the in-flight apply should have bound its listener")
+
+	tm.mu.RLock()
+	staleSeq := tm.tunnels["tunnel-1"].applySeq
+	inFlight := tm.tunnels["tunnel-1"].applying
+	tm.mu.RUnlock()
+	if !inFlight {
+		t.Fatal("sanity: the apply should still be in flight")
+	}
+
+	// 管理员在这次 apply 卡住的窗口里改端口。
+	type updateResult struct {
+		tunnel *Tunnel
+		err    error
+	}
+	updated := make(chan updateResult, 1)
+	go func() {
+		tunnel, err := tm.UpdateTunnel("tunnel-1", "127.0.0.1", 22, newPort, "tcp", "public")
+		updated <- updateResult{tunnel, err}
+	}()
+	waitForCondition(t, 2*time.Second, func() bool {
+		tunnel, ok := tm.GetTunnel("tunnel-1")
+		return ok && tunnel.PublicPort == newPort
+	}, "the update should have rewritten the definition")
+
+	// 关键断言：定义变了，在途的那次 apply 必须立刻作废。
+	tm.mu.RLock()
+	stillApplying := tm.tunnels["tunnel-1"].applying
+	seqNow := tm.tunnels["tunnel-1"].applySeq
+	tm.mu.RUnlock()
+	if stillApplying {
+		t.Fatal("the in-flight apply must be invalidated when the definition changes")
+	}
+	if seqNow == staleSeq {
+		t.Fatalf("applySeq = %d, want a new attempt id (stale apply must not win)", seqNow)
+	}
+
+	client.writeMu.Unlock()
+	<-applyDone
+	res := <-updated
+	if res.err != nil {
+		t.Fatalf("update: %v", res.err)
+	}
+
+	// 最终状态必须自洽：active 一定对应新端口上的真实监听。
+	if res.tunnel.Status != TunnelStatusActive {
+		t.Fatalf("status = %q, want active (last_error=%q)", res.tunnel.Status, res.tunnel.LastError)
+	}
+	tm.mu.RLock()
+	_, newBound := tm.listeners[newPort]
+	_, oldBound := tm.listeners[oldPort]
+	tm.mu.RUnlock()
+	if !newBound {
+		t.Fatal("an active tunnel must have a listener on its port")
+	}
+	if oldBound {
+		t.Fatal("the old port must not keep a listener after the update")
+	}
+}

@@ -612,6 +612,14 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 		return nil, fmt.Errorf("%w: %v", errTunnelPersist, err)
 	}
 
+	// 定义已经换了：正在途中的那次 apply 是旧定义的投影，必须作废。否则
+	// 它在 tunnel_open 写成功之后会把状态改回 active，而它对应的 listener
+	// 刚在这里被关掉——面板显示“已连接”，实际没有任何监听。
+	if tunnel.applying {
+		tunnel.applying = false
+		tunnel.applySeq++
+	}
+
 	// 落盘成功后才动绑定：旧 listener 不再属于这条定义。
 	if portChanged || bindChanged {
 		tm.closeListenerLocked(oldPort)
@@ -1305,6 +1313,16 @@ func (tm *TunnelManager) applyTunnel(tunnelID string, client *Client) (Tunnel, e
 	}
 	out := *tunnel
 	tm.mu.Unlock()
+
+	// bind 之后、写 tunnel_open 之前定义可能又被改掉（UpdateTunnel 会作废
+	// 这次 apply）：再确认一次，别把基于旧定义的 tunnel_open 发出去。
+	tm.mu.RLock()
+	current, exists := tm.tunnels[tunnelID]
+	stale := !exists || !current.applying || current.applySeq != seq
+	tm.mu.RUnlock()
+	if stale {
+		return out, nil
+	}
 
 	// WS 写在锁外：慢连接不能卡住其他隧道管理。
 	if err := sendTunnelOpen(client, tunnelID, out.LocalAddr, out.LocalPort, out.Protocol); err != nil {
