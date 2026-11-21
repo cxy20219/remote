@@ -1001,82 +1001,22 @@ func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 	})
 }
 
-// handleAPIDeleteDevice removes a device.
-//
-// The order is deliberate (design §4): stop the WireGuard peer and persist the
-// disabled flag first, then delete the record, and only then drop the agent and
-// its tunnels. Doing it the other way round made a failed revoke invisible: the
-// agent was already gone, the record was gone, and the peer stayed in the kernel.
 func (s *Server) handleAPIDeleteDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 
-	// 与 PUT/DELETE /vpn 用同一把 per-device 锁：三处都会改同一批 WG 字段，
-	// 不取锁会出现「PUT 刚返回 200、设备随即被删」的窄窗口（审计二-3）。
-	lock := s.wgLock(deviceID)
-	lock.Lock()
-	defer lock.Unlock()
-
-	device := s.stateStore.GetDeviceByID(deviceID)
-	if device == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-		return
-	}
-
-	if device.WGPublicKey != "" && s.netplane != nil {
-		if detail := s.netplane.InfraError(); detail != "" {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "wireguard infrastructure is unavailable; device kept disabled", "code": "WG_INFRA", "detail": detail})
-			return
-		}
-		previous := *device
-		var revokeVersion uint64
-		if err := s.stateStore.AllocateWGDevice(deviceID, func(current *DeviceState, _ []DeviceState) error {
-			current.WGEnabled = false
-			current.WGVersion++
-			revokeVersion = current.WGVersion
-			return nil
-		}); err != nil {
-			wgErrorStatus(c, err)
-			return
-		}
-		if err := s.stateStore.Save(); err != nil {
-			s.restoreDevice(&previous)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist state"})
-			return
-		}
-		s.netplane.Bump()
-		if err := s.netplane.Wait(c.Request.Context(), deviceID, revokeVersion, vpnApplyBudget); err != nil {
-			// 设备保留在 state 里（wg_enabled=false），重试删除即可。
-			wgErrorStatus(c, err)
-			return
-		}
-	}
-
-	previous := s.stateStore.GetDeviceByID(deviceID)
-	if !s.stateStore.RemoveDevice(deviceID) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-		return
-	}
-	// 删除记录也要 fsync：否则崩溃重启后设备复活（设计 §4）。
-	if err := s.stateStore.Save(); err != nil {
-		if previous != nil {
-			s.stateStore.AddDevice(previous)
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist state; device not deleted"})
-		return
-	}
-	if s.netplane != nil {
-		s.netplane.Bump()
-	}
-
-	// 记录已经不在了，最后才断开 agent 与隧道。
-	s.deviceMgr.ForgetDeviceRuntime(deviceID)
 	if s.tunnelManager != nil {
 		s.tunnelManager.CloseTunnelsByClient(deviceID)
 	}
+
 	if client, ok := s.clients.Get(deviceID); ok {
 		_ = sendDeviceDeleted(client, "device deleted by admin")
 		closeClientConn(client)
 		s.clients.Remove(deviceID)
+	}
+
+	if err := s.deviceMgr.DeleteDevice(deviceID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1182,10 +1122,9 @@ func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 	}
 
 	var validationErr error
-	vpnEnabled := s.vpnConfigured()
 	s.UpdateSettings(func(settings *ServerSettings) {
 		candidate := cloneSettings(*settings)
-		applySettingsUpdate(&candidate, &req, vpnEnabled, &validationErr)
+		applySettingsUpdate(&candidate, &req, &validationErr)
 		if validationErr == nil {
 			*settings = candidate
 		}
@@ -1198,9 +1137,7 @@ func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, s.stateStore.GetSettings())
 }
 
-// applySettingsUpdate 校验并应用一次设置更新。vpnEnabled 表示组网已经在用：
-// 此时隧道端口池不能覆盖 WireGuard 的监听端口，否则隧道先绑就会占掉它。
-func applySettingsUpdate(settings *ServerSettings, req *settingsUpdateRequest, vpnEnabled bool, validationErr *error) {
+func applySettingsUpdate(settings *ServerSettings, req *settingsUpdateRequest, validationErr *error) {
 	fail := func(message string) {
 		if *validationErr == nil {
 			*validationErr = fmt.Errorf("%s", message)
@@ -1223,12 +1160,6 @@ func applySettingsUpdate(settings *ServerSettings, req *settingsUpdateRequest, v
 	}
 	if settings.PortRangeStart > settings.PortRangeEnd {
 		fail("port_range_start must be <= port_range_end")
-		return
-	}
-	// 只在新改区间时检查：state 里的持久值本来就安全，不能让无关设置更新被它挡住。
-	if vpnEnabled && (req.PortRangeStart != nil || req.PortRangeEnd != nil) &&
-		settings.WGListen >= settings.PortRangeStart && settings.WGListen <= settings.PortRangeEnd {
-		fail(fmt.Sprintf("port range must not include the wireguard listen port %d while wireguard networking is enabled", settings.WGListen))
 		return
 	}
 	if req.MaxTunnelsPerClient != nil {

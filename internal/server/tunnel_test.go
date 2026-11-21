@@ -566,12 +566,9 @@ func TestDeleteDevice_RemovesCryptoKey(t *testing.T) {
 		t.Fatal("expected key after approve")
 	}
 
-	// 记录删除和运行态清理已经拆开：handler 先删记录（并 fsync），再断 agent，
-	// 这样 WireGuard 撤销失败时记录还在，agent 不会变成新的 pending 设备。
-	if !stateStore.RemoveDevice(deviceID) {
-		t.Fatal("RemoveDevice returned false")
+	if err := dm.DeleteDevice(deviceID); err != nil {
+		t.Fatalf("DeleteDevice: %v", err)
 	}
-	dm.ForgetDeviceRuntime(deviceID)
 
 	if cryptoMgr.HasKey(deviceID) {
 		t.Fatal("key should be removed after delete")

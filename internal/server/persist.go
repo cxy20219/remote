@@ -32,11 +32,6 @@ type ServerSettings struct {
 	MaxBodySizeMB       int      `json:"max_body_size_mb"`
 	HeartbeatInterval   int      `json:"heartbeat_interval"`
 	HeartbeatTimeout    int      `json:"heartbeat_timeout"`
-
-	// 组网（WireGuard）：CIDR 只在第一次绑定设备时锁定，之后修改会被拒绝；
-	// 监听端口在 reconcile 时用于建接口。旧 state 零值由 normalizeSettings 补齐。
-	WGCIDR   string `json:"wg_cidr"`
-	WGListen int    `json:"wg_listen"`
 }
 
 type DeviceState struct {
@@ -52,16 +47,6 @@ type DeviceState struct {
 	IPWhitelist      []string   `json:"ip_whitelist"`
 	FirstSeen        time.Time  `json:"first_seen"`
 	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
-
-	// 设备组网（WireGuard）。服务器只保存设备**公钥**，私钥永远在设备本地。
-	// WGVersion 是 per-device 单调计数：写接口等 reconcile 应用到 >= 自己写的值。
-	WGPublicKey string     `json:"wg_pubkey,omitempty"`
-	WGIP        string     `json:"wg_ip,omitempty"`
-	WGRole      string     `json:"wg_role,omitempty"`
-	WGEnabled   bool       `json:"wg_enabled,omitempty"`
-	WGKeyIssued *time.Time `json:"wg_key_issued_at,omitempty"`
-	WGVersion   uint64     `json:"wg_version,omitempty"`
-	WGError     string     `json:"wg_error,omitempty"`
 }
 
 type ServerState struct {
@@ -78,10 +63,6 @@ type ServerState struct {
 	TOTPSecret         string   `json:"totp_secret,omitempty"`
 	TOTPRecoveryHashes []string `json:"totp_recovery_hashes,omitempty"`
 	TOTPLastStep       int64    `json:"totp_last_step,omitempty"`
-
-	// WGHubPrivkey 是服务器唯一持有的 WireGuard 私钥（hub 身份），
-	// 与 TOTP 同等级：配了 state 加密密钥时只存在于密文里。
-	WGHubPrivkey string `json:"wg_hub_privkey,omitempty"`
 }
 
 func defaultSettings() ServerSettings {
@@ -97,8 +78,6 @@ func defaultSettings() ServerSettings {
 		MaxBodySizeMB:       defaultMaxBodySizeMB,
 		HeartbeatInterval:   30,
 		HeartbeatTimeout:    90,
-		WGCIDR:              defaultWGCIDR,
-		WGListen:            defaultWGListen,
 	}
 }
 
@@ -159,12 +138,6 @@ func normalizeSettings(settings ServerSettings) ServerSettings {
 	if settings.HeartbeatTimeout < 1 || settings.HeartbeatTimeout > 86400 {
 		settings.HeartbeatTimeout = defaults.HeartbeatTimeout
 	}
-	if settings.WGCIDR == "" {
-		settings.WGCIDR = defaults.WGCIDR
-	}
-	if settings.WGListen < 1 || settings.WGListen > 65535 {
-		settings.WGListen = defaults.WGListen
-	}
 	return settings
 }
 
@@ -184,10 +157,6 @@ func cloneDevice(device DeviceState) DeviceState {
 	if device.ApprovedAt != nil {
 		approvedAt := *device.ApprovedAt
 		cloned.ApprovedAt = &approvedAt
-	}
-	if device.WGKeyIssued != nil {
-		issued := *device.WGKeyIssued
-		cloned.WGKeyIssued = &issued
 	}
 	return cloned
 }
@@ -346,27 +315,10 @@ func (s *StateStore) SetInitialAdminPassword(password string) (bool, error) {
 
 // Save writes the current state synchronously.
 func (s *StateStore) Save() error {
-	return s.save(true)
-}
-
-func (s *StateStore) flushDirty() error {
-	return s.save(false)
-}
-
-// save 是 Save / flushDirty 的共同实现：force=false 时只在 dirty 时写。
-//
-// dirty 的生命周期只有这一处：写盘前清掉，写失败必须置回 true，否则一次
-// 瞬态 fsync 失败会让后续的 3 秒轮询和下一次 Save 都以为已经落盘，把刚改
-// 过的安全状态（吊销、阈值、密钥）留在内存里直到进程退出。
-func (s *StateStore) save(force bool) error {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 
 	s.mu.Lock()
-	if !force && !s.dirty {
-		s.mu.Unlock()
-		return nil
-	}
 	snapshot := cloneServerState(s.state)
 	s.dirty = false
 	s.mu.Unlock()
@@ -398,46 +350,13 @@ func (s *StateStore) writeState(state ServerState) error {
 		return err
 	}
 
-	// Durable replace: write the temp file, fsync it, rename, then fsync the
-	// directory. Without the two syncs a power loss right after the rename can
-	// resurrect a revoked device (the rename is visible but the data is not).
 	tmp := s.path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err
 	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := syncStateFile(file); err != nil {
-		file.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := file.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	dirHandle, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer dirHandle.Close()
-	return syncStateDir(dirHandle)
-}
 
-// syncStateFile / syncStateDir are variables so tests can observe (or inject a
-// failure into) the two fsync calls a durable replace needs.
-var (
-	syncStateFile = func(file *os.File) error { return file.Sync() }
-	syncStateDir  = func(dir *os.File) error { return dir.Sync() }
-)
+	return os.Rename(tmp, s.path)
+}
 
 func (s *StateStore) StartSyncLoop() {
 	s.startOnce.Do(func() {
@@ -465,6 +384,28 @@ func (s *StateStore) syncLoop() {
 			return
 		}
 	}
+}
+
+func (s *StateStore) flushDirty() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
+	s.mu.Lock()
+	if !s.dirty {
+		s.mu.Unlock()
+		return nil
+	}
+	s.dirty = false
+	snapshot := cloneServerState(s.state)
+	s.mu.Unlock()
+
+	if err := s.writeState(snapshot); err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *StateStore) Stop() {
@@ -592,43 +533,6 @@ func (s *StateStore) UpdateDevice(id string, fn func(*DeviceState)) bool {
 		}
 	}
 	return false
-}
-
-// AllocateWGDevice runs fn with the live device and a cloned snapshot of every
-// device while holding the store lock, so an address/pubkey allocation sees one
-// consistent view and no other write can slip in between.
-//
-// HARD RULE: fn must not call any StateStore method, including Save. The store
-// uses a non-reentrant RWMutex, so a nested call deadlocks the whole process.
-// It must also not retain the device pointer. Persist by calling Save after the
-// lock is released.
-func (s *StateStore) AllocateWGDevice(id string, fn func(*DeviceState, []DeviceState) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	index, ok := s.deviceIndex[id]
-	if !ok || index < 0 || index >= len(s.state.Devices) || s.state.Devices[index].ID != id {
-		index = -1
-		for i := range s.state.Devices {
-			if s.state.Devices[i].ID == id {
-				index = i
-				break
-			}
-		}
-	}
-	if index < 0 {
-		return ErrWGDeviceNotFound
-	}
-
-	snapshot := make([]DeviceState, len(s.state.Devices))
-	for i := range s.state.Devices {
-		snapshot[i] = cloneDevice(s.state.Devices[i])
-	}
-	if err := fn(&s.state.Devices[index], snapshot); err != nil {
-		return err
-	}
-	s.dirty = true
-	return nil
 }
 
 func (s *StateStore) RemoveDevice(id string) bool {
@@ -779,30 +683,4 @@ func (s *StateStore) SetAdminPassword(password string) error {
 	s.dirty = true
 	s.mu.Unlock()
 	return s.Save()
-}
-
-// WGHubPrivateKey 返回 hub 的 WireGuard 私钥（base64），空串表示尚未生成。
-func (s *StateStore) WGHubPrivateKey() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.state.WGHubPrivkey
-}
-
-// SetWGHubPrivateKey 写入 hub 私钥并同步落盘（含 fsync）。
-func (s *StateStore) SetWGHubPrivateKey(key string) error {
-	s.mu.Lock()
-	previous := s.state.WGHubPrivkey
-	s.state.WGHubPrivkey = key
-	s.dirty = true
-	s.mu.Unlock()
-	if err := s.Save(); err != nil {
-		s.mu.Lock()
-		if s.state.WGHubPrivkey == key {
-			s.state.WGHubPrivkey = previous
-			s.dirty = true
-		}
-		s.mu.Unlock()
-		return err
-	}
-	return nil
 }
