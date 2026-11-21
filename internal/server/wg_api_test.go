@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -24,11 +25,29 @@ type testWGBackend struct {
 	mu        sync.Mutex
 	failPeers map[string]error
 	infraErr  error
+	aclErr    error
+	linkUp    bool
+	linkErr   error
+	lastPeers []netplane.Peer
 	downs     int
 }
 
 func (b *testWGBackend) Probe(context.Context) error                { return nil }
 func (b *testWGBackend) Ensure(context.Context, netplane.Hub) error { return nil }
+func (b *testWGBackend) Up(context.Context) error                   { return nil }
+func (b *testWGBackend) ApplyACL(context.Context, netplane.ACL) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.aclErr
+}
+func (b *testWGBackend) ACLExists(context.Context) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.aclErr != nil {
+		return false, nil
+	}
+	return true, nil
+}
 
 func (b *testWGBackend) Apply(_ context.Context, peers []netplane.Peer) (map[string]error, error) {
 	b.mu.Lock()
@@ -36,6 +55,7 @@ func (b *testWGBackend) Apply(_ context.Context, peers []netplane.Peer) (map[str
 	if b.infraErr != nil {
 		return nil, b.infraErr
 	}
+	b.lastPeers = append([]netplane.Peer(nil), peers...)
 	errs := make(map[string]error)
 	for id, err := range b.failPeers {
 		errs[id] = err
@@ -43,8 +63,14 @@ func (b *testWGBackend) Apply(_ context.Context, peers []netplane.Peer) (map[str
 	return errs, nil
 }
 
-func (b *testWGBackend) Handshakes(context.Context) (map[string]int64, error) {
-	return map[string]int64{}, nil
+func (b *testWGBackend) PeerStats(context.Context) (map[string]netplane.PeerStats, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	stats := make(map[string]netplane.PeerStats, len(b.lastPeers))
+	for _, peer := range b.lastPeers {
+		stats[peer.PublicKey] = netplane.PeerStats{HandshakeAge: 5, RXBytes: 1234, TXBytes: 5678}
+	}
+	return stats, nil
 }
 
 func (b *testWGBackend) Down(context.Context) error {
@@ -52,6 +78,22 @@ func (b *testWGBackend) Down(context.Context) error {
 	b.downs++
 	b.mu.Unlock()
 	return nil
+}
+
+func (b *testWGBackend) LinkUp(context.Context) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.linkErr != nil {
+		return false, b.linkErr
+	}
+	return b.linkUp, nil
+}
+
+// setLink 设置下一次只读探测的结果，用来模拟「接口被外部 down」和探测失败。
+func (b *testWGBackend) setLink(up bool, err error) {
+	b.mu.Lock()
+	b.linkUp, b.linkErr = up, err
+	b.mu.Unlock()
 }
 
 func (b *testWGBackend) fail(deviceID string) {
@@ -74,6 +116,13 @@ func (b *testWGBackend) heal() {
 func (b *testWGBackend) failInfra(err error) {
 	b.mu.Lock()
 	b.infraErr = err
+	b.mu.Unlock()
+}
+
+// failACL 让 nft 安装失败，用来验证 fail-closed 与 acl_warning。
+func (b *testWGBackend) failACL(err error) {
+	b.mu.Lock()
+	b.aclErr = err
 	b.mu.Unlock()
 }
 
@@ -450,30 +499,42 @@ func TestVPNStatusReportsPeersAndACL(t *testing.T) {
 	}
 
 	var status struct {
-		Iface    string `json:"iface"`
-		CIDR     string `json:"cidr"`
-		Listen   int    `json:"listen"`
-		ACLReady bool   `json:"acl_ready"`
-		InfraErr string `json:"infra_error"`
-		Peers    []struct {
+		Iface      string `json:"iface"`
+		CIDR       string `json:"cidr"`
+		Listen     int    `json:"listen"`
+		ACLReady   bool   `json:"acl_ready"`
+		ACLWarning string `json:"acl_warning"`
+		InfraErr   string `json:"infra_error"`
+		Peers      []struct {
 			DeviceID          string `json:"device_id"`
 			WGIP              string `json:"wg_ip"`
 			Enabled           bool   `json:"enabled"`
 			AppliedVersion    uint64 `json:"applied_version"`
+			HandshakeAge      int64  `json:"handshake_age"`
+			RXBytes           int64  `json:"rx_bytes"`
+			TXBytes           int64  `json:"tx_bytes"`
 			PubkeyFingerprint string `json:"pubkey_fingerprint"`
 		} `json:"peers"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &status); err != nil {
 		t.Fatalf("decode status: %v", err)
 	}
-	if status.ACLReady {
-		t.Fatal("acl_ready must be false until the nft batch lands")
+	if !status.ACLReady {
+		t.Fatal("acl_ready must be true after a successful reconcile with nft installed")
+	}
+	if status.ACLWarning != "" {
+		t.Fatalf("no warning expected when the ACL is active, got %q", status.ACLWarning)
 	}
 	if status.Iface != wgInterfaceName || status.CIDR != defaultWGCIDR || status.Listen != defaultWGListen {
 		t.Fatalf("unexpected status header: %+v", status)
 	}
 	if len(status.Peers) != 1 || status.Peers[0].WGIP != "10.77.0.2" || !status.Peers[0].Enabled {
 		t.Fatalf("unexpected peers: %+v", status.Peers)
+	}
+	// 前端靠 rx/tx 判断链路是否真的在走数据；fake backend 为每个 peer 返回
+	// 1234/5678，解析链路（dump 第 6/7 列 → plane → API）必须原样透出。
+	if status.Peers[0].RXBytes != 1234 || status.Peers[0].TXBytes != 5678 {
+		t.Fatalf("rx/tx = %d/%d, want 1234/5678", status.Peers[0].RXBytes, status.Peers[0].TXBytes)
 	}
 	if status.Peers[0].PubkeyFingerprint == "" || strings.Contains(status.Peers[0].PubkeyFingerprint, pubkey) {
 		t.Fatal("status must carry a fingerprint, never the raw key")
@@ -800,4 +861,235 @@ func TestPutVPNReturns503WhenInfraFails(t *testing.T) {
 
 	recorder := putVPN(t, server, "dev-1", randomWGPublicKey(t), wgRoleClient)
 	assertErrorCode(t, recorder, http.StatusServiceUnavailable, "WG_INFRA")
+}
+
+func callVPNHandlerAtHost(t *testing.T, handler gin.HandlerFunc, method, body, deviceID, host string) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	engine := gin.New()
+	engine.Handle(method, "/api/devices/:id/vpn", handler)
+	request := httptest.NewRequest(method, "/api/devices/"+deviceID+"/vpn", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Host = host
+	engine.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func putVPNAtHost(t *testing.T, server *Server, deviceID, pubkey, role, host string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(deviceVPNRequest{Pubkey: pubkey, Role: role})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	return callVPNHandlerAtHost(t, server.handleAPIPutDeviceVPN, http.MethodPut, string(body), deviceID, host)
+}
+
+func TestEnsureCIDRFreeRejectsHostNetworkOverlap(t *testing.T) {
+	original := hostPrefixes
+	hostPrefixes = func() ([]netip.Prefix, error) {
+		return []netip.Prefix{
+			netip.MustParsePrefix("10.77.0.0/16"), // 模拟 ECS VPC
+			netip.MustParsePrefix("192.168.1.0/24"),
+		}, nil
+	}
+	t.Cleanup(func() { hostPrefixes = original })
+
+	if err := ensureCIDRFree("10.77.0.0/24", ""); err == nil {
+		t.Fatal("a cidr overlapping a host/VPC network must be rejected")
+	} else if !strings.Contains(err.Error(), "10.77.0.0/16") {
+		t.Fatalf("the error should name the conflicting network, got %v", err)
+	}
+	if err := ensureCIDRFree("10.88.0.0/24", ""); err != nil {
+		t.Fatalf("a non-overlapping cidr must pass: %v", err)
+	}
+}
+
+func TestPutVPNRejectsLoopbackEndpointWithoutPublicHost(t *testing.T) {
+	server, store, _ := newWGTestServer(t)
+	addAuthorizedDevice(t, store, "dev-1")
+	pubkey := randomWGPublicKey(t)
+
+	recorder := putVPNAtHost(t, server, "dev-1", pubkey, wgRoleClient, "127.0.0.1:8080")
+	assertErrorCode(t, recorder, http.StatusBadRequest, "PUBLIC_HOST_REQUIRED")
+	if device := store.GetDeviceByID("dev-1"); device.WGPublicKey != "" {
+		t.Fatalf("a rejected endpoint must not bind anything: %+v", device)
+	}
+
+	// 请求 Host 是可用地址时允许绑定，但必须给出 endpoint_warning。
+	recorder = putVPNAtHost(t, server, "dev-1", pubkey, wgRoleClient, "vpn.example.com:8080")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	response := decodeBody[vpnTemplateResponse](t, recorder)
+	if response.Endpoint != "vpn.example.com:51820" {
+		t.Fatalf("endpoint = %q, want vpn.example.com:51820", response.Endpoint)
+	}
+	if response.EndpointWarning == "" {
+		t.Fatal("public_host is empty: the response must warn that the endpoint came from the request host")
+	}
+
+	// 配好 public_host 之后不再有 warning。
+	server.UpdateSettings(func(settings *ServerSettings) { settings.PublicHost = "203.0.113.10" })
+	recorder = putVPNAtHost(t, server, "dev-1", randomWGPublicKey(t), wgRoleClient, "127.0.0.1:8080")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	response = decodeBody[vpnTemplateResponse](t, recorder)
+	if response.Endpoint != "203.0.113.10:51820" || response.EndpointWarning != "" {
+		t.Fatalf("unexpected endpoint after public_host was set: %+v", response)
+	}
+}
+
+func TestGetDeviceVPNReturnsSameShapeAsPut(t *testing.T) {
+	server, store, _ := newWGTestServer(t)
+	addAuthorizedDevice(t, store, "dev-1")
+	put := decodeBody[vpnTemplateResponse](t, putVPN(t, server, "dev-1", randomWGPublicKey(t), wgRoleClient))
+
+	recorder := callVPNHandler(t, server.handleAPIGetDeviceVPN, http.MethodGet, "", "dev-1")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := decodeBody[vpnTemplateResponse](t, recorder)
+	if got.DeviceID != put.DeviceID || got.WGIP != put.WGIP || got.Role != put.Role {
+		t.Fatalf("binding mismatch: put=%+v get=%+v", put, got)
+	}
+	if got.Endpoint != put.Endpoint || got.Template != put.Template {
+		t.Fatalf("endpoint/template mismatch:\nput=%+v\nget=%+v", put, got)
+	}
+	if len(got.Notes) != len(put.Notes) || got.Applied != put.Applied || !got.ACLReady {
+		t.Fatalf("metadata mismatch: put=%+v get=%+v", put, got)
+	}
+
+	// 没有绑定：404，且不能伪造一份空模板。
+	addAuthorizedDevice(t, store, "dev-2")
+	recorder = callVPNHandler(t, server.handleAPIGetDeviceVPN, http.MethodGet, "", "dev-2")
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "no wireguard binding") {
+		t.Fatalf("unbound device: want 404 no binding, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = callVPNHandler(t, server.handleAPIGetDeviceVPN, http.MethodGet, "", "missing")
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "device not found") {
+		t.Fatalf("unknown device: want 404, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPostVPNReconcileReportsApplied(t *testing.T) {
+	server, store, backend := newWGTestServer(t)
+	addAuthorizedDevice(t, store, "dev-1")
+	if recorder := putVPN(t, server, "dev-1", randomWGPublicKey(t), wgRoleClient); recorder.Code != http.StatusOK {
+		t.Fatalf("binding failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder := callHandler(t, server.handleAPIPostVPNReconcile, http.MethodPost, "/api/vpn/reconcile", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Gen      uint64 `json:"gen"`
+		Applied  uint64 `json:"applied"`
+		ACLReady bool   `json:"acl_ready"`
+		InfraErr string `json:"infra_error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode reconcile: %v", err)
+	}
+	if body.Gen == 0 || body.Applied != body.Gen || !body.ACLReady || body.InfraErr != "" {
+		t.Fatalf("unexpected reconcile result: %+v", body)
+	}
+
+	// 接口级失败：手动 reconcile 同样 503，不能假装成功。
+	backend.failInfra(errors.New("wg set: operation not permitted"))
+	recorder = callHandler(t, server.handleAPIPostVPNReconcile, http.MethodPost, "/api/vpn/reconcile", "")
+	assertErrorCode(t, recorder, http.StatusServiceUnavailable, "WG_INFRA")
+}
+
+func TestVPNStatusWarnsWhenACLFails(t *testing.T) {
+	server, store, backend := newWGTestServer(t)
+	backend.failACL(errors.New("nft: operation not permitted"))
+	addAuthorizedDevice(t, store, "dev-1")
+
+	// ACL 装不上：写接口必须 503（接口会被 down），不能返回 200 让运维以为生效了。
+	recorder := putVPN(t, server, "dev-1", randomWGPublicKey(t), wgRoleClient)
+	assertErrorCode(t, recorder, http.StatusServiceUnavailable, "WG_INFRA")
+
+	gin.SetMode(gin.TestMode)
+	statusRecorder := httptest.NewRecorder()
+	engine := gin.New()
+	engine.GET("/api/vpn/status", server.handleAPIGetVPNStatus)
+	engine.ServeHTTP(statusRecorder, httptest.NewRequest(http.MethodGet, "/api/vpn/status", nil))
+	var status struct {
+		ACLReady   bool   `json:"acl_ready"`
+		ACLWarning string `json:"acl_warning"`
+		InfraErr   string `json:"infra_error"`
+	}
+	if err := json.Unmarshal(statusRecorder.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.ACLReady {
+		t.Fatal("acl_ready must be false when nft fails")
+	}
+	if !strings.Contains(status.ACLWarning, "ACL 未生效") || !strings.Contains(status.ACLWarning, "fail-closed") {
+		t.Fatalf("acl_warning should explain the fail-closed state, got %q", status.ACLWarning)
+	}
+	if !strings.Contains(status.InfraErr, "install wireguard nft table") {
+		t.Fatalf("infra_error should name the ACL failure, got %q", status.InfraErr)
+	}
+}
+
+// GET /api/vpn/status 的 link_up 是独立只读探测：接口被外部 down 后必须报
+// false（此时 acl_ready/infra_error 仍描述上一轮成功），探测本身失败只影响
+// 这两个字段，整条响应仍是 200、别的内容照常。
+func TestVPNStatusReportsLinkState(t *testing.T) {
+	server, store, backend := newWGTestServer(t)
+	addAuthorizedDevice(t, store, "dev-1")
+	if recorder := putVPN(t, server, "dev-1", randomWGPublicKey(t), wgRoleClient); recorder.Code != http.StatusOK {
+		t.Fatalf("binding failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	check := func(wantUp bool, wantDetail string) {
+		t.Helper()
+		recorder := callHandler(t, server.handleAPIGetVPNStatus, http.MethodGet, "/api/vpn/status", "")
+		// 探测失败也必须是 200：link_up 只是观测，不能把状态接口变成 5xx。
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+		var body struct {
+			LinkUp    bool   `json:"link_up"`
+			LinkError string `json:"link_error"`
+			ACLReady  bool   `json:"acl_ready"`
+			InfraErr  string `json:"infra_error"`
+			Peers     []struct {
+				DeviceID string `json:"device_id"`
+			} `json:"peers"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode status %q: %v", recorder.Body.String(), err)
+		}
+		if body.LinkUp != wantUp {
+			t.Fatalf("link_up = %v, want %v (body %s)", body.LinkUp, wantUp, recorder.Body.String())
+		}
+		if wantDetail == "" {
+			if body.LinkError != "" {
+				t.Fatalf("link_error should be empty, got %q", body.LinkError)
+			}
+		} else if !strings.Contains(body.LinkError, wantDetail) {
+			t.Fatalf("link_error = %q, want it to contain %q", body.LinkError, wantDetail)
+		}
+		// 探测不能改写写路径的状态：ACL 已就绪、设备仍在列表里。
+		if !body.ACLReady || body.InfraErr != "" {
+			t.Fatalf("probe must not change acl_ready/infra_error, got acl_ready=%v infra_error=%q", body.ACLReady, body.InfraErr)
+		}
+		if len(body.Peers) != 1 || body.Peers[0].DeviceID != "dev-1" {
+			t.Fatalf("peers should survive the probe, got %+v", body.Peers)
+		}
+	}
+
+	backend.setLink(true, nil)
+	check(true, "")
+
+	backend.setLink(false, nil)
+	check(false, "")
+
+	backend.setLink(false, errors.New(`ip -o link show dev wg-grm: exit status 1: Device "wg-grm" does not exist.`))
+	check(false, "does not exist")
 }

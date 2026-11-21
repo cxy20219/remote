@@ -157,9 +157,38 @@ func TestSaveSurfacesSyncFailure(t *testing.T) {
 	if err := store.Save(); err == nil {
 		t.Fatal("a failed fsync must fail Save")
 	}
+	if !storeDirty(store) {
+		t.Fatal("a failed save must leave the store dirty so the next flush retries")
+	}
+}
+
+// storeDirty 直接读 dirty 标记：用 fsync 次数间接推断抓不住「失败后没把
+// dirty 置回」的变异（Save 是 force 写，下一次照样会重写）。
+func storeDirty(store *StateStore) bool {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.dirty
 }
 
 func TestSaveSurfacesDirectorySyncFailure(t *testing.T) {
+	_, store := newTestConfig(t)
+
+	originalDir := syncStateDir
+	syncStateDir = func(*os.File) error { return errors.New("injected directory sync failure") }
+	t.Cleanup(func() { syncStateDir = originalDir })
+
+	store.UpdateSettings(func(settings *ServerSettings) { settings.PublicHost = "example.test" })
+	if err := store.Save(); err == nil {
+		t.Fatal("a failed directory fsync must fail Save")
+	}
+	if !storeDirty(store) {
+		t.Fatal("a failed directory fsync must leave the store dirty")
+	}
+}
+
+// flushDirty 是 3 秒轮询与退出路径用的写盘入口；它必须和 Save 共用同一套
+// dirty 生命周期，否则失败后下一次 tick 会直接 return nil 把状态留在内存。
+func TestFlushDirtyKeepsDirtyUntilWriteSucceeds(t *testing.T) {
 	_, store := newTestConfig(t)
 
 	var fileSyncs int32
@@ -174,17 +203,22 @@ func TestSaveSurfacesDirectorySyncFailure(t *testing.T) {
 	})
 
 	store.UpdateSettings(func(settings *ServerSettings) { settings.PublicHost = "example.test" })
-	if err := store.Save(); err == nil {
-		t.Fatal("a failed directory fsync must fail Save")
+	if err := store.flushDirty(); err == nil {
+		t.Fatal("a failed directory fsync must fail flushDirty")
+	}
+	if !storeDirty(store) {
+		t.Fatal("a failed flush must keep the store dirty for the next tick")
 	}
 
-	// 失败后必须保持 dirty：下一次 Save 要真的重写，而不是直接 return nil。
 	syncStateDir = originalDir
-	if err := store.Save(); err != nil {
+	if err := store.flushDirty(); err != nil {
 		t.Fatalf("retry after restoring the directory fsync should succeed: %v", err)
 	}
+	if storeDirty(store) {
+		t.Fatal("a successful flush must clear the dirty flag")
+	}
 	if got := atomic.LoadInt32(&fileSyncs); got != 2 {
-		t.Fatalf("a failed directory fsync must leave the store dirty so the retry rewrites the file; file syncs = %d, want 2", got)
+		t.Fatalf("a failed flush must be retried by the next flush; file syncs = %d, want 2", got)
 	}
 }
 

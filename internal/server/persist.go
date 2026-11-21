@@ -346,10 +346,27 @@ func (s *StateStore) SetInitialAdminPassword(password string) (bool, error) {
 
 // Save writes the current state synchronously.
 func (s *StateStore) Save() error {
+	return s.save(true)
+}
+
+func (s *StateStore) flushDirty() error {
+	return s.save(false)
+}
+
+// save 是 Save / flushDirty 的共同实现：force=false 时只在 dirty 时写。
+//
+// dirty 的生命周期只有这一处：写盘前清掉，写失败必须置回 true，否则一次
+// 瞬态 fsync 失败会让后续的 3 秒轮询和下一次 Save 都以为已经落盘，把刚改
+// 过的安全状态（吊销、阈值、密钥）留在内存里直到进程退出。
+func (s *StateStore) save(force bool) error {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 
 	s.mu.Lock()
+	if !force && !s.dirty {
+		s.mu.Unlock()
+		return nil
+	}
 	snapshot := cloneServerState(s.state)
 	s.dirty = false
 	s.mu.Unlock()
@@ -448,28 +465,6 @@ func (s *StateStore) syncLoop() {
 			return
 		}
 	}
-}
-
-func (s *StateStore) flushDirty() error {
-	s.saveMu.Lock()
-	defer s.saveMu.Unlock()
-
-	s.mu.Lock()
-	if !s.dirty {
-		s.mu.Unlock()
-		return nil
-	}
-	s.dirty = false
-	snapshot := cloneServerState(s.state)
-	s.mu.Unlock()
-
-	if err := s.writeState(snapshot); err != nil {
-		s.mu.Lock()
-		s.dirty = true
-		s.mu.Unlock()
-		return err
-	}
-	return nil
 }
 
 func (s *StateStore) Stop() {

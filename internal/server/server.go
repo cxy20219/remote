@@ -148,9 +148,8 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 
 	// 组网：即使没有设备绑定也可以构造；reconcile 在没有 peer 时不碰内核。
 	s.netplane = netplane.New(netplane.Config{
-		Store:    stateStore,
-		Backend:  netplane.NewExecBackend(wgInterfaceName),
-		ACLReady: false, // nft 规则在第二批；状态接口如实报告，不假装已生效
+		Store:   stateStore,
+		Backend: netplane.NewExecBackend(wgInterfaceName),
 	})
 
 	s.upgrader = websocket.Upgrader{
@@ -291,9 +290,11 @@ func (s *Server) Start() error {
 		protected.PUT("/api/devices/:id/config", s.handleAPIUpdateDeviceConfig)
 		protected.PUT("/api/devices/:id/regen-key", s.handleAPIRegenKey)
 		// 组网写接口：先限流（429 早于 bcrypt），再二次认证（403），最后进 handler。
+		protected.GET("/api/devices/:id/vpn", s.handleAPIGetDeviceVPN)
 		protected.PUT("/api/devices/:id/vpn", adminWrite, s.reauthMiddleware(), s.handleAPIPutDeviceVPN)
 		protected.DELETE("/api/devices/:id/vpn", adminWrite, s.reauthMiddleware(), s.handleAPIDeleteDeviceVPN)
 		protected.GET("/api/vpn/status", s.handleAPIGetVPNStatus)
+		protected.POST("/api/vpn/reconcile", adminWrite, s.reauthMiddleware(), s.handleAPIPostVPNReconcile)
 		protected.GET("/api/settings", s.handleAPIGetSettings)
 		protected.PUT("/api/settings", s.handleAPIUpdateSettings)
 
@@ -323,6 +324,12 @@ func (s *Server) Start() error {
 			cancel()
 			if detail := s.netplane.InfraError(); detail != "" {
 				slog.Warn("wireguard initial reconcile failed; VPN writes will answer 503 until it recovers", "error", detail)
+			}
+			// ACL 没就绪时接口是 down 的（fail-closed），日志必须说清「不是慢，
+			// 是 VPN 直接不通」，否则运维会以为 peer 之间只是没隔离。
+			if status := s.netplane.Status(); !status.ACLReady && len(status.Peers) > 0 {
+				slog.Warn("wireguard ACL is not active; the interface is kept down (fail-closed) and VPN traffic will not flow",
+					"error", status.InfraError)
 			}
 		}
 	}

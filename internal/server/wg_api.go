@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +19,9 @@ import (
 
 // vpnApplyBudget 是写接口等待内核应用的上限（设计 §4）。
 const vpnApplyBudget = 5 * time.Second
+
+// vpnReconcileBudget 是手动 reconcile 等待一整轮（含 nft 重装）的上限。
+const vpnReconcileBudget = 10 * time.Second
 
 // NetplaneSnapshot 把 state 翻译成 netplane 的期望状态。
 //
@@ -243,6 +247,11 @@ func wgErrorStatus(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": "the device was changed by another write before this one reached the kernel; reload and retry", "code": "SUPERSEDED"})
 	case errors.Is(err, ErrWGStateEncryptionRequired):
 		c.JSON(http.StatusConflict, gin.H{"error": stateEncryptionRequiredMessage, "code": "STATE_ENCRYPTION_REQUIRED"})
+	case errors.Is(err, ErrWGPublicHostRequired):
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "cannot build a reachable endpoint: set public_host in settings first (the current request host is a loopback or unspecified address)",
+			"code":  "PUBLIC_HOST_REQUIRED",
+		})
 	case errors.Is(err, ErrWGNotAuthorized):
 		c.JSON(http.StatusConflict, gin.H{"error": "device must be approved before it can join the network", "code": "DEVICE_NOT_AUTHORIZED"})
 	case errors.Is(err, ErrWGNoBinding):
@@ -273,6 +282,10 @@ type vpnTemplateResponse struct {
 	Notes    []string `json:"notes"`
 	Applied  uint64   `json:"applied"`
 	ACLReady bool     `json:"acl_ready"`
+	// ACLWarning 在 ACL 未生效时给出人话解释；正常时为 omitempty。
+	ACLWarning string `json:"acl_warning,omitempty"`
+	// EndpointWarning 在 public_host 未设置、endpoint 退回到请求 Host 时提示。
+	EndpointWarning string `json:"endpoint_warning,omitempty"`
 }
 
 // handleAPIPutDeviceVPN 绑定/替换设备公钥（同一把公钥重复提交是幂等的）。
@@ -327,6 +340,13 @@ func (s *Server) handleAPIPutDeviceVPN(c *gin.Context) {
 		return
 	}
 	settings := s.stateStore.GetSettings()
+	// 先把 endpoint 定下来：public_host 为空且请求 Host 是回环时，生成的配置
+	// 设备永远连不上，属于「不该写进 state 的坏配置」，直接拒绝。
+	endpointHost, endpointWarning, endpointErr := s.vpnEndpointHost(c.Request.Host)
+	if endpointErr != nil {
+		wgErrorStatus(c, endpointErr)
+		return
+	}
 	// 防御性校验：隧道端口池以后可能被改到包含 51820，那样隧道先绑就会占掉
 	// WireGuard 的监听端口（EADDRINUSE，报错难查）。设置接口改区间时已经挡了
 	// 一次，这里再兜一层，因为改区间与启用组网可能发生在不同时间。
@@ -399,16 +419,105 @@ func (s *Server) handleAPIPutDeviceVPN(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "hub key is unavailable"})
 		return
 	}
-	endpoint := net.JoinHostPort(s.advertisedTunnelHost(c.Request.Host), strconv.Itoa(settings.WGListen))
+	endpoint := net.JoinHostPort(endpointHost, strconv.Itoa(settings.WGListen))
+	status := s.netplane.Status()
+	aclWarning := aclWarningText(status.ACLReady, status.InfraError)
+	if aclWarning != "" {
+		slog.Warn("wireguard ACL is not active; the interface is fail-closed and VPN traffic will not flow",
+			"device", deviceID, "error", status.InfraError)
+	}
 	c.JSON(http.StatusOK, vpnTemplateResponse{
-		DeviceID: deviceID,
-		WGIP:     current.WGIP,
-		Role:     current.WGRole,
-		Endpoint: endpoint,
-		Template: wgTemplate(current.WGIP, hubPublicKey, endpoint, settings.WGCIDR),
-		Notes:    wgTemplateNotes(),
-		Applied:  version,
-		ACLReady: false,
+		DeviceID:        deviceID,
+		WGIP:            current.WGIP,
+		Role:            current.WGRole,
+		Endpoint:        endpoint,
+		Template:        wgTemplate(current.WGIP, hubPublicKey, endpoint, settings.WGCIDR),
+		Notes:           wgTemplateNotes(),
+		Applied:         version,
+		ACLReady:        status.ACLReady,
+		ACLWarning:      aclWarning,
+		EndpointWarning: endpointWarning,
+	})
+}
+
+// handleAPIGetDeviceVPN 返回单台设备的绑定和模板（与 PUT 成功响应同形状）。
+// 模板以前只在绑定时给一次，用户关掉弹窗就再也拿不回来；前端「查看配置」
+// 依赖这个只读接口。鉴权只需要 session（设计 §5）。
+func (s *Server) handleAPIGetDeviceVPN(c *gin.Context) {
+	deviceID := c.Param("id")
+	c.Header("Cache-Control", "no-store")
+
+	device := s.stateStore.GetDeviceByID(deviceID)
+	if device == nil {
+		wgErrorStatus(c, ErrWGDeviceNotFound)
+		return
+	}
+	if device.WGPublicKey == "" {
+		wgErrorStatus(c, ErrWGNoBinding)
+		return
+	}
+	hubPublicKey, err := s.hubPublicKey()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "hub key is unavailable"})
+		return
+	}
+	settings := s.stateStore.GetSettings()
+	endpointHost, endpointWarning := s.vpnEndpointForStatus(c.Request.Host)
+	endpoint := net.JoinHostPort(endpointHost, strconv.Itoa(settings.WGListen))
+
+	var applied uint64
+	aclReady := false
+	aclWarning := ""
+	if s.netplane != nil {
+		status := s.netplane.Status()
+		for _, peer := range status.Peers {
+			if peer.DeviceID == deviceID {
+				applied = peer.AppliedVersion
+				break
+			}
+		}
+		aclReady = status.ACLReady
+		aclWarning = aclWarningText(status.ACLReady, status.InfraError)
+	}
+
+	c.JSON(http.StatusOK, vpnTemplateResponse{
+		DeviceID:        deviceID,
+		WGIP:            device.WGIP,
+		Role:            device.WGRole,
+		Endpoint:        endpoint,
+		Template:        wgTemplate(device.WGIP, hubPublicKey, endpoint, settings.WGCIDR),
+		Notes:           wgTemplateNotes(),
+		Applied:         applied,
+		ACLReady:        aclReady,
+		ACLWarning:      aclWarning,
+		EndpointWarning: endpointWarning,
+	})
+}
+
+// handleAPIPostVPNReconcile 手动触发一次全量 reconcile：排障时运维需要一个
+// 「我不信自动的，手动来一次」的按钮。等待期间不持任何 per-device 锁。
+func (s *Server) handleAPIPostVPNReconcile(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if s.netplane == nil {
+		wgErrorStatus(c, netplane.ErrInfra)
+		return
+	}
+	if detail := s.netplane.InfraError(); detail != "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "wireguard infrastructure is unavailable", "code": "WG_INFRA", "detail": detail})
+		return
+	}
+	gen := s.netplane.Bump()
+	if err := s.netplane.WaitApplied(c.Request.Context(), gen, vpnReconcileBudget); err != nil {
+		wgErrorStatus(c, err)
+		return
+	}
+	status := s.netplane.Status()
+	c.JSON(http.StatusOK, gin.H{
+		"gen":         status.Gen,
+		"applied":     status.Applied,
+		"acl_ready":   status.ACLReady,
+		"acl_warning": aclWarningText(status.ACLReady, status.InfraError),
+		"infra_error": status.InfraError,
 	})
 }
 
@@ -497,20 +606,119 @@ func (s *Server) restoreDevice(previous *DeviceState) {
 	})
 }
 
-// ensureCIDRFree 拒绝把已知公网地址所在的网段吸进隧道（设计 §2）。
+// hostPrefixes 返回本机非 wg 接口上的网段。可注入，测试用来模拟 ECS VPC。
+var hostPrefixes = func() ([]netip.Prefix, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	var prefixes []netip.Prefix
+	for _, iface := range interfaces {
+		// wg 接口自己的地址是上一次 reconcile 加上的；算进来会让任何已启用
+		// 的部署在第二次 PUT 时永远判定「CIDR 冲突」。
+		if iface.Name == wgInterfaceName {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			prefix, err := netip.ParsePrefix(address.String())
+			if err == nil {
+				prefixes = append(prefixes, prefix)
+			}
+		}
+	}
+	return prefixes, nil
+}
+
+// ensureCIDRFree 拒绝把本机已有的网段吸进隧道（设计 §2）：
+// 与 public_host 相同，或与任何网卡/VPC 网段重叠，都会让 `ip addr add`
+// 把那条更具体的路由抢到 wg 接口上。
 func ensureCIDRFree(cidr, publicHost string) error {
 	prefix, err := netip.ParsePrefix(cidr)
 	if err != nil {
 		return errors.New("invalid wireguard cidr")
 	}
-	host := strings.TrimSpace(publicHost)
-	if host == "" {
-		return nil
+	if host := strings.TrimSpace(publicHost); host != "" {
+		if ip, err := netip.ParseAddr(host); err == nil && prefix.Contains(ip) {
+			return errors.New("wireguard cidr contains public_host; pick a cidr that does not overlap the server address")
+		}
 	}
-	if ip, err := netip.ParseAddr(host); err == nil && prefix.Contains(ip) {
-		return errors.New("wireguard cidr contains public_host; pick a cidr that does not overlap the server address")
+	prefixes, err := hostPrefixes()
+	if err != nil {
+		return fmt.Errorf("cannot enumerate host networks: %w", err)
+	}
+	for _, host := range prefixes {
+		if prefix.Overlaps(host) {
+			return fmt.Errorf("wireguard cidr %s overlaps %s on this host; pick a cidr that does not collide with the host/VPC network", prefix, host)
+		}
 	}
 	return nil
+}
+
+// vpnHostUnreachable 判断 endpoint 主机是否根本不可能被设备访问到。
+// 域名一律放行（可能通过 DNS 解析到公网地址），只拦本地地址。
+func vpnHostUnreachable(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return true
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return address.IsLoopback() || address.IsUnspecified() || address.IsLinkLocalUnicast()
+}
+
+// vpnEndpointHost 决定模板里的 Endpoint 主机名；public_host 为空时退回请求
+// Host，但后者是回环地址就拒绝绑定（否则设备拿到永远连不上的配置）。
+func (s *Server) vpnEndpointHost(requestHost string) (string, string, error) {
+	settings := s.stateStore.GetSettings()
+	if host := strings.TrimSpace(settings.PublicHost); host != "" {
+		if vpnHostUnreachable(host) {
+			return "", "", ErrWGPublicHostRequired
+		}
+		return host, "", nil
+	}
+	host := s.advertisedTunnelHost(requestHost)
+	if vpnHostUnreachable(host) {
+		return "", "", ErrWGPublicHostRequired
+	}
+	return host, "public_host 未设置：endpoint 取自本次请求的 Host（" + host + "），请确认该地址对设备可达；建议在设置里填写 public_host", nil
+}
+
+// vpnEndpointForStatus 与 vpnEndpointHost 同源，但只产出提示、不返回错误，
+// 让状态页始终能看到当前会下发的 endpoint 与它为什么不可用。
+func (s *Server) vpnEndpointForStatus(requestHost string) (string, string) {
+	settings := s.stateStore.GetSettings()
+	if host := strings.TrimSpace(settings.PublicHost); host != "" {
+		if vpnHostUnreachable(host) {
+			return host, "public_host 是回环/未指定地址，设备无法连接；请改成公网地址或域名"
+		}
+		return host, ""
+	}
+	host := s.advertisedTunnelHost(requestHost)
+	if vpnHostUnreachable(host) {
+		return host, "public_host 未设置且请求 Host 是回环/未指定地址，设备无法连接；请先在设置里填写 public_host"
+	}
+	return host, "public_host 未设置：endpoint 取自本次请求的 Host，请确认外网可达"
+}
+
+// aclWarningText 是「隔离未生效」的统一文案：响应、状态页、日志共用一句，
+// 避免运维看到 acl_ready=false 却不知道当前是 fail-closed（VPN 直接不通）。
+func aclWarningText(aclReady bool, infraError string) string {
+	if aclReady {
+		return ""
+	}
+	if infraError != "" {
+		return "ACL 未生效（" + infraError + "）：WireGuard 接口已按 fail-closed 关闭，VPN 流量不可用"
+	}
+	return "ACL 未生效：WireGuard 接口已按 fail-closed 关闭，VPN 流量不可用；检查是否安装 nftables、进程是否有 CAP_NET_ADMIN"
 }
 
 // vpnPeerStatus 是状态接口里的一台设备。
@@ -524,6 +732,8 @@ type vpnPeerStatus struct {
 	AppliedVersion    uint64 `json:"applied_version"`
 	Error             string `json:"wg_error,omitempty"`
 	HandshakeAge      int64  `json:"handshake_age"`
+	RXBytes           int64  `json:"rx_bytes"`
+	TXBytes           int64  `json:"tx_bytes"`
 	PubkeyFingerprint string `json:"pubkey_fingerprint"`
 }
 
@@ -531,10 +741,12 @@ type vpnPeerStatus struct {
 func (s *Server) handleAPIGetVPNStatus(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	settings := s.stateStore.GetSettings()
+	endpointHost, endpointWarning := s.vpnEndpointForStatus(c.Request.Host)
 	if s.netplane == nil {
 		c.JSON(http.StatusOK, gin.H{
 			"iface":                    wgInterfaceName,
-			"endpoint":                 net.JoinHostPort(s.advertisedTunnelHost(c.Request.Host), strconv.Itoa(settings.WGListen)),
+			"endpoint":                 net.JoinHostPort(endpointHost, strconv.Itoa(settings.WGListen)),
+			"endpoint_warning":         endpointWarning,
 			"cidr":                     settings.WGCIDR,
 			"listen":                   settings.WGListen,
 			"gen":                      0,
@@ -543,12 +755,19 @@ func (s *Server) handleAPIGetVPNStatus(c *gin.Context) {
 			"blocked":                  "",
 			"state_encryption_enabled": s.stateStore.EncryptionEnabled(),
 			"acl_ready":                false,
+			"acl_warning":              aclWarningText(false, ""),
+			"link_up":                  false,
+			"link_error":               "wireguard networking is not enabled",
 			"peers":                    []vpnPeerStatus{},
 		})
 		return
 	}
 
 	status := s.netplane.Status()
+	// 链路状态单独探测：它只影响 link_up/link_error，不参与 acl_ready 与
+	// infra_error 的判定。后者描述上一轮 reconcile 的写路径结果，不能被一次
+	// 只读探测改写；探测失败也只把链路报成不健康，不让整个接口变成 5xx。
+	linkUp, linkError := s.netplane.LinkState(c.Request.Context())
 	byID := make(map[string]netplane.PeerStatus, len(status.Peers))
 	for _, peer := range status.Peers {
 		byID[peer.DeviceID] = peer
@@ -569,13 +788,16 @@ func (s *Server) handleAPIGetVPNStatus(c *gin.Context) {
 			AppliedVersion:    peer.AppliedVersion,
 			Error:             peer.Error,
 			HandshakeAge:      peer.HandshakeAge,
+			RXBytes:           peer.RXBytes,
+			TXBytes:           peer.TXBytes,
 			PubkeyFingerprint: wgPubkeyFingerprint(device.WGPublicKey),
 		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"iface":                    wgInterfaceName,
-		"endpoint":                 net.JoinHostPort(s.advertisedTunnelHost(c.Request.Host), strconv.Itoa(settings.WGListen)),
+		"endpoint":                 net.JoinHostPort(endpointHost, strconv.Itoa(settings.WGListen)),
+		"endpoint_warning":         endpointWarning,
 		"cidr":                     settings.WGCIDR,
 		"listen":                   settings.WGListen,
 		"gen":                      status.Gen,
@@ -584,6 +806,9 @@ func (s *Server) handleAPIGetVPNStatus(c *gin.Context) {
 		"blocked":                  status.Blocked,
 		"state_encryption_enabled": s.stateStore.EncryptionEnabled(),
 		"acl_ready":                status.ACLReady,
+		"acl_warning":              aclWarningText(status.ACLReady, status.InfraError),
+		"link_up":                  linkUp,
+		"link_error":               linkError,
 		"peers":                    peers,
 	})
 }

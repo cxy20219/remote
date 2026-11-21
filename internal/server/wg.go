@@ -57,6 +57,9 @@ var (
 	// ErrWGStateEncryptionRequired 表示 hub 私钥只能进 state 加密区：没有配
 	// state 加密密钥时拒绝启用组网，绝不把 hub 私钥明文落盘（实现须知 #6）。
 	ErrWGStateEncryptionRequired = errors.New("state encryption is required to enable wireguard networking")
+	// ErrWGPublicHostRequired 表示既没配 public_host，本次请求的 Host 又是
+	// 回环/未指定地址：生成的 Endpoint 设备永远连不上，必须先填 public_host。
+	ErrWGPublicHostRequired = errors.New("public_host is required: the request host is not reachable from devices")
 )
 
 // stateEncryptionRequiredMessage 是 409 的对外文案：给运维一个能照做的出口。
