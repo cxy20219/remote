@@ -373,9 +373,10 @@ th,td{padding:8px 8px}
       <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
         <div class="form-group" style="flex:1"><label style="font-size:12px">IP 地址</label><input type="text" id="bl-new-ip" placeholder="如 1.2.3.4" onkeydown="if(event.key==='Enter')addBlacklistIP()"></div>
         <div class="form-group" style="flex:1"><label style="font-size:12px">原因</label><input type="text" id="bl-new-reason" placeholder="手动拉黑"></div>
-        <div class="form-group" style="width:100px"><label style="font-size:12px">封禁(分)</label><input type="number" id="bl-new-duration" placeholder="0=永久" min="0"></div>
-        <button class="btn btn-danger" style="align-self:end;padding:8px 14px" onclick="addBlacklistIP()">拉黑</button>
+        <div class="form-group" style="width:100px"><label style="font-size:12px">封禁(分)</label><input type="number" id="bl-new-duration" placeholder="0=永久" min="0" max="525600" step="1" title="0 = 永久，最长 525600 分钟（一年）" oninput="updateBlSubmitLabel()"></div>
+        <button class="btn btn-danger" id="bl-submit-btn" style="align-self:end;padding:8px 14px" onclick="addBlacklistIP()">永久封禁</button>
       </div>
+      <p style="font-size:12px;color:#94a3b8;margin:-4px 0 12px">封禁时长：0 = 永久，最长 525600 分钟（一年）</p>
       <div id="bl-list"></div>
     </div>
   </div>
@@ -1198,11 +1199,23 @@ function renderBlacklist(entries, violations, threshold) {
   container.innerHTML = html;
 }
 
+function updateBlSubmitLabel() {
+  const raw = document.getElementById('bl-new-duration').value.trim();
+  document.getElementById('bl-submit-btn').textContent =
+    (raw === '' || Number(raw) === 0) ? '永久封禁' : '拉黑';
+}
+
 async function addBlacklistIP() {
   const ip = document.getElementById('bl-new-ip').value.trim();
   const reason = document.getElementById('bl-new-reason').value.trim();
-  const duration = parseInt(document.getElementById('bl-new-duration').value, 10) || 0;
+  const rawDuration = document.getElementById('bl-new-duration').value.trim();
+  const duration = rawDuration === '' ? 0 : Number(rawDuration);
   if (!ip) { toast('请输入 IP 地址', 'error'); return; }
+  // 后端范围 0..525600（0 = 永久），超范围直接拦下，不发请求。
+  if (!Number.isInteger(duration) || duration < 0 || duration > 525600) {
+    toast('封禁时长需在 0-525600 分钟之间（0 = 永久）', 'error');
+    return;
+  }
   try {
     const { response, data } = await apiJSON('/api/security/blacklist', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1213,6 +1226,7 @@ async function addBlacklistIP() {
       document.getElementById('bl-new-ip').value = '';
       document.getElementById('bl-new-reason').value = '';
       document.getElementById('bl-new-duration').value = '';
+      updateBlSubmitLabel();
       loadBlacklist();
     } else {
       toast(errorText(data, '拉黑失败'), 'error');

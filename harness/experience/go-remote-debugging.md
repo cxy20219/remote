@@ -415,9 +415,11 @@ curl.exe -k -b cookies.txt -s -X PUT "http://server:8080/api/security/global-whi
 | Method | Path | 说明 |
 |--------|------|------|
 | GET | `/api/security/blacklist` | 黑名单列表 + 违规计数 + 阈值 |
-| POST | `/api/security/blacklist` | 手动拉黑 IP（body: `{"ip":"...","reason":"...","duration_minutes":N}`） |
+| POST | `/api/security/blacklist` | 手动拉黑 IP（body: `{"ip":"...","reason":"...","duration_minutes":N}`，`N` 取值 `0..525600`） |
 | DELETE | `/api/security/blacklist/:ip` | 解除拉黑 |
 | GET/PUT | `/api/security/blacklist-threshold` | 读取/修改自动拉黑阈值 |
+
+`duration_minutes` 取值 `0..525600`：`0` 表示永久封禁，最大 525600 分钟（一年）；超出范围返回 400 `{"error":"duration_minutes must be in range 0-525600 (0 means permanent, at most one year)"}`。面板输入框同样限制该范围，超范围会在前端被拦下。
 
 ### 9.3 自动拉黑触发条件
 
