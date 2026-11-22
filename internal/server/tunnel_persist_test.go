@@ -1809,3 +1809,92 @@ func TestUpdateTunnelDuringApplyKeepsStatusHonest(t *testing.T) {
 		t.Fatal("the old port must not keep a listener after the update")
 	}
 }
+
+// apply 在「已 bind、还没写 tunnel_open」时定义被改掉：这次 apply 必须放弃
+// 写 tunnel_open，否则 agent 会收到一条基于旧定义的消息，而服务端已经按新
+// 定义在监听。
+//
+// 窗口只有两条指令（解锁 → 再校验），没有可观测状态，所以用 tunnelOpenHook
+// 把第一次 apply 停在窗口中，再由更新流程改写定义，然后放行它。
+func TestApplyDoesNotSendStaleTunnelOpenAfterUpdate(t *testing.T) {
+	_, store := newTestConfig(t)
+	store.AddDevice(&DeviceState{ID: "dev-1", Name: "dev-1", Status: deviceStatusAuthorized})
+	clients := NewClientManager()
+	clients.SetStore(store)
+	serverConn, agentConn := newTestWebsocketPair(t)
+	client := &Client{ClientID: "dev-1", Conn: serverConn}
+	clients.Add(client)
+
+	tm := newTunnelTestManager(t, store, clients, testTunnelPortStart, testTunnelPortEnd)
+	if err := tm.CreateTunnel("tunnel-1", "dev-1", client, "tcp", "127.0.0.1", 22, testTunnelPortStart, "public"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// 只停住第一次 apply；更新流程自己的那次必须放行。
+	first := make(chan struct{}, 1)
+	first <- struct{}{}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	previousHook := tunnelOpenHook
+	tunnelOpenHook = func(string) {
+		select {
+		case <-first:
+			close(entered)
+			<-release
+		default:
+		}
+	}
+	t.Cleanup(func() { tunnelOpenHook = previousHook })
+
+	applyDone := make(chan struct{})
+	go func() {
+		defer close(applyDone)
+		_, _ = tm.applyTunnel("tunnel-1", client)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the apply never reached the tunnel_open window")
+	}
+
+	// 窗口内改定义：本地端口也改，才能区分新旧两条 tunnel_open。
+	newPort := testTunnelPortStart + 1
+	updated, err := tm.UpdateTunnel("tunnel-1", "127.0.0.1", 2200, newPort, "tcp", "public")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Status != TunnelStatusActive {
+		t.Fatalf("status = %q, want active (last_error=%q)", updated.Status, updated.LastError)
+	}
+
+	// 更新流程发的是新定义。
+	msg := readAgentMessageUntil(t, agentConn, "tunnel_open", 2*time.Second)
+	var open common.TunnelOpenPayload
+	if err := json.Unmarshal(msg.Payload, &open); err != nil {
+		t.Fatalf("decode tunnel_open: %v", err)
+	}
+	if open.LocalPort != 2200 {
+		t.Fatalf("tunnel_open local_port = %d, want the new definition (2200)", open.LocalPort)
+	}
+
+	// 放行在途的那次 apply：它不能再发一条基于旧定义（22）的 tunnel_open。
+	close(release)
+	<-applyDone
+	agentConn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	var stale common.Message
+	if err := agentConn.ReadJSON(&stale); err == nil {
+		var staleOpen common.TunnelOpenPayload
+		_ = json.Unmarshal(stale.Payload, &staleOpen)
+		t.Fatalf("a tunnel_open was sent after the definition changed: type=%q local_port=%d (want no message)",
+			stale.Type, staleOpen.LocalPort)
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("expected a read timeout, got %v", err)
+	}
+
+	if _, ok := tm.listeners[newPort]; !ok {
+		t.Fatal("the updated definition must still be listening on its new port")
+	}
+	if _, ok := tm.listeners[testTunnelPortStart]; ok {
+		t.Fatal("the stale apply must not leave a listener on the old port")
+	}
+}

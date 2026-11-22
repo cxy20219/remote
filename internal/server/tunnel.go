@@ -48,6 +48,10 @@ var (
 // 三次后停下等人处理（不换端口）。
 var portConflictRetryDelays = []time.Duration{time.Second, 3 * time.Second, 9 * time.Second}
 
+// tunnelOpenHook 只给测试用：apply 已经 bind、还没写 tunnel_open 时被调用
+// （此时不持有 tm.mu），用来把“写前再校验”的窗口停下来。生产路径为 nil。
+var tunnelOpenHook func(tunnelID string)
+
 var bufPool = sync.Pool{
 	New: func() interface{} {
 		b := make([]byte, common.TunnelChunkSize)
@@ -1313,6 +1317,10 @@ func (tm *TunnelManager) applyTunnel(tunnelID string, client *Client) (Tunnel, e
 	}
 	out := *tunnel
 	tm.mu.Unlock()
+
+	if tunnelOpenHook != nil {
+		tunnelOpenHook(tunnelID)
+	}
 
 	// bind 之后、写 tunnel_open 之前定义可能又被改掉（UpdateTunnel 会作废
 	// 这次 apply）：再确认一次，别把基于旧定义的 tunnel_open 发出去。
