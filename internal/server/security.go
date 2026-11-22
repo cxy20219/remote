@@ -282,9 +282,12 @@ func (bm *BlacklistManager) AddViolation(ip string) bool {
 }
 
 // AddManual adds an IP to the blacklist manually and persists it synchronously.
-// A failed write rolls the entry (and any entry evicted to make room) back, so
-// memory and disk never disagree. It refuses to evict manual entries: when the
-// table is full of them the caller gets ErrBlacklistFull.
+// It refuses to evict manual entries: when the table is full of them the caller
+// gets ErrBlacklistFull.
+//
+// 写盘失败时不一定回滚：如果磁盘已经被同一窗口里另一次成功的写盘带上了这条
+// 插入，就保留条目并返回成功（见 resolveFailedInsert），保证内存、磁盘和返回
+// 值三者一致。
 func (bm *BlacklistManager) AddManual(ip string, reason string, duration time.Duration) error {
 	entry := &BlacklistEntry{
 		IP:      ip,
@@ -308,28 +311,77 @@ func (bm *BlacklistManager) AddManual(ip string, reason string, duration time.Du
 	}
 	previous, hadEntry := bm.entries[ip]
 	previousViolation, hadViolation := bm.violation[ip]
+	attempt := insertAttempt{
+		entry: entry,
+		// 插入也是可回滚的变更：取号后才能判断「磁盘是否已经覆盖了它」。
+		changeSeq:         bm.nextChangeSeqLocked(),
+		previous:          previous,
+		hadEntry:          hadEntry,
+		previousViolation: previousViolation,
+		hadViolation:      hadViolation,
+		evicted:           evicted,
+	}
 	bm.entries[ip] = entry
 	delete(bm.violation, ip)
 	bm.mu.Unlock()
 
 	if err := bm.persist(); err != nil {
-		// 回滚决策与写盘串行化：若有另一个写盘正在进行，等它落定再判断。
-		// 它成功的话 lastDurableSeq 会更新，说明磁盘已经反映了本次变更。
-		bm.saveMu.Lock()
-		bm.mu.Lock()
-		bm.rollbackInsertLocked(ip, entry, previous, hadEntry, previousViolation, hadViolation)
-		bm.restoreEvictedLocked(evicted)
-		bm.mu.Unlock()
-		bm.saveMu.Unlock()
-		slog.Error("failed to persist manual blacklist entry; rolled back", "ip", ip, "error", err)
-		return err
+		return bm.resolveFailedInsert(attempt, err)
 	}
 	slog.Info("IP manually blacklisted", "ip", ip, "reason", reason)
 	return nil
 }
 
-// nextChangeSeqLocked 为一次可回滚的变更（删除、腾位置淘汰）取号。除启动
-// 阶段（load，后台协程还没起来、没有并发）外，调用方必须持有 bm.mu。
+// insertAttempt 是一次手动插入的现场，写盘失败时用它判断该回滚还是该保留。
+type insertAttempt struct {
+	entry             *BlacklistEntry
+	changeSeq         uint64
+	previous          *BlacklistEntry
+	hadEntry          bool
+	previousViolation *violationState
+	hadViolation      bool
+	evicted           []evictedEntry
+}
+
+// resolveFailedInsert 处理一次写盘失败的插入。判据是「磁盘是否已经覆盖了这次
+// 插入」，两个证据来源：
+//   - 序号不变量：lastDurableSeq >= 本次插入序号，说明有一次成功落盘的快照是在
+//     这次插入之后取的，磁盘必然带着它。文件读不出来时这是唯一证据。
+//   - 回读磁盘：文件里是否已经有与本次插入完全相同的条目。序号不变量看不到
+//     不经过本管理器的写盘（外部写入、测试注入），回读是磁盘事实。
+//
+// 任一条成立且条目仍在内存里，就保留条目并返回 nil：调用方的意图（封禁这个
+// IP）已经落盘，此时报错等于说「没封」，而重启后它又封着——这才是撒谎。否则
+// 回滚内存并返回原错误。
+func (bm *BlacklistManager) resolveFailedInsert(attempt insertAttempt, persistErr error) error {
+	ip := attempt.entry.IP
+
+	// 决策与写盘串行化：等可能在途的写盘落定，避免按过期的 lastDurableSeq
+	// 决策，也避免回滚结果紧接着被另一次 rename 覆盖。
+	bm.saveMu.Lock()
+	defer bm.saveMu.Unlock()
+
+	bm.mu.Lock()
+	installed := bm.entries[ip] == attempt.entry
+	covered := bm.rollbackSupersededLocked(attempt.changeSeq)
+	bm.mu.Unlock()
+
+	if installed && (covered || bm.blacklistFileHoldsEntry(attempt.entry)) {
+		slog.Warn("failed to persist a manual blacklist entry, but it is already on disk; keeping it",
+			"ip", ip, "error", persistErr)
+		return nil
+	}
+
+	bm.mu.Lock()
+	bm.rollbackInsertLocked(ip, attempt.entry, attempt.previous, attempt.hadEntry, attempt.previousViolation, attempt.hadViolation)
+	bm.restoreEvictedLocked(attempt.evicted)
+	bm.mu.Unlock()
+	slog.Error("failed to persist manual blacklist entry; rolled back", "ip", ip, "error", persistErr)
+	return persistErr
+}
+
+// nextChangeSeqLocked 为一次可回滚的变更（插入、删除、腾位置淘汰）取号。除
+// 启动阶段（load，后台协程还没起来、没有并发）外，调用方必须持有 bm.mu。
 func (bm *BlacklistManager) nextChangeSeqLocked() uint64 {
 	bm.changeSeq++
 	return bm.changeSeq

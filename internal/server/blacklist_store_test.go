@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -763,5 +764,214 @@ func TestAddBlacklistAPIReportsFullManualTable(t *testing.T) {
 	}
 	if bm.IsBlacklisted("203.0.113.9") {
 		t.Fatal("a rejected entry must not be active")
+	}
+}
+
+// 审计探针（第三条回滚路径）：AddManual 自己的写盘失败，但同一窗口里另一次
+// 成功写盘已经把这条插入写进了磁盘。旧实现只看指针身份就回滚内存，于是
+// 「接口 500、内存看不到、磁盘却有」——下次黑名单变更前重启，这条失败的手动
+// 封禁会复活。修复后：磁盘已经有这条时保留内存并返回成功。
+//
+// 交错用 saveMu 卡住：插入先进入内存，本次写盘被挡住；测试在窗口内把内存里
+// 这条原样写进文件（模拟「另一次成功写盘」，不经过管理器，所以序号不变量看不到
+// 它，只能靠回读磁盘兜底），随后放开，让本次写盘真的失败。
+func TestBlacklistFailedInsertNotRolledBackWhenAlreadyOnDisk(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	path := filepath.Join(dir, "blacklist.json")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create dir: %v", err)
+	}
+	bm := NewBlacklistManager(1, path)
+	defer bm.Stop()
+
+	const ip = "203.0.113.61"
+
+	// 让 AddManual 自己的写盘必然失败：tmp 路径被目录占住。
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+		t.Fatalf("block the tmp path: %v", err)
+	}
+
+	bm.saveMu.Lock()
+	released := false
+	release := func() {
+		if !released {
+			bm.saveMu.Unlock()
+			released = true
+		}
+	}
+	defer release()
+
+	result := make(chan error, 1)
+	go func() { result <- bm.AddManual(ip, "concurrent", 0) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !bm.IsBlacklisted(ip) {
+		if time.Now().After(deadline) {
+			release()
+			t.Fatal("timed out waiting for the insert to reach memory")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// 同窗口另一次成功写盘：把内存里这条原样写进文件。
+	bm.mu.RLock()
+	installed := *bm.entries[ip]
+	bm.mu.RUnlock()
+	payload, err := json.MarshalIndent(blacklistFile{Version: blacklistFileVersion, Entries: []BlacklistEntry{installed}}, "", "  ")
+	if err != nil {
+		release()
+		t.Fatalf("encode fixture: %v", err)
+	}
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		release()
+		t.Fatalf("write the concurrent snapshot: %v", err)
+	}
+	requireBlacklistFileHasIP(t, path, ip, true)
+	release()
+
+	if err := <-result; err != nil {
+		t.Fatalf("磁盘已经有这条插入时不能返回失败: %v", err)
+	}
+	if !bm.IsBlacklisted(ip) {
+		t.Fatal("已经落盘的插入不能被回滚")
+	}
+	requireBlacklistFileHasIP(t, path, ip, true)
+
+	// 收拾掉制造失败的占位目录，确认这条封禁扛得住重启（探针的 after-restart）。
+	if err := os.Remove(path + ".tmp"); err != nil {
+		t.Fatalf("remove tmp blocker: %v", err)
+	}
+	bm.Stop()
+	restarted := NewBlacklistManager(1, path)
+	defer restarted.Stop()
+	if !restarted.IsBlacklisted(ip) {
+		t.Fatal("a failed manual ban must not disappear or revive across a restart")
+	}
+}
+
+// 序号不变量的兜底：这次插入之后已有一次成功落盘的快照（lastDurableSeq 推进），
+// 即使回读文件不可用（EIO/权限），也必须按成功处理，不能把已经落盘的插入回滚。
+func TestBlacklistFailedInsertKeptWhenDurableSnapshotCoversIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blacklist.json")
+	bm := NewBlacklistManager(1, path)
+	defer bm.Stop()
+
+	entry := &BlacklistEntry{
+		IP:      "203.0.113.62",
+		Reason:  "covered by a concurrent persist",
+		Source:  blacklistSourceManual,
+		AddedAt: time.Now(),
+	}
+
+	// 插入先进内存，另一次 write 成功落盘时快照覆盖了这次插入。
+	bm.mu.Lock()
+	changeSeq := bm.nextChangeSeqLocked()
+	bm.entries[entry.IP] = entry
+	bm.mu.Unlock()
+	if err := bm.persist(); err != nil {
+		t.Fatalf("precondition persist: %v", err)
+	}
+
+	// 让回读文件不可用，只剩序号不变量能证明已落盘。
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatalf("make the file unreadable: %v", err)
+	}
+	defer os.Chmod(path, 0o600)
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skip("当前环境无法让文件不可读（可能以 root 运行），序号兜底用例不适用")
+	}
+
+	err := bm.resolveFailedInsert(insertAttempt{entry: entry, changeSeq: changeSeq}, errors.New("injected write failure"))
+	if err != nil {
+		t.Fatalf("磁盘已有覆盖这次插入的快照时必须按成功返回: %v", err)
+	}
+	if !bm.IsBlacklisted(entry.IP) {
+		t.Fatal("已经落盘的插入不能被回滚")
+	}
+}
+
+// 与 persist.go 的 writeState 同一语义：rename 成功即视为落盘成功。此后目录
+// fsync 失败只影响「掉电后这次 rename 还在不在」，不算写盘失败——不能回滚内存、
+// 不能返回错误，也不该把 lastDurableSeq 落下（回滚判据依赖它）。
+func TestBlacklistRenameSuccessSurvivesDirSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data", "blacklist.json")
+	bm := NewBlacklistManager(1, path)
+	defer bm.Stop()
+
+	if err := bm.AddManual("203.0.113.69", "baseline", 0); err != nil {
+		t.Fatalf("baseline add: %v", err)
+	}
+
+	previousSyncDir := syncDir
+	syncDir = func(*os.File) error { return syscall.EIO }
+	t.Cleanup(func() { syncDir = previousSyncDir })
+
+	// persist 层语义：rename 已经生效时目录 fsync 失败必须返回 nil。最后一层
+	// 的回滚判据依赖「persist 返回错误 ⇒ 磁盘未更新」这个前提。
+	if err := bm.persist(); err != nil {
+		t.Fatalf("rename 之后目录 fsync 失败不能让 persist 返回错误: %v", err)
+	}
+
+	bm.mu.Lock()
+	seqBefore := bm.changeSeq
+	bm.mu.Unlock()
+
+	if err := bm.AddManual("203.0.113.70", "dir sync fails", 0); err != nil {
+		t.Fatalf("rename 已生效时目录 fsync 失败不能按写盘失败处理: %v", err)
+	}
+	if !bm.IsBlacklisted("203.0.113.70") {
+		t.Fatal("rename 成功的插入不能被回滚")
+	}
+	requireBlacklistFileHasIP(t, path, "203.0.113.70", true)
+
+	bm.mu.Lock()
+	durable := bm.lastDurableSeq
+	bm.mu.Unlock()
+	if durable <= seqBefore {
+		t.Fatalf("rename 成功后必须推进 lastDurableSeq: durable=%d, seqBefore=%d", durable, seqBefore)
+	}
+
+	bm.Stop()
+	restarted := NewBlacklistManager(1, path)
+	defer restarted.Stop()
+	if !restarted.IsBlacklisted("203.0.113.70") {
+		t.Fatal("rename 成功的手动封禁必须扛住进程重启")
+	}
+}
+
+// rename 之前的失败必须返回错误、回滚内存，并且不能推进 lastDurableSeq：否则
+// 后续回滚会误以为这次变更已经落盘而放弃恢复。
+func TestBlacklistPrewriteFailureDoesNotAdvanceDurableSeq(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data", "blacklist.json")
+	bm := NewBlacklistManager(1, path)
+	defer bm.Stop()
+
+	if err := bm.AddManual("203.0.113.71", "baseline", 0); err != nil {
+		t.Fatalf("baseline add: %v", err)
+	}
+	bm.mu.Lock()
+	baseline := bm.lastDurableSeq
+	bm.mu.Unlock()
+
+	// 让下一次写盘在 rename 之前失败：tmp 路径被目录占住。
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+		t.Fatalf("block the tmp path: %v", err)
+	}
+	if err := bm.AddManual("203.0.113.72", "prewrite fails", 0); err == nil {
+		t.Fatal("rename 之前失败必须返回错误")
+	}
+	if bm.IsBlacklisted("203.0.113.72") {
+		t.Fatal("rename 之前失败必须回滚内存")
+	}
+	bm.mu.Lock()
+	after := bm.lastDurableSeq
+	bm.mu.Unlock()
+	if after != baseline {
+		t.Fatalf("rename 之前失败不能推进 lastDurableSeq: %d -> %d", baseline, after)
+	}
+
+	// 清理占位目录，让 Stop 的补偿写盘能正常收尾。
+	if err := os.Remove(path + ".tmp"); err != nil {
+		t.Fatalf("remove tmp blocker: %v", err)
 	}
 }

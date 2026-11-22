@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"syscall"
 	"time"
 )
 
@@ -181,27 +180,58 @@ func (bm *BlacklistManager) persist() error {
 		bm.restoreDirty()
 		return fmt.Errorf("replace blacklist file: %w", err)
 	}
-	// rename 本身也要落盘，否则掉电后可能又看到旧文件。少数平台不支持对
-	// 目录 fsync（返回 EINVAL/ENOTSUP），这类“平台不支持”不算写入失败。
-	dirFile, err := os.Open(dir)
-	if err != nil {
-		bm.restoreDirty()
-		return fmt.Errorf("open blacklist directory for sync: %w", err)
-	}
-	syncErr := dirFile.Sync()
-	dirFile.Close()
-	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) && !errors.Is(syncErr, syscall.ENOTSUP) {
-		bm.restoreDirty()
-		return fmt.Errorf("sync blacklist directory: %w", syncErr)
-	}
-	// 只有真的写成功才更新：此后更早的删除/淘汰回滚都要放弃，因为它们要
-	// 恢复的条目在磁盘上已经不存在了。
+	// rename 成功即视为落盘成功：磁盘上的黑名单已经换成新内容，进程重启一定
+	// 读到它。从这里开始推进已持久化序号——之后针对更早变更的回滚都必须放弃。
+	// 与 persist.go 的 writeState 保持同一语义：返回错误只可能是 rename 之前
+	// 失败，那时磁盘仍是旧内容。
 	bm.mu.Lock()
 	if snapshotSeq > bm.lastDurableSeq {
 		bm.lastDurableSeq = snapshotSeq
 	}
 	bm.mu.Unlock()
+	// 目录 fsync 只影响「掉电后这次 rename 还在不在」；失败只记 WARN，不回滚
+	// 内存也不返回错误，否则会出现「接口报错、磁盘却是新内容，重启后又生效」
+	// 的自相矛盾。
+	dirFile, err := os.Open(dir)
+	if err != nil {
+		slog.Warn("blacklist file renamed but the directory could not be opened for fsync; durable across process restarts, power loss may roll back",
+			"dir", dir, "error", err)
+		return nil
+	}
+	syncErr := syncDir(dirFile)
+	dirFile.Close()
+	if syncErr != nil {
+		slog.Warn("blacklist file renamed but the directory could not be synced; durable across process restarts, power loss may roll back",
+			"dir", dir, "error", syncErr)
+	}
 	return nil
+}
+
+// blacklistFileHoldsEntry 直接回读磁盘文件，判断上面是否已经有与 entry 完全相同
+// 且未过期的条目。读不出来就返回 false：调用方还有序号不变量兜底。
+func (bm *BlacklistManager) blacklistFileHoldsEntry(entry *BlacklistEntry) bool {
+	if bm.path == "" || entry == nil {
+		return false
+	}
+	data, err := os.ReadFile(bm.path)
+	if err != nil {
+		return false
+	}
+	var file blacklistFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return false
+	}
+	for _, onDisk := range file.Entries {
+		if onDisk.IP != entry.IP || onDisk.Source != entry.Source {
+			continue
+		}
+		if onDisk.Reason != entry.Reason || !onDisk.AddedAt.Equal(entry.AddedAt) ||
+			!onDisk.ExpiresAt.Equal(entry.ExpiresAt) {
+			continue
+		}
+		return !onDisk.IsExpired()
+	}
+	return false
 }
 
 // restoreDirty 让失败的写入在下一次 flush 时重试，而不是静默丢掉。
