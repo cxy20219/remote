@@ -88,10 +88,29 @@ nohup ./agent-linux-amd64 --server YOUR_SERVER:8080 --log-file agent.log --log-m
 
 ## 编译
 
+### 发布构建（可复现）
+
+```bash
+VERSION=v2.6.0 ./scripts/release.sh
+```
+
+一条命令产出七平台 × 两端（server/agent）的发布物，输出到 `dist/`：
+
+- `goremote-v2.6.0-linux-amd64.tar.gz`、`linux-arm64`、`linux-armv7`
+- `darwin-amd64`、`darwin-arm64`（`.tar.gz`）
+- `windows-amd64`、`windows-arm64`（`.zip`）
+- `SHA256SUMS.txt`
+
+每个包内包含 `goremote-server`（windows 为 `.exe`）、`goremote-agent`（同上）、`README.md`、`LICENSE`。
+
+**可复现性**：构建参数固定为 `CGO_ENABLED=0` + `-trimpath` + `-ldflags="-s -w"`，且脚本从 HEAD 的干净 git worktree 构建（工作区有未提交/未跟踪文件时，Go 会嵌入 `vcs.modified=true`，同一 commit 也会产出不同哈希）。同一 Go 版本 + 同一 commit + 本脚本会得到相同二进制；发布记录请写明 `go version`。脚本只依赖 `tar`，打包 windows 时还需要 `zip`。
+
+### 手动编译单个平台
+
 ```bash
 swag init -g cmd/server/main.go -o docs
-GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w" -o server-linux-amd64 ./cmd/server
-GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o agent-linux-arm64  ./cmd/agent
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o agent-windows-amd64.exe ./cmd/agent
-GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w" -o agent-darwin-amd64 ./cmd/agent
+CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o server-linux-amd64 ./cmd/server
+CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o agent-linux-arm64  ./cmd/agent
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o agent-windows-amd64.exe ./cmd/agent
+CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o agent-darwin-amd64 ./cmd/agent
 ```

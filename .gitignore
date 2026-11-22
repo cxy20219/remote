@@ -7,3 +7,6 @@ test-web/
 release/
 *.crt
 *.key
+
+# Release build output (scripts/release.sh)
+dist/
