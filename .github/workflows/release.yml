@@ -1,0 +1,91 @@
+name: release
+
+# 触发方式
+#   1. push 标签 v*        → 构建七平台发布物，并上传到同名 GitHub Release
+#   2. workflow_dispatch   → 只构建、不上传（用来验证 CI 能否复现同样的二进制）
+#
+# 校验历史发布（例如 v2.6.0）：在 main 上 dispatch，把 source_ref 填成 tag 名。
+# 原因：发布脚本 v2.6.0 之后才入库，checkout 到老 tag 会在仓库里找不到
+# scripts/release.sh；source_ref 路径会检出该 tag 作为构建树，同时从本次运行的
+# 提交里取脚本，所以编出来的二进制仍是那个 tag 的（vcs.revision 也指向它）。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: '要构建的 git ref（留空=本次运行所选 ref）；校验历史发布填 tag 名，例如 v2.6.0'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # 只有最后一步上传 release 资产需要；其余步骤只读
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0   # release.sh 从 HEAD 建 git worktree 构建，需要完整仓库与 tag
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.4'   # 必须钉死：Go 版本一变，二进制 sha256 就变
+          cache: true
+
+      - name: Show toolchain
+        run: |
+          echo "event=$GITHUB_EVENT_NAME ref=$GITHUB_REF ref_name=$GITHUB_REF_NAME"
+          go version
+          git rev-parse HEAD
+          git describe --tags --always
+
+      - name: Ensure zip
+        run: |
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y zip
+          fi
+
+      # 校验历史发布：构建树是 source_ref，脚本取自本次运行所在提交。
+      - name: Take release script from this run's revision
+        if: github.event_name == 'workflow_dispatch' && inputs.source_ref != ''
+        run: |
+          mkdir -p scripts
+          git show "${{ github.sha }}:scripts/release.sh" > scripts/release.sh
+          chmod +x scripts/release.sh
+
+      # 唯一构建入口：scripts/release.sh。CI 里不另写构建命令。
+      - name: Build release artifacts
+        run: |
+          if [ ! -x scripts/release.sh ]; then
+            echo "::error::scripts/release.sh is missing at $(git rev-parse --short HEAD)."
+            exit 1
+          fi
+          VERSION="${{ inputs.source_ref || github.ref_name }}" ./scripts/release.sh
+
+      - name: Show SHA256SUMS
+        run: |
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat dist/SHA256SUMS.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat dist/SHA256SUMS.txt
+
+      # 只对 tag push 生效；dispatch 即使选在 tag 上也只构建、不上传。
+      - name: Upload assets to release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists; asset names will be overwritten"
+          else
+            gh release create "$TAG" --title "$TAG" --notes "goremote $TAG"
+          fi
+          gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS.txt --clobber

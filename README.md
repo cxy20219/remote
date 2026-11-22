@@ -105,6 +105,27 @@ VERSION=v2.6.0 ./scripts/release.sh
 
 **可复现性**：构建参数固定为 `CGO_ENABLED=0` + `-trimpath` + `-ldflags="-s -w"`，且脚本从 HEAD 的干净 git worktree 构建（工作区有未提交/未跟踪文件时，Go 会嵌入 `vcs.modified=true`，同一 commit 也会产出不同哈希）。同一 Go 版本 + 同一 commit + 本脚本会得到相同二进制；发布记录请写明 `go version`。脚本只依赖 `tar`，打包 windows 时还需要 `zip`。
 
+### CI 发布（GitHub Actions）
+
+`.github/workflows/release.yml` 有两条触发路径：
+
+- **push 标签 `v*`** → 构建七平台产物，并上传到同名 Release（release 不存在就创建；同名资产会被覆盖）。
+- **workflow_dispatch（手动触发）** → 只构建、不上传，用来验证 CI 能否复现同样的二进制。
+
+CI 里的构建命令就是 `VERSION=... ./scripts/release.sh`，不另写一套；Go 版本在 workflow 里钉死为 `1.27.4`。
+
+手动触发有两种用法：
+
+- 直接在某个 tag 上触发 → 构建该 tag，版本号取 tag 名。
+- 在 `main` 上触发并填 `source_ref`（如 `v2.6.0`）→ 检出该 ref 作为构建树，脚本取自运行所在提交。**`v2.6.0` 只能用这种方式**：该 tag 早于 `scripts/release.sh` 入库，直接对它触发会找不到脚本。
+
+```bash
+# 校验历史发布（示例 v2.6.0）：在 main 上触发，source_ref 填 tag
+gh workflow run release.yml --ref main -f source_ref=v2.6.0
+```
+
+**复现某次发布需要三样一致**：同一个 commit、同一个 Go 版本、同一个 `scripts/release.sh`（参数与干净 worktree）。三者任一不同，二进制 sha256 就会变。每次发布登记的哈希见 [docs/RELEASES.md](docs/RELEASES.md)。
+
 ### 手动编译单个平台
 
 ```bash
