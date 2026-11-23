@@ -295,8 +295,10 @@ func (h *Handler) handleTunnelDataBinary(client *Client, msg *common.Message) er
 		return fmt.Errorf("tunnel payload too large: %d bytes", len(payload.Data))
 	}
 
-	tunnel, ok := h.server.tunnelManager.GetTunnel(payload.TunnelID)
-	if !ok || tunnel.ClientID != client.ClientID {
+	// 数据面只读不可变索引：GetTunnel 要取 tm.mu，会在建删隧道的 fsync
+	// 窗口里卡住整条隧道数据流。归属校验语义不变。
+	ownerID, ok := h.server.tunnelManager.TunnelOwner(payload.TunnelID)
+	if !ok || ownerID != client.ClientID {
 		return fmt.Errorf("tunnel not found or not owned by client")
 	}
 

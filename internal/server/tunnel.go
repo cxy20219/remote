@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -214,9 +215,20 @@ func (ec *ExternalConn) stop() {
 
 // TunnelManager 隧道管理器
 type TunnelManager struct {
-	mu               sync.RWMutex
-	tunnels          map[string]*Tunnel       // tunnelID -> Tunnel
-	publicPorts      map[int]string           // listenPort -> tunnelID
+	mu      sync.RWMutex
+	tunnels map[string]*Tunnel // tunnelID -> Tunnel
+
+	// tunnelOwner 是数据面的只读索引（tunnelID -> clientID）。所有变更都在
+	// tm.mu 下重建后整体替换；数据面只 atomic.Load 这个指针，不取 tm.mu，
+	// 所以建删隧道时的落盘 fsync 不会挡住隧道数据转发。
+	tunnelOwner atomic.Pointer[map[string]string]
+
+	publicPorts map[int]string // listenPort -> tunnelID
+
+	// extConns 由 extMu 单独保护：数据面 HandleAgentData 只取这把锁。
+	// 锁序固定 tm.mu -> extMu，任何路径都不得反向持锁（extMu 内禁止再取
+	// tm.mu / clients.mu）。accept 路径允许在 fsync 窗口内晚几毫秒。
+	extMu            sync.RWMutex
 	extConns         map[string]*ExternalConn // connID -> ExternalConn
 	unavailablePorts map[int]struct{}         // 系统占用的端口（惰性检测）
 	portStart        int
@@ -234,7 +246,7 @@ type TunnelManager struct {
 
 // NewTunnelManager creates a new TunnelManager
 func NewTunnelManager(server *Server, portStart, portEnd int) *TunnelManager {
-	return &TunnelManager{
+	tm := &TunnelManager{
 		tunnels:          make(map[string]*Tunnel),
 		publicPorts:      make(map[int]string),
 		extConns:         make(map[string]*ExternalConn),
@@ -246,6 +258,8 @@ func NewTunnelManager(server *Server, portStart, portEnd int) *TunnelManager {
 		retryDelays:      append([]time.Duration(nil), defaultPortConflictRetryDelays...),
 		retryWindow:      defaultPortConflictRetryWindow,
 	}
+	tm.rebuildTunnelOwnerLocked()
+	return tm
 }
 
 func normalizeTunnelExposure(exposure string) (string, string, error) {
@@ -383,6 +397,7 @@ func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client,
 		}
 		return fmt.Errorf("%w: %v", errTunnelPersist, err)
 	}
+	tm.rebuildTunnelOwnerLocked()
 
 	slog.Info("tunnel definition created",
 		"tunnel_id", tunnelID,
@@ -396,6 +411,28 @@ func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client,
 	return nil
 }
 
+// TunnelOwner 返回隧道的归属设备。数据面只读这个不可变索引：建删隧道时
+// 持 tm.mu 写盘（fsync）不会阻塞隧道数据转发。
+func (tm *TunnelManager) TunnelOwner(tunnelID string) (string, bool) {
+	index := tm.tunnelOwner.Load()
+	if index == nil {
+		return "", false
+	}
+	clientID, ok := (*index)[tunnelID]
+	return clientID, ok
+}
+
+// rebuildTunnelOwnerLocked 重建数据面索引并整体替换。调用方必须持有 tm.mu；
+// 读路径只 atomic.Load，永远不反向取 tm.mu。
+func (tm *TunnelManager) rebuildTunnelOwnerLocked() {
+	index := make(map[string]string, len(tm.tunnels))
+	for tunnelID, tunnel := range tm.tunnels {
+		index[tunnelID] = tunnel.ClientID
+	}
+	tm.tunnelOwner.Store(&index)
+}
+
+// GetTunnel 返回定义快照，供管理面 API 使用（允许等 tm.mu）。
 func (tm *TunnelManager) GetTunnel(tunnelID string) (Tunnel, bool) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -454,6 +491,7 @@ func (tm *TunnelManager) DeleteTunnel(tunnelID string) (*Tunnel, error) {
 	tm.closeListenerLocked(tunnel.PublicPort)
 	tm.closeTunnelConnectionsLocked(tunnelID)
 	delete(tm.publicPorts, tunnel.PublicPort)
+	tm.rebuildTunnelOwnerLocked()
 	client := tunnel.Client
 	out := *tunnel
 	tm.mu.Unlock()
@@ -544,6 +582,7 @@ func (tm *TunnelManager) RemoveClientTunnels(clientID string) error {
 		}
 		return fmt.Errorf("%w: %v", errTunnelPersist, err)
 	}
+	tm.rebuildTunnelOwnerLocked()
 	for _, tunnel := range removed {
 		tm.closeListenerLocked(tunnel.PublicPort)
 		tm.closeTunnelConnectionsLocked(tunnel.TunnelID)
@@ -558,17 +597,26 @@ func (tm *TunnelManager) CloseAll() {
 	defer tm.mu.Unlock()
 	tm.closed = true
 
+	// 清空 extConns 与 stop() 分离：stop 会关连接并唤醒 writer 协程，
+	// 后者回来抢 extMu 时不能和这里互相等待。
+	tm.extMu.Lock()
+	conns := make([]*ExternalConn, 0, len(tm.extConns))
 	for _, ec := range tm.extConns {
+		conns = append(conns, ec)
+	}
+	tm.extConns = make(map[string]*ExternalConn)
+	tm.extMu.Unlock()
+	for _, ec := range conns {
 		ec.stop()
 	}
 	for _, listener := range tm.listeners {
 		listener.Close()
 	}
 
-	tm.extConns = make(map[string]*ExternalConn)
 	tm.listeners = make(map[int]net.Listener)
 	tm.tunnels = make(map[string]*Tunnel)
 	tm.publicPorts = make(map[int]string)
+	tm.rebuildTunnelOwnerLocked()
 
 	slog.Info("all tunnels closed")
 }
@@ -645,6 +693,7 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 		tm.mu.Unlock()
 		return nil, fmt.Errorf("%w: %v", errTunnelPersist, err)
 	}
+	tm.rebuildTunnelOwnerLocked()
 
 	// 定义已经换了：正在途中的那次 apply 是旧定义的投影，必须作废。否则
 	// 它在 tunnel_open 写成功之后会把状态改回 active，而它对应的 listener
@@ -693,17 +742,20 @@ func (tm *TunnelManager) UpdateTunnel(tunnelID string, localAddr string, localPo
 }
 
 // closeTunnelConnectionsLocked closes all external connections of a tunnel.
-// The caller must hold tm.mu.
+// The caller must hold tm.mu；函数内部再取 extMu（锁序 tm.mu -> extMu）。
+// stop() 放在 extMu 之外：它关连接，会让 writer 协程回来抢 extMu。
 func (tm *TunnelManager) closeTunnelConnectionsLocked(tunnelID string) {
-	var connIDs []string
+	tm.extMu.Lock()
+	var conns []*ExternalConn
 	for connID, ec := range tm.extConns {
 		if ec.TunnelID == tunnelID {
-			ec.stop()
-			connIDs = append(connIDs, connID)
+			conns = append(conns, ec)
+			delete(tm.extConns, connID)
 		}
 	}
-	for _, connID := range connIDs {
-		delete(tm.extConns, connID)
+	tm.extMu.Unlock()
+	for _, ec := range conns {
+		ec.stop()
 	}
 }
 
@@ -720,6 +772,10 @@ func (tm *TunnelManager) AddExternalConn(connID, tunnelID string, conn net.Conn)
 	if _, ok := tm.tunnels[tunnelID]; !ok {
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
+
+	// 计数与登记都在 extMu 内：并发 accept 不能同时挤过上限。持锁顺序
+	// tm.mu -> extMu，与其他路径一致。
+	tm.extMu.Lock()
 	perTunnel := 0
 	for _, ec := range tm.extConns {
 		if ec.TunnelID == tunnelID {
@@ -727,13 +783,17 @@ func (tm *TunnelManager) AddExternalConn(connID, tunnelID string, conn net.Conn)
 		}
 	}
 	if perTunnel >= maxExternalConnsPerTunnel {
+		tm.extMu.Unlock()
 		return fmt.Errorf("%w: tunnel %s has %d", errExternalConnPerTunnelLimit, tunnelID, perTunnel)
 	}
 	if len(tm.extConns) >= maxExternalConnsTotal {
+		tm.extMu.Unlock()
 		return fmt.Errorf("%w: %d active", errExternalConnGlobalLimit, len(tm.extConns))
 	}
 	ec := newExternalConn(connID, tunnelID, conn)
 	tm.extConns[connID] = ec
+	tm.extMu.Unlock()
+
 	go tm.runExternalWriter(connID, ec)
 	return nil
 }
@@ -787,21 +847,21 @@ func (tm *TunnelManager) externalIdleTimeout() time.Duration {
 
 // RemoveExternalConn removes and closes an external connection.
 func (tm *TunnelManager) RemoveExternalConn(connID string) {
-	tm.mu.Lock()
+	tm.extMu.Lock()
 	ec := tm.extConns[connID]
 	delete(tm.extConns, connID)
-	tm.mu.Unlock()
+	tm.extMu.Unlock()
 	if ec != nil {
 		ec.stop()
 	}
 }
 
 func (tm *TunnelManager) removeExternalConnIfMatch(connID string, ec *ExternalConn) {
-	tm.mu.Lock()
+	tm.extMu.Lock()
 	if tm.extConns[connID] == ec {
 		delete(tm.extConns, connID)
 	}
-	tm.mu.Unlock()
+	tm.extMu.Unlock()
 }
 
 func (tm *TunnelManager) runExternalWriter(connID string, ec *ExternalConn) {
@@ -1069,9 +1129,10 @@ func (tm *TunnelManager) GetPortStatus() PortStatus {
 // per-connection writer drains the queue asynchronously so a slow external
 // client cannot stall the shared WebSocket receive loop.
 func (tm *TunnelManager) HandleAgentData(tunnelID, connID string, data []byte, isEOF bool) error {
-	tm.mu.RLock()
+	// 数据面只取 extMu：建删隧道时 tm.mu 里的落盘 fsync 不再挡住这里。
+	tm.extMu.RLock()
 	ec, ok := tm.extConns[connID]
-	tm.mu.RUnlock()
+	tm.extMu.RUnlock()
 
 	if !ok {
 		slog.Debug("external connection already closed, dropping tunnel data",
@@ -1192,6 +1253,7 @@ func (tm *TunnelManager) LoadDefinitions(definitions []TunnelState) {
 		reserved[def.PublicPort] = def.TunnelID
 		loaded++
 	}
+	tm.rebuildTunnelOwnerLocked()
 	slog.Info("tunnel definitions loaded", "loaded", loaded, "submitted", len(sorted))
 }
 

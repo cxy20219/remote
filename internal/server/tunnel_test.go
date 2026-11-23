@@ -747,7 +747,9 @@ func TestDetachClient_KeepsDefinitionsAndClosesListeners(t *testing.T) {
 	tm.listeners[10001] = listenerA
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
+	tm.extMu.Lock()
 	tm.extConns["conn-a"] = newExternalConn("conn-a", "tunnel-a", serverConn)
+	tm.extMu.Unlock()
 
 	tm.DetachClient("client-1", nil)
 
@@ -767,7 +769,10 @@ func TestDetachClient_KeepsDefinitionsAndClosesListeners(t *testing.T) {
 	if _, ok := tm.listeners[10001]; ok {
 		t.Fatal("the closed listener should be removed from the manager")
 	}
-	if _, ok := tm.extConns["conn-a"]; ok {
+	tm.extMu.RLock()
+	_, connPresent := tm.extConns["conn-a"]
+	tm.extMu.RUnlock()
+	if connPresent {
 		t.Fatal("external connections should be closed on detach")
 	}
 	if _, ok := tm.publicPorts[10001]; !ok {
@@ -897,8 +902,8 @@ func TestHandleAgentDataPreservesOrder(t *testing.T) {
 }
 
 func externalConnPresent(tm *TunnelManager, connID string) bool {
-	tm.mu.RLock()
-	defer tm.mu.RUnlock()
+	tm.extMu.RLock()
+	defer tm.extMu.RUnlock()
 	_, ok := tm.extConns[connID]
 	return ok
 }

@@ -65,9 +65,9 @@ func TestExternalConnPerTunnelLimit(t *testing.T) {
 		t.Fatalf("65th connection error = %v, want errExternalConnPerTunnelLimit", err)
 	}
 	// 超限的连接不登记，也就不会占住写协程或读缓冲。
-	tm.mu.RLock()
+	tm.extMu.RLock()
 	got := len(tm.extConns)
-	tm.mu.RUnlock()
+	tm.extMu.RUnlock()
 	if got != maxExternalConnsPerTunnel {
 		t.Fatalf("registered connections = %d, want %d", got, maxExternalConnsPerTunnel)
 	}
@@ -159,9 +159,9 @@ func TestExternalConnClosedAfterIdleTimeout(t *testing.T) {
 		t.Fatal("idle external connection was not closed within 3s")
 	}
 
-	tm.mu.RLock()
+	tm.extMu.RLock()
 	_, stillRegistered := tm.extConns["conn-idle"]
-	tm.mu.RUnlock()
+	tm.extMu.RUnlock()
 	if stillRegistered {
 		t.Fatal("idle connection must be removed from extConns")
 	}
