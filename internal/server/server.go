@@ -199,7 +199,9 @@ func (s *Server) registerRoutes() {
 		protected.PUT("/api/security/global-whitelist", s.handleAPIUpdateGlobalWhitelist)
 		protected.GET("/api/security/blacklist", s.handleAPIGetBlacklist)
 		protected.POST("/api/security/blacklist", s.handleAPIAddBlacklist)
-		protected.DELETE("/api/security/blacklist/:ip", s.handleAPIRemoveBlacklist)
+		// 通配符而不是 :ip：自动拉黑的键是 IPv6 /64（形如 2001:db8::/64），
+		// 带斜杠的键用 :ip 匹配不到，管理员就无法从面板解除聚合封禁。
+		protected.DELETE("/api/security/blacklist/*ip", s.handleAPIRemoveBlacklist)
 		protected.GET("/api/security/blacklist-threshold", s.handleAPIGetBlacklistThreshold)
 		protected.PUT("/api/security/blacklist-threshold", s.handleAPIUpdateBlacklistThreshold)
 		adminWrite := AdminWriteRateLimitMiddleware(s.adminWriteLimiter)
@@ -335,6 +337,10 @@ func (s *Server) Start() error {
 	}
 
 	s.stateStore.StartSyncLoop()
+
+	// 待审批记录不会自行过期，启动时先清一遍超过 TTL 的申请：否则一次
+	// 占用会一直挡住 256 条的准入表，直到管理员手工逐条拒绝。
+	s.deviceMgr.SweepExpiredPending(time.Now())
 
 	s.registerRoutes()
 
@@ -688,6 +694,7 @@ func (s *Server) startHeartbeatChecker() {
 		select {
 		case <-timer.C:
 			s.checkClientsTimeout(s.heartbeatTimeoutDuration())
+			s.deviceMgr.SweepExpiredPending(time.Now())
 			timer.Reset(s.heartbeatPeriodDuration())
 		case <-s.stopCh:
 			return

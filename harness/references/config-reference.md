@@ -14,6 +14,7 @@
 | `--tls-cert` | string | 空 | TLS 证书路径；与 `--tls-key` 同时提供才启用 TLS 1.3 |
 | `--tls-key` | string | 空 | TLS 私钥路径 |
 | `--tunnel` | bool | `true` | 是否启用隧道功能 |
+| `--external-idle-timeout` | duration | `10m` | 公网隧道连接的空闲读超时；超过即关闭该连接。SSH 等长静默隧道可调大，批量端口转发可调小；`<=0` 使用内置默认 10m |
 | `--swagger` | bool | `true` | 是否启用 Swagger UI（仅认证后可访问） |
 | `--allowed-origins` | string | 空 | 允许打开 `/ws` 的浏览器 Origin，逗号分隔，如 `https://admin.example.com`；空值只允许无 Origin 的 Agent 连接 |
 | `--state-key` | string | 空 | 状态文件敏感字段加密密钥；优先使用环境变量 `GOREMOTE_STATE_KEY` |

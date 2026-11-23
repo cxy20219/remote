@@ -21,6 +21,11 @@ const (
 	deviceStatusAuthorized = "authorized"
 	maxPendingDevices      = 256
 	maxSeenReauthEntries   = 8192
+
+	// pendingDeviceTTL 是待审批设备的存活时间。pending 记录会持久化且不会
+	// 自行过期，匿名来源按注册限速能把 256 条填满，之后所有新设备都会被
+	// maxPendingDevices 挡住；24h 足够覆盖「设备提交后管理员第二天才审批」。
+	pendingDeviceTTL = 24 * time.Hour
 )
 
 var (
@@ -217,6 +222,57 @@ func (dm *DeviceManager) RegisterNewClient(deviceSignPubkey, deviceDHPubkey, hos
 	dm.store.AddDevice(device)
 	slog.Info("new device pending approval", "device_id", deviceID, "hostname", hostname, "ip", remoteIP)
 	return deviceID, nil
+}
+
+// SweepExpiredPending 删除超过 TTL 的待审批设备，并关掉它们的 pending 连接，
+// 返回清理条数。删除走 store.RemoveDevice（同步落盘），失败时把连接放回去、
+// 记录保留，下次心跳再试——绝不出现「内存里没了、磁盘上还在」。
+//
+// FirstSeen 为零的老记录不自动删：不知道它多老，删掉等于凭空丢掉一条管理员
+// 可能还在处理的申请。这类记录条数由历史状态文件决定，不会增长。
+func (dm *DeviceManager) SweepExpiredPending(now time.Time) int {
+	dm.mu.Lock()
+
+	var expired []string
+	for _, device := range dm.store.GetAllDevices() {
+		if device.Status != deviceStatusPending || device.FirstSeen.IsZero() {
+			continue
+		}
+		if now.Sub(device.FirstSeen) >= pendingDeviceTTL {
+			expired = append(expired, device.ID)
+		}
+	}
+
+	var toClose []*Client
+	removed := 0
+	for _, deviceID := range expired {
+		info := dm.pendingConns[deviceID]
+		delete(dm.pendingConns, deviceID)
+		ok, err := dm.store.RemoveDevice(deviceID)
+		if err != nil || !ok {
+			if info != nil {
+				dm.pendingConns[deviceID] = info
+			}
+			if err != nil {
+				slog.Error("failed to remove expired pending device",
+					"device_id", deviceID, "error", err)
+			}
+			continue
+		}
+		removed++
+		if info != nil && info.Client != nil {
+			toClose = append(toClose, info.Client)
+		}
+	}
+	dm.mu.Unlock()
+
+	for _, client := range toClose {
+		closeClientConn(client)
+	}
+	if removed > 0 {
+		slog.Info("expired pending devices removed", "count", removed, "ttl", pendingDeviceTTL)
+	}
+	return removed
 }
 
 func (dm *DeviceManager) ReauthClient(clientID, deviceSignPubkey, deviceDHPubkey string, timestamp int64, signature string) (bool, *DeviceState, error) {

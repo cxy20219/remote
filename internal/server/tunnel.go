@@ -34,14 +34,30 @@ const (
 
 	externalConnQueueSize  = 32
 	externalQueueWaitLimit = 15 * time.Second
-	externalReadTimeout    = 15 * time.Minute
 	externalWriteTimeout   = 30 * time.Second
+
+	// 公网侧并发连接硬上限：超限直接关闭新连接，不排队——扫描器不该拿到
+	// 「等一会儿就能连上」的保证，也不该让每个试探连接都占住一份读缓冲。
+	maxExternalConnsPerTunnel = 64
+	maxExternalConnsTotal     = 1024
+
+	// 公网读缓冲。转发帧本身是变长的（读多少发多少），缓冲大小不影响帧
+	// 边界语义；32KB 让单连接常驻从 256KB 降到 32KB，1024 并发约 32MB。
+	externalConnBufSize = 32 * 1024
+
+	// 公网连接的空闲读超时默认值；可用 --external-idle-timeout 覆盖。
+	// 15 分钟对扫描器太宽容：一条不发数据的连接能白占端口与缓冲。
+	defaultExternalIdleTimeout = 10 * time.Minute
 )
 
 var (
 	errTunnelNotFound = errors.New("tunnel not found")
 	errTunnelOffline  = errors.New("tunnel device is offline")
 	errTunnelPersist  = errors.New("tunnel definitions could not be persisted")
+
+	// 公网连接数上限。超限直接关闭，不排队也不能挤掉已有连接。
+	errExternalConnPerTunnelLimit = errors.New("per-tunnel external connection limit reached")
+	errExternalConnGlobalLimit    = errors.New("global external connection limit reached")
 )
 
 // portConflictRetryDelays 覆盖「旧进程端口还没退干净」的瞬态冲突：1s/3s/9s
@@ -54,7 +70,7 @@ var tunnelOpenHook func(tunnelID string)
 
 var bufPool = sync.Pool{
 	New: func() interface{} {
-		b := make([]byte, common.TunnelChunkSize)
+		b := make([]byte, externalConnBufSize)
 		return &b
 	},
 }
@@ -678,17 +694,80 @@ func (tm *TunnelManager) closeTunnelConnectionsLocked(tunnelID string) {
 }
 
 // AddExternalConn registers a public-side connection. It fails when the
-// tunnel disappeared between accept and registration.
+// tunnel disappeared between accept and registration, or when the per-tunnel /
+// global external connection cap is reached.
+//
+// 上限在这里（锁内）判定：先通过再登记会留出「两个 accept 同时挤过」的
+// 窗口。计数直接数 extConns——端口限流已经把 accept 速率压到每分钟个位数，
+// 遍历这点开销可以忽略，不值得再维护一份容易失同步的计数。
 func (tm *TunnelManager) AddExternalConn(connID, tunnelID string, conn net.Conn) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	if _, ok := tm.tunnels[tunnelID]; !ok {
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
+	perTunnel := 0
+	for _, ec := range tm.extConns {
+		if ec.TunnelID == tunnelID {
+			perTunnel++
+		}
+	}
+	if perTunnel >= maxExternalConnsPerTunnel {
+		return fmt.Errorf("%w: tunnel %s has %d", errExternalConnPerTunnelLimit, tunnelID, perTunnel)
+	}
+	if len(tm.extConns) >= maxExternalConnsTotal {
+		return fmt.Errorf("%w: %d active", errExternalConnGlobalLimit, len(tm.extConns))
+	}
 	ec := newExternalConn(connID, tunnelID, conn)
 	tm.extConns[connID] = ec
 	go tm.runExternalWriter(connID, ec)
 	return nil
+}
+
+// externalConnAllowed 判定公网侧的新连接能不能接入：黑名单直接拒；全局
+// 白名单与设备白名单免限流（它们服务的是隧道反扫描，不是管理面信任域）；
+// 其余按 clientIPKey 聚合限流——IPv6 按 /64 记账，换地址不能重置扫描预算。
+// loopback 的放行留在 accept 循环里，它判断的是部署形态而不是安全策略。
+func (tm *TunnelManager) externalConnAllowed(tunnel *Tunnel, remoteIP string) bool {
+	if tm.server == nil {
+		return true
+	}
+	if tm.server.blacklist != nil && tm.server.blacklist.IsBlacklisted(remoteIP) {
+		slog.Warn("external connection from blacklisted IP, rejecting",
+			"remote_ip", remoteIP, "tunnel_id", tunnel.TunnelID)
+		return false
+	}
+	if tm.server.IsGloballyWhitelisted(remoteIP) {
+		return true
+	}
+	if tm.server.clients != nil && tunnel.ClientID != "" {
+		if whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID); isIPWhitelisted(remoteIP, whitelist) {
+			slog.Debug("external connection whitelisted, bypassing rate limit",
+				"remote_ip", remoteIP, "tunnel_id", tunnel.TunnelID, "client_id", tunnel.ClientID)
+			return true
+		}
+	}
+	if tm.server.portLimiter == nil {
+		return true
+	}
+	if tm.server.portLimiter.Allow(clientIPKey(remoteIP)) {
+		return true
+	}
+	slog.Warn("external connection rate limited (anti-scanning)",
+		"remote_ip", remoteIP, "key", clientIPKey(remoteIP), "tunnel_id", tunnel.TunnelID)
+	tm.server.blacklist.AddViolation(remoteIP)
+	return false
+}
+
+// externalIdleTimeout 返回公网连接的空闲读超时。未配置时用默认值，测试里
+// 直接构造的 Server（没有 config）也走默认，不会退化成 0 导致立即超时。
+func (tm *TunnelManager) externalIdleTimeout() time.Duration {
+	if tm.server != nil && tm.server.config != nil {
+		if configured := tm.server.config.Tunnel.ExternalIdleTimeout; configured > 0 {
+			return configured
+		}
+	}
+	return defaultExternalIdleTimeout
 }
 
 // RemoveExternalConn removes and closes an external connection.
@@ -769,30 +848,9 @@ func (tm *TunnelManager) acceptLoop(publicPort int, tunnelID string) {
 		if isLoopbackIP(remoteIP) {
 			slog.Debug("external connection from localhost, bypassing rate limit",
 				"tunnel_id", tunnelID)
-		} else if tm.server != nil {
-			if tm.server.blacklist.IsBlacklisted(remoteIP) {
-				slog.Warn("external connection from blacklisted IP, rejecting",
-					"remote_ip", remoteIP, "tunnel_id", tunnelID)
-				conn.Close()
-				continue
-			}
-			if !tm.server.IsGloballyWhitelisted(remoteIP) {
-				whitelisted := false
-				if tm.server.clients != nil && tunnel.ClientID != "" {
-					whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID)
-					whitelisted = isIPWhitelisted(remoteIP, whitelist)
-				}
-				if whitelisted {
-					slog.Debug("external connection whitelisted, bypassing rate limit",
-						"remote_ip", remoteIP, "tunnel_id", tunnelID, "client_id", tunnel.ClientID)
-				} else if tm.server.portLimiter != nil && !tm.server.portLimiter.Allow(remoteIP) {
-					slog.Warn("external connection rate limited (anti-scanning)",
-						"remote_ip", remoteIP, "tunnel_id", tunnelID)
-					tm.server.blacklist.AddViolation(remoteIP)
-					conn.Close()
-					continue
-				}
-			}
+		} else if !tm.externalConnAllowed(tunnel, remoteIP) {
+			conn.Close()
+			continue
 		}
 
 		connID := tunnelID + "-" + uuid.NewString()
@@ -816,6 +874,12 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, clien
 		return
 	}
 	if err := tm.AddExternalConn(connID, tunnelID, extConn); err != nil {
+		if errors.Is(err, errExternalConnPerTunnelLimit) || errors.Is(err, errExternalConnGlobalLimit) {
+			slog.Warn("external connection rejected: connection limit reached",
+				"tunnel_id", tunnelID,
+				"remote", extConn.RemoteAddr(),
+				"error", err)
+		}
 		extConn.Close()
 		return
 	}
@@ -833,8 +897,9 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, clien
 	buf := *bufPtr
 	defer bufPool.Put(bufPtr)
 
+	idleTimeout := tm.externalIdleTimeout()
 	for {
-		extConn.SetReadDeadline(time.Now().Add(externalReadTimeout))
+		extConn.SetReadDeadline(time.Now().Add(idleTimeout))
 		n, err := extConn.Read(buf)
 		if n > 0 {
 			frame, frameErr := tm.server.encodeTunnelFrame(client, tunnelID, connID, buf[:n], false)
@@ -848,10 +913,15 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, clien
 			}
 		}
 		if err != nil {
-			if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
-				slog.Warn("external conn read error", "conn_id", connID, "error", err)
-			} else {
+			var netErr net.Error
+			switch {
+			case errors.As(err, &netErr) && netErr.Timeout():
+				// 空闲超时现在是常规事件（默认 10 分钟），不该按错误刷 WARN。
+				slog.Debug("external conn idle timeout", "conn_id", connID, "idle_timeout", idleTimeout)
+			case err == io.EOF || strings.Contains(err.Error(), "use of closed network connection"):
 				slog.Debug("external conn closed", "conn_id", connID, "error", err)
+			default:
+				slog.Warn("external conn read error", "conn_id", connID, "error", err)
 			}
 			return
 		}

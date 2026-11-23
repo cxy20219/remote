@@ -202,17 +202,27 @@ func (bm *BlacklistManager) GetThreshold() int {
 }
 
 // IsBlacklisted returns true if the IP is currently blacklisted and not expired.
+//
+// 自动拉黑按 clientIPKey 记账（IPv6 聚合到 /64），手动封禁按单个地址记账，
+// 所以两个键都要查：先精确匹配（手动封禁的单地址），再查聚合键（自动拉黑
+// 覆盖整个 /64）。IPv4 下两者相同，行为不变。
 func (bm *BlacklistManager) IsBlacklisted(ip string) bool {
 	bm.mu.RLock()
 	defer bm.mu.RUnlock()
-	entry, exists := bm.entries[ip]
-	if !exists {
+	if bm.isLiveLocked(ip) {
+		return true
+	}
+	key := clientIPKey(ip)
+	if key == ip {
 		return false
 	}
-	if entry.IsExpired() {
-		return false
-	}
-	return true
+	return bm.isLiveLocked(key)
+}
+
+// isLiveLocked 判断键对应的条目存在且未过期；调用方必须持有 bm.mu。
+func (bm *BlacklistManager) isLiveLocked(key string) bool {
+	entry, exists := bm.entries[key]
+	return exists && !entry.IsExpired()
 }
 
 const (
@@ -225,6 +235,12 @@ const (
 // a bounded period so a shared NAT address cannot be blocked forever.
 // Returns true if the IP was auto-blacklisted.
 func (bm *BlacklistManager) AddViolation(ip string) bool {
+	// 违规计数与自动拉黑一律按 clientIPKey 记账：IPv6 聚合到 /64。
+	// 按原始地址记账时，在 /64 内换地址就能让计数重新开始，自动拉黑永远
+	// 凑不满，违规表还会随地址数膨胀；隧道端口限流早就是 /64 聚合的，
+	// 这里必须与它对齐。查询侧由 IsBlacklisted 同时匹配精确键与聚合键。
+	ip = clientIPKey(ip)
+
 	bm.mu.Lock()
 	threshold := bm.threshold
 	blacklisted := false

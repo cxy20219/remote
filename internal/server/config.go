@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"goremote/internal/common"
 )
@@ -44,6 +45,10 @@ type SecurityConfig struct {
 
 type TunnelConfig struct {
 	Enabled bool
+	// ExternalIdleTimeout 是公网侧连接的空闲读超时。<=0 表示用包内默认值
+	// （defaultExternalIdleTimeout，10 分钟）。运维按隧道类型调整：SSH 交互
+	// 可能长时间静默，批量端口转发可以更短。
+	ExternalIdleTimeout time.Duration
 }
 
 type SwaggerConfig struct {
@@ -70,6 +75,7 @@ func ParseConfig() *Config {
 	trustedProxies := flag.String("trusted-proxies", "", "comma-separated reverse-proxy IPs/CIDRs trusted for X-Forwarded-For (empty = trust none)")
 
 	flag.BoolVar(&cfg.Tunnel.Enabled, "tunnel", true, "enable tunnel feature")
+	flag.DurationVar(&cfg.Tunnel.ExternalIdleTimeout, "external-idle-timeout", defaultExternalIdleTimeout, "idle read timeout for public tunnel connections (<=0 uses the built-in default)")
 	flag.BoolVar(&cfg.Swagger.Enabled, "swagger", true, "enable swagger UI")
 	flag.StringVar(&cfg.Security.StateKey, "state-key", "", "state encryption key (prefer GOREMOTE_STATE_KEY)")
 

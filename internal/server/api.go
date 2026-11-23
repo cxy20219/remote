@@ -854,7 +854,9 @@ func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 }
 
 func (s *Server) handleAPIRemoveBlacklist(c *gin.Context) {
-	ip := c.Param("ip")
+	// 通配符参数带前导 "/"，先剥掉。自动拉黑的条目键是 IPv6 /64，
+	// 里面本来就含 "/"，所以这里不能再按路径切分。
+	ip := strings.TrimPrefix(c.Param("ip"), "/")
 	if ip == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ip is required"})
 		return
