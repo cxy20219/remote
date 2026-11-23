@@ -34,6 +34,7 @@ mkdir -p "$OUT"
 
 command -v go >/dev/null 2>&1 || { echo "error: go not found in PATH" >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "error: tar not found" >&2; exit 1; }
+command -v gzip >/dev/null 2>&1 || { echo "error: gzip not found" >&2; exit 1; }
 
 sha256_hex() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -72,6 +73,21 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$BUILD_ROOT"
+
+# 静态页的 .gz 副本会被 go:embed 打进二进制。副本过期不会让编译失败，只会
+# 让线上一直发旧页面，所以发布前按内容逐字节校验，不一致就停。
+echo "==> verify precompressed static pages"
+for html in web/static/*.html; do
+  gz="$html.gz"
+  if [[ ! -f "$gz" ]]; then
+    echo "error: missing $gz; run 'make static-gz' and commit it" >&2
+    exit 1
+  fi
+  if ! cmp -s <(gzip -dc "$gz") "$html"; then
+    echo "error: $gz is stale; run 'make static-gz' and commit it" >&2
+    exit 1
+  fi
+done
 
 # label|GOOS|GOARCH|GOARM|ext|exe-suffix
 PLATFORMS=(

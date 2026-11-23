@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -149,6 +150,138 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	return s
 }
 
+// registerRoutes 注册全部 HTTP 路由。独立成方法是为了让路由表能在不真正
+// 起监听的情况下被测试直接验证（NewServer 只建对象，Start 才监听）。
+func (s *Server) registerRoutes() {
+	s.engine.Use(gin.Recovery())
+	s.engine.Use(SecurityHeadersMiddleware())
+	s.engine.Use(DynamicBodySizeLimitMiddleware(func() int64 {
+		return s.maxBodyBytes.Load()
+	}))
+	s.engine.Use(SetupGateMiddleware(s.setupMgr))
+
+	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s), s.handleConn)
+	s.engine.GET("/health", s.handleHealth)
+	s.engine.GET("/api/setup/status", s.handleSetupStatus)
+	s.engine.POST("/api/setup/password", SetupRateLimitMiddleware(s.setupLimiter), s.handleSetupPassword)
+	s.engine.POST("/api/setup/totp/start", AdminWriteRateLimitMiddleware(s.adminWriteLimiter), s.handleSetupTOTPStart)
+	s.engine.POST("/api/setup/totp/enable", AdminWriteRateLimitMiddleware(s.adminWriteLimiter), s.handleSetupTOTPEnable)
+	s.engine.POST("/api/setup/totp/skip", AdminWriteRateLimitMiddleware(s.adminWriteLimiter), s.handleSetupTOTPSkip)
+	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLogin)
+	s.engine.POST("/api/login/totp", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLoginTOTP)
+	s.engine.POST("/api/logout", s.handleLogout)
+	s.engine.GET("/api/check-auth", s.handleCheckAuth)
+
+	staticSub, subErr := fs.Sub(s.staticFS, "static")
+	if subErr != nil {
+		slog.Error("failed to open embedded static assets", "error", subErr)
+		staticSub = embed.FS{}
+	}
+	s.engine.GET("/login.html", func(c *gin.Context) {
+		serveStaticHTML(c, staticSub, "login.html")
+	})
+	s.engine.GET("/setup.html", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		serveStaticHTML(c, staticSub, "setup.html")
+	})
+
+	protected := s.engine.Group("/")
+	protected.Use(s.authMiddleware())
+	protected.Use(BrowserOriginGuardMiddleware())
+	{
+		protected.GET("/api/clients", s.handleAPIClients)
+		protected.GET("/api/clients/:id", s.handleAPIClientDetail)
+		protected.GET("/api/client-tunnels/:client_id", s.handleAPIListClientTunnels)
+		protected.POST("/api/tunnels", s.handleAPICreateTunnel)
+		protected.GET("/api/clients/:id/whitelist", s.handleAPIGetWhitelist)
+		protected.PUT("/api/clients/:id/whitelist", s.handleAPIUpdateWhitelist)
+		protected.GET("/api/security/global-whitelist", s.handleAPIGetGlobalWhitelist)
+		protected.PUT("/api/security/global-whitelist", s.handleAPIUpdateGlobalWhitelist)
+		protected.GET("/api/security/blacklist", s.handleAPIGetBlacklist)
+		protected.POST("/api/security/blacklist", s.handleAPIAddBlacklist)
+		protected.DELETE("/api/security/blacklist/:ip", s.handleAPIRemoveBlacklist)
+		protected.GET("/api/security/blacklist-threshold", s.handleAPIGetBlacklistThreshold)
+		protected.PUT("/api/security/blacklist-threshold", s.handleAPIUpdateBlacklistThreshold)
+		adminWrite := AdminWriteRateLimitMiddleware(s.adminWriteLimiter)
+		protected.PUT("/api/admin/password", adminWrite, s.handleAPIChangeAdminPassword)
+		protected.GET("/api/admin/totp", s.handleAPIGetTOTPStatus)
+		protected.POST("/api/admin/totp/setup", adminWrite, s.handleAPITOTPSetup)
+		protected.POST("/api/admin/totp/enable", s.handleAPITOTPEnable)
+		protected.POST("/api/admin/totp/disable", adminWrite, s.handleAPITOTPDisable)
+		protected.POST("/api/admin/totp/recover", adminWrite, s.handleAPITOTPRecover)
+		protected.GET("/api/tunnels", s.handleAPIListTunnels)
+		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
+		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
+		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
+		protected.POST("/api/tunnels/:tunnel_id/retry", s.handleAPIRetryTunnel)
+		protected.GET("/api/port-status", s.handleAPIPortStatus)
+
+		protected.GET("/api/devices", s.handleAPIListDevices)
+		protected.GET("/api/devices/pending", s.handleAPIListPendingDevices)
+		protected.POST("/api/devices/pending/:id/approve", s.handleAPIApproveDevice)
+		protected.POST("/api/devices/pending/:id/deny", s.handleAPIDenyDevice)
+		protected.DELETE("/api/devices/:id", s.handleAPIDeleteDevice)
+		protected.PUT("/api/devices/:id/config", s.handleAPIUpdateDeviceConfig)
+		protected.PUT("/api/devices/:id/regen-key", s.handleAPIRegenKey)
+		protected.GET("/api/settings", s.handleAPIGetSettings)
+		protected.PUT("/api/settings", s.handleAPIUpdateSettings)
+
+		protected.StaticFS("/static", http.FS(staticSub))
+		protected.GET("/", func(c *gin.Context) {
+			serveStaticHTML(c, staticSub, "index.html")
+		})
+		if s.config.Swagger.Enabled {
+			protected.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		}
+	}
+}
+
+// serveStaticHTML 输出内嵌静态页。客户端接受 gzip 且存在构建期预压缩的
+// .gz 副本时直接发压缩内容：三个页面在运行时压缩省不了多少 CPU，但省下的
+// 上行带宽对面板所在的小口子很关键。
+//
+// .gz 是构建期产物（make static-gz 生成、随仓库提交、被 go:embed 打进
+// 二进制），运行时不做压缩，也不缓存。副本缺失时静默回落原文——旧二进制
+// 或改了页面忘记重新压缩的中间态都能正常出页，只是不省流量。
+func serveStaticHTML(c *gin.Context, staticFS fs.FS, name string) {
+	data, err := fs.ReadFile(staticFS, name)
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	c.Header("Vary", "Accept-Encoding")
+	if acceptsGzip(c.GetHeader("Accept-Encoding")) {
+		if gz, err := fs.ReadFile(staticFS, name+".gz"); err == nil {
+			c.Header("Content-Encoding", "gzip")
+			c.Data(http.StatusOK, "text/html; charset=utf-8", gz)
+			return
+		}
+	}
+	c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+}
+
+// acceptsGzip 判断 Accept-Encoding 是否接受 gzip：按逗号分项、剥掉参数，
+// 显式 q=0 视为拒绝（浏览器不会这么发，代理和缓存会）。
+func acceptsGzip(header string) bool {
+	for _, item := range strings.Split(header, ",") {
+		parts := strings.Split(item, ";")
+		if !strings.EqualFold(strings.TrimSpace(parts[0]), "gzip") {
+			continue
+		}
+		for _, param := range parts[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
+			if !ok || !strings.EqualFold(strings.TrimSpace(key), "q") {
+				continue
+			}
+			if q, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil && q <= 0 {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func (s *Server) Start() error {
 	s.lifecycleMu.Lock()
 	if s.stopped {
@@ -203,90 +336,7 @@ func (s *Server) Start() error {
 
 	s.stateStore.StartSyncLoop()
 
-	s.engine.Use(gin.Recovery())
-	s.engine.Use(SecurityHeadersMiddleware())
-	s.engine.Use(DynamicBodySizeLimitMiddleware(func() int64 {
-		return s.maxBodyBytes.Load()
-	}))
-	s.engine.Use(SetupGateMiddleware(s.setupMgr))
-
-	s.engine.GET("/ws", ConnRateLimitMiddleware(s.connLimiter, s), s.handleConn)
-	s.engine.GET("/health", s.handleHealth)
-	s.engine.GET("/api/setup/status", s.handleSetupStatus)
-	s.engine.POST("/api/setup/password", SetupRateLimitMiddleware(s.setupLimiter), s.handleSetupPassword)
-	s.engine.POST("/api/setup/totp/start", AdminWriteRateLimitMiddleware(s.adminWriteLimiter), s.handleSetupTOTPStart)
-	s.engine.POST("/api/setup/totp/enable", AdminWriteRateLimitMiddleware(s.adminWriteLimiter), s.handleSetupTOTPEnable)
-	s.engine.POST("/api/setup/totp/skip", AdminWriteRateLimitMiddleware(s.adminWriteLimiter), s.handleSetupTOTPSkip)
-	s.engine.POST("/api/login", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLogin)
-	s.engine.POST("/api/login/totp", LoginRateLimitMiddleware(s.loginLimiter, s), s.handleLoginTOTP)
-	s.engine.POST("/api/logout", s.handleLogout)
-	s.engine.GET("/api/check-auth", s.handleCheckAuth)
-
-	staticSub, subErr := fs.Sub(s.staticFS, "static")
-	if subErr != nil {
-		slog.Error("failed to open embedded static assets", "error", subErr)
-		staticSub = embed.FS{}
-	}
-	s.engine.GET("/login.html", func(c *gin.Context) {
-		data, _ := fs.ReadFile(staticSub, "login.html")
-		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
-	})
-	s.engine.GET("/setup.html", func(c *gin.Context) {
-		data, _ := fs.ReadFile(staticSub, "setup.html")
-		c.Header("Cache-Control", "no-store")
-		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
-	})
-
-	protected := s.engine.Group("/")
-	protected.Use(s.authMiddleware())
-	protected.Use(BrowserOriginGuardMiddleware())
-	{
-		protected.GET("/api/clients", s.handleAPIClients)
-		protected.GET("/api/clients/:id", s.handleAPIClientDetail)
-		protected.GET("/api/client-tunnels/:client_id", s.handleAPIListClientTunnels)
-		protected.POST("/api/tunnels", s.handleAPICreateTunnel)
-		protected.GET("/api/clients/:id/whitelist", s.handleAPIGetWhitelist)
-		protected.PUT("/api/clients/:id/whitelist", s.handleAPIUpdateWhitelist)
-		protected.GET("/api/security/global-whitelist", s.handleAPIGetGlobalWhitelist)
-		protected.PUT("/api/security/global-whitelist", s.handleAPIUpdateGlobalWhitelist)
-		protected.GET("/api/security/blacklist", s.handleAPIGetBlacklist)
-		protected.POST("/api/security/blacklist", s.handleAPIAddBlacklist)
-		protected.DELETE("/api/security/blacklist/:ip", s.handleAPIRemoveBlacklist)
-		protected.GET("/api/security/blacklist-threshold", s.handleAPIGetBlacklistThreshold)
-		protected.PUT("/api/security/blacklist-threshold", s.handleAPIUpdateBlacklistThreshold)
-		adminWrite := AdminWriteRateLimitMiddleware(s.adminWriteLimiter)
-		protected.PUT("/api/admin/password", adminWrite, s.handleAPIChangeAdminPassword)
-		protected.GET("/api/admin/totp", s.handleAPIGetTOTPStatus)
-		protected.POST("/api/admin/totp/setup", adminWrite, s.handleAPITOTPSetup)
-		protected.POST("/api/admin/totp/enable", s.handleAPITOTPEnable)
-		protected.POST("/api/admin/totp/disable", adminWrite, s.handleAPITOTPDisable)
-		protected.POST("/api/admin/totp/recover", adminWrite, s.handleAPITOTPRecover)
-		protected.GET("/api/tunnels", s.handleAPIListTunnels)
-		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
-		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
-		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
-		protected.POST("/api/tunnels/:tunnel_id/retry", s.handleAPIRetryTunnel)
-		protected.GET("/api/port-status", s.handleAPIPortStatus)
-
-		protected.GET("/api/devices", s.handleAPIListDevices)
-		protected.GET("/api/devices/pending", s.handleAPIListPendingDevices)
-		protected.POST("/api/devices/pending/:id/approve", s.handleAPIApproveDevice)
-		protected.POST("/api/devices/pending/:id/deny", s.handleAPIDenyDevice)
-		protected.DELETE("/api/devices/:id", s.handleAPIDeleteDevice)
-		protected.PUT("/api/devices/:id/config", s.handleAPIUpdateDeviceConfig)
-		protected.PUT("/api/devices/:id/regen-key", s.handleAPIRegenKey)
-		protected.GET("/api/settings", s.handleAPIGetSettings)
-		protected.PUT("/api/settings", s.handleAPIUpdateSettings)
-
-		protected.StaticFS("/static", http.FS(staticSub))
-		protected.GET("/", func(c *gin.Context) {
-			data, _ := fs.ReadFile(staticSub, "index.html")
-			c.Data(http.StatusOK, "text/html; charset=utf-8", data)
-		})
-		if s.config.Swagger.Enabled {
-			protected.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
-		}
-	}
+	s.registerRoutes()
 
 	s.wg.Add(1)
 	go s.startHeartbeatChecker()
