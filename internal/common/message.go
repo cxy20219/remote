@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,6 +16,22 @@ const (
 	MaxWebSocketMessageSize = 2 * 1024 * 1024
 
 	binaryTunnelFrameHeaderSize = 10
+
+	// TunnelFrameVersionLegacy 是不带 AAD 的原始帧格式：帧头可被篡改，
+	// 密文可以在同设备的连接之间搬运（v1 的已知缺口）。
+	TunnelFrameVersionLegacy = 1
+	// TunnelFrameVersionAAD 的帧头布局与 v1 完全相同，但 GCM 的 AAD 是
+	// 帧头整段（version/flags/长度/tunnel_id/conn_id）。改任何头字节都会
+	// 认证失败；密文负载本身由 GCM tag 保护，不在 AAD 里。
+	TunnelFrameVersionAAD = 2
+)
+
+var (
+	// ErrTunnelAADRequired：已协商 v2 的加密连接收到了 v1 数据帧——可能是
+	// 降级攻击，也可能是对端状态错乱。两个方向都直接断开重连。
+	ErrTunnelAADRequired = errors.New("tunnel data frame without AAD on an AAD-negotiated connection")
+	// ErrTunnelAADUnexpected：未协商 v2 的连接收到了 v2 帧。
+	ErrTunnelAADUnexpected = errors.New("tunnel data frame with AAD but AAD was not negotiated")
 )
 
 type Message struct {
@@ -47,6 +64,20 @@ type BinaryTunnelData struct {
 	ConnID   string
 	Data     []byte
 	IsEOF    bool
+
+	// Version 是帧头版本（1/v1 或 2/v2）；Header 是帧头原始字节（version
+	// 之后到负载之前的整段）。v2 解密时必须把 Header 原样作为 AAD。
+	// Header 别名底层 WS 缓冲区，不能跨消息留存。
+	Version int
+	Header  []byte
+}
+
+// AAD 返回解密该帧时应绑定的附加认证数据：v1 为 nil，v2 是帧头整段。
+func (d *BinaryTunnelData) AAD() []byte {
+	if d == nil || d.Version != TunnelFrameVersionAAD {
+		return nil
+	}
+	return d.Header
 }
 
 type RegisterPayload struct {
@@ -119,6 +150,16 @@ type DeviceDeletedPayload struct {
 // payload area. Callers can encrypt directly into the payload slice, avoiding
 // one copy of every tunnel chunk.
 func NewBinaryTunnelDataFrame(tunnelID, connID string, payloadLen int, isEOF bool) ([]byte, []byte, error) {
+	return NewBinaryTunnelDataFrameVersion(tunnelID, connID, payloadLen, isEOF, TunnelFrameVersionLegacy)
+}
+
+// NewBinaryTunnelDataFrameVersion 与 NewBinaryTunnelDataFrame 相同，但显式
+// 指定帧头版本。返回的 frame 就是完整帧头（随后是空的可写负载区）：v2
+// 加密时直接把它原样作为 AAD 传给 EncryptToAAD。
+func NewBinaryTunnelDataFrameVersion(tunnelID, connID string, payloadLen int, isEOF bool, version byte) ([]byte, []byte, error) {
+	if version != TunnelFrameVersionLegacy && version != TunnelFrameVersionAAD {
+		return nil, nil, fmt.Errorf("unsupported binary tunnel frame version: %d", version)
+	}
 	if len(tunnelID) > math.MaxUint16 {
 		return nil, nil, fmt.Errorf("tunnel_id too long: %d", len(tunnelID))
 	}
@@ -131,7 +172,7 @@ func NewBinaryTunnelDataFrame(tunnelID, connID string, payloadLen int, isEOF boo
 
 	headerEnd := binaryTunnelFrameHeaderSize + len(tunnelID) + len(connID)
 	frame := make([]byte, headerEnd, headerEnd+payloadLen)
-	frame[0] = 1
+	frame[0] = version
 	if isEOF {
 		frame[1] = 1
 	}
@@ -156,7 +197,7 @@ func DecodeBinaryTunnelDataFrame(frame []byte) (*BinaryTunnelData, error) {
 	if len(frame) < binaryTunnelFrameHeaderSize {
 		return nil, fmt.Errorf("binary tunnel frame too short: %d", len(frame))
 	}
-	if frame[0] != 1 {
+	if frame[0] != TunnelFrameVersionLegacy && frame[0] != TunnelFrameVersionAAD {
 		return nil, fmt.Errorf("unsupported binary tunnel frame version: %d", frame[0])
 	}
 	if frame[1]&^byte(1) != 0 {
@@ -185,6 +226,7 @@ func DecodeBinaryTunnelDataFrame(frame []byte) (*BinaryTunnelData, error) {
 	offset += tunnelIDLen
 	connID := string(frame[offset : offset+connIDLen])
 	offset += connIDLen
+	headerEnd := offset
 	data := frame[offset:]
 
 	return &BinaryTunnelData{
@@ -192,5 +234,7 @@ func DecodeBinaryTunnelDataFrame(frame []byte) (*BinaryTunnelData, error) {
 		ConnID:   connID,
 		Data:     data,
 		IsEOF:    frame[1]&1 == 1,
+		Version:  int(frame[0]),
+		Header:   frame[:headerEnd],
 	}, nil
 }

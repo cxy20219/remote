@@ -49,7 +49,7 @@ func TestAgentEncodeTunnelFrameEncryptedRoundTrip(t *testing.T) {
 	if string(payload.Data) == string(data) {
 		t.Fatal("expected ciphertext when encryption is enabled")
 	}
-	decrypted, err := a.decryptTunnelBytes(payload.Data)
+	decrypted, err := a.decryptTunnelBytes(payload.Data, payload.AAD())
 	if err != nil {
 		t.Fatalf("decryptTunnelBytes: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestAgentTunnelBytesAllowPlaintextWhenEncryptionDisabled(t *testing.T) {
 	if string(payload.Data) != string(data) {
 		t.Fatalf("disabled encryption should pass plaintext through, got %q", payload.Data)
 	}
-	decrypted, err := a.decryptTunnelBytes(payload.Data)
+	decrypted, err := a.decryptTunnelBytes(payload.Data, payload.AAD())
 	if err != nil {
 		t.Fatalf("decryptTunnelBytes: %v", err)
 	}

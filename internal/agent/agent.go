@@ -365,6 +365,12 @@ func (a *Agent) handleConnection() error {
 		}
 
 		if err := a.handler.Handle(msg); err != nil {
+			if errors.Is(err, common.ErrTunnelAADRequired) || errors.Is(err, common.ErrTunnelAADUnexpected) {
+				// 帧版本与协商不一致：断开重连，让下一轮重新握手。
+				slog.Error("tunnel frame AAD negotiation violated, reconnecting",
+					"type", msg.Type, "error", err)
+				return err
+			}
 			switch msg.Type {
 			case "register_ok", "register_fail", "register_update", "device_deleted":
 				slog.Error("fatal message error, reconnecting", "type", msg.Type, "error", err)
@@ -467,9 +473,18 @@ func (a *Agent) isEncryptionEnabled() bool {
 	return a != nil && a.encEnabled.Load()
 }
 
-func (a *Agent) decryptTunnelBytes(data []byte) ([]byte, error) {
+// aadEnabled 表示本次连接是否协商了 v2 帧 AAD。
+func (a *Agent) aadEnabled() bool {
+	return a != nil && a.connector != nil && a.connector.AADEnabled()
+}
+
+// decryptTunnelBytes 解密一帧；aad 为 nil 表示 v1 帧。
+func (a *Agent) decryptTunnelBytes(data, aad []byte) ([]byte, error) {
 	if !a.isEncryptionEnabled() {
 		return data, nil
+	}
+	if len(aad) > 0 {
+		return a.cryptoMgr.DecryptBytesAAD(a.GetClientID(), data, aad)
 	}
 	return a.cryptoMgr.DecryptBytes(a.GetClientID(), data)
 }

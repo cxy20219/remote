@@ -80,7 +80,7 @@ func TestHandleRegisterFailClearsIdentityOnOtherReasons(t *testing.T) {
 
 // ⑥ 连接侧：客户端声明 proto=2 并读取 101 的 X-Goremote-Proto。
 func TestConnectorNegotiatesProto(t *testing.T) {
-	newServer := func(t *testing.T, responseProto string) (string, <-chan string) {
+	newServer := func(t *testing.T, responseProto, responseAAD string) (string, <-chan string) {
 		t.Helper()
 		protoCh := make(chan string, 1)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +88,9 @@ func TestConnectorNegotiatesProto(t *testing.T) {
 			headers := http.Header{}
 			if responseProto != "" {
 				headers.Set("X-Goremote-Proto", responseProto)
+			}
+			if responseAAD != "" {
+				headers.Set("X-Goremote-AAD", responseAAD)
 			}
 			conn, err := (&websocket.Upgrader{}).Upgrade(w, r, headers)
 			if err != nil {
@@ -100,8 +103,8 @@ func TestConnectorNegotiatesProto(t *testing.T) {
 		return strings.TrimPrefix(server.URL, "http://"), protoCh
 	}
 
-	t.Run("new server", func(t *testing.T) {
-		addr, protoCh := newServer(t, "2")
+	t.Run("new server with AAD", func(t *testing.T) {
+		addr, protoCh := newServer(t, "2", "1")
 		connector := NewConnector(addr, false, "", false, nil)
 		if err := connector.Connect(); err != nil {
 			t.Fatalf("Connect: %v", err)
@@ -114,10 +117,32 @@ func TestConnectorNegotiatesProto(t *testing.T) {
 		if got := connector.ServerProto(); got != 2 {
 			t.Fatalf("negotiated server proto = %d, want 2", got)
 		}
+		if !connector.AADEnabled() {
+			t.Fatal("AAD header should be negotiated")
+		}
+	})
+
+	t.Run("new server without AAD", func(t *testing.T) {
+		addr, protoCh := newServer(t, "2", "")
+		connector := NewConnector(addr, false, "", false, nil)
+		if err := connector.Connect(); err != nil {
+			t.Fatalf("Connect: %v", err)
+		}
+		defer connector.Close()
+
+		if got := <-protoCh; got != "2" {
+			t.Fatalf("dial query proto = %q, want 2", got)
+		}
+		if got := connector.ServerProto(); got != 2 {
+			t.Fatalf("server proto = %d, want 2", got)
+		}
+		if connector.AADEnabled() {
+			t.Fatal("AAD must stay off when the server does not advertise it")
+		}
 	})
 
 	t.Run("legacy server", func(t *testing.T) {
-		addr, protoCh := newServer(t, "")
+		addr, protoCh := newServer(t, "", "")
 		connector := NewConnector(addr, false, "", false, nil)
 		if err := connector.Connect(); err != nil {
 			t.Fatalf("Connect: %v", err)
@@ -129,6 +154,9 @@ func TestConnectorNegotiatesProto(t *testing.T) {
 		}
 		if got := connector.ServerProto(); got != 1 {
 			t.Fatalf("legacy server proto = %d, want 1", got)
+		}
+		if connector.AADEnabled() {
+			t.Fatal("legacy server must not enable AAD")
 		}
 	})
 }

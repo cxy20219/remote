@@ -56,6 +56,9 @@ type SecurityConfig struct {
 
 type TunnelConfig struct {
 	Enabled bool
+	// AAD 控制是否对新协商的连接启用 v2 帧（GCM AAD = 帧头）。默认开启；
+	// 关闭时 101 不回 X-Goremote-AAD，新连接自然回落 v1，旧 agent 始终 v1。
+	AAD bool
 	// ExternalIdleTimeout 是公网侧连接的空闲读超时。<=0 表示用包内默认值
 	// （defaultExternalIdleTimeout，10 分钟）。运维按隧道类型调整：SSH 交互
 	// 可能长时间静默，批量端口转发可以更短。
@@ -86,6 +89,7 @@ func ParseConfig() *Config {
 	trustedProxies := flag.String("trusted-proxies", "", "comma-separated reverse-proxy IPs/CIDRs trusted for X-Forwarded-For (empty = trust none)")
 
 	flag.BoolVar(&cfg.Tunnel.Enabled, "tunnel", true, "enable tunnel feature")
+	flag.BoolVar(&cfg.Tunnel.AAD, "tunnel-aad", true, "bind tunnel data frames to their header with AES-GCM AAD (proto=2 agents only; off = legacy v1 frames)")
 	flag.DurationVar(&cfg.Tunnel.ExternalIdleTimeout, "external-idle-timeout", defaultExternalIdleTimeout, "idle read timeout for public tunnel connections (<=0 uses the built-in default)")
 	flag.BoolVar(&cfg.Swagger.Enabled, "swagger", swaggerDefaultEnabled, "enable swagger UI (off by default)")
 	flag.StringVar(&cfg.Security.StateKey, "state-key", "", "state encryption key (visible in ps; prefer GOREMOTE_STATE_KEY or --state-key-file)")

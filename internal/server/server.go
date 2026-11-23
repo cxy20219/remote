@@ -479,12 +479,17 @@ func (s *Server) Stop() error {
 }
 
 func (s *Server) handleConn(c *gin.Context) {
-	// proto 协商位：声明 ?proto=2 才回 X-Goremote-Proto，老 agent 不带
-	// query，按 v1 行为处理（C4 的 AAD 协商会复用这个位）。
+	// proto 协商位：声明 ?proto=2 才回 X-Goremote-Proto；AAD 开关打开时
+	// 再回 X-Goremote-AAD: 1，agent 见到它才发 v2 帧。老 agent 不带 query，
+	// 全程 v1。
 	protoVersion := parseClientProto(c.Query("proto"))
+	aadEnabled := protoVersion >= 2 && s.config != nil && s.config.Tunnel.AAD
 	var responseHeader http.Header
 	if protoVersion >= 2 {
 		responseHeader = http.Header{"X-Goremote-Proto": []string{"2"}}
+		if aadEnabled {
+			responseHeader.Set("X-Goremote-AAD", "1")
+		}
 	}
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, responseHeader)
 	if err != nil {
@@ -500,6 +505,7 @@ func (s *Server) handleConn(c *gin.Context) {
 		Conn:         conn,
 		RemoteAddr:   remoteAddr,
 		protoVersion: protoVersion,
+		aadEnabled:   aadEnabled,
 	}
 
 	for {
@@ -664,6 +670,12 @@ func (s *Server) readLoop(client *Client) {
 				"client_id", client.ClientID,
 				"type", msg.Type,
 				"error", err)
+			if errors.Is(err, common.ErrTunnelAADRequired) || errors.Is(err, common.ErrTunnelAADUnexpected) {
+				// 帧版本/协商不一致：可能是降级攻击或对端状态错乱，断开重连。
+				slog.Warn("closing connection: tunnel frame AAD negotiation violated",
+					"client_id", client.ClientID)
+				return
+			}
 		}
 	}
 }
@@ -812,12 +824,17 @@ func (s *Server) deviceEncryptionActive(device *DeviceState) bool {
 	return s.cryptoMgr != nil && s.cryptoMgr.HasKey(device.ID)
 }
 
-func (s *Server) decryptTunnelBytes(client *Client, data []byte) ([]byte, error) {
+// decryptTunnelBytes 解密一帧。aad 为 nil 表示 v1 帧；v2 帧必须传入
+// 解码得到的帧头，否则 GCM 认证必然失败。
+func (s *Server) decryptTunnelBytes(client *Client, data, aad []byte) ([]byte, error) {
 	if client == nil || !client.EncryptionEnabled() {
 		return data, nil
 	}
 	if s.cryptoMgr == nil {
 		return nil, fmt.Errorf("encryption manager is not initialized")
+	}
+	if len(aad) > 0 {
+		return s.cryptoMgr.DecryptBytesAAD(client.ClientID, data, aad)
 	}
 	return s.cryptoMgr.DecryptBytes(client.ClientID, data)
 }

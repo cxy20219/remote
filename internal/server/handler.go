@@ -295,6 +295,17 @@ func (h *Handler) handleTunnelDataBinary(client *Client, msg *common.Message) er
 		return fmt.Errorf("tunnel payload too large: %d bytes", len(payload.Data))
 	}
 
+	// v2 协商防降级：加密隧道协商了 AAD 后只接受 v2 数据帧；未协商的
+	// 连接收到 v2 帧同样拒收。EOF 帧沿用 v1 明文（服务端 sendTunnelEOF
+	// 的现状），所以 v1 EOF 放行。
+	if client.EncryptionEnabled() && client.AADEnabled() {
+		if payload.Version != common.TunnelFrameVersionAAD && !(payload.IsEOF && len(payload.Data) == 0) {
+			return common.ErrTunnelAADRequired
+		}
+	} else if payload.Version == common.TunnelFrameVersionAAD {
+		return common.ErrTunnelAADUnexpected
+	}
+
 	// 数据面只读不可变索引：GetTunnel 要取 tm.mu，会在建删隧道的 fsync
 	// 窗口里卡住整条隧道数据流。归属校验语义不变。
 	ownerID, ok := h.server.tunnelManager.TunnelOwner(payload.TunnelID)
@@ -306,7 +317,7 @@ func (h *Handler) handleTunnelDataBinary(client *Client, msg *common.Message) er
 		return h.server.tunnelManager.HandleAgentData(payload.TunnelID, payload.ConnID, nil, true)
 	}
 
-	data, err := h.server.decryptTunnelBytes(client, payload.Data)
+	data, err := h.server.decryptTunnelBytes(client, payload.Data, payload.AAD())
 	if err != nil {
 		h.server.tunnelManager.RemoveExternalConn(payload.ConnID)
 		h.server.tunnelManager.sendTunnelEOF(payload.TunnelID, payload.ConnID, client)

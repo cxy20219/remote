@@ -15,6 +15,7 @@
 | `--tls-key` | string | 空 | TLS 私钥路径 |
 | `--tunnel` | bool | `true` | 是否启用隧道功能 |
 | `--external-idle-timeout` | duration | `10m` | 公网隧道连接的空闲读超时；超过即关闭该连接。SSH 等长静默隧道可调大，批量端口转发可调小；`<=0` 使用内置默认 10m |
+| `--tunnel-aad` | bool | `true` | 对声明 `proto=2` 的新 agent 启用 v2 隧道帧（AES-GCM AAD = 帧头整段）。关闭时 101 不回 `X-Goremote-AAD`，新连接回落 v1；旧 agent 全程 v1 不受影响 |
 | `--swagger` | bool | `false` | 是否启用 Swagger UI（仅认证后可访问）；默认关闭，发布版不暴露该调试入口，需要时显式 `--swagger` |
 | `--allowed-origins` | string | 空 | 允许打开 `/ws` 的浏览器 Origin，逗号分隔，如 `https://admin.example.com`；空值只允许无 Origin 的 Agent 连接 |
 | `--state-key` | string | 空 | 状态文件敏感字段加密密钥；会出现在 `ps` / `systemctl show ExecStart`，仅作过渡，优先用 `GOREMOTE_STATE_KEY` 或 `--state-key-file` |

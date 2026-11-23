@@ -39,6 +39,9 @@ type Client struct {
 	// protoVersion 是本连接协商到的协议版本，来自 WS 升级请求的 ?proto=2。
 	// 老 agent 不声明 → 按 v1 行为处理。
 	protoVersion int
+	// aadEnabled 表示升级时协商了 v2 帧 AAD（proto=2 且服务端开关打开）。
+	// 建连后不再变化。
+	aadEnabled bool
 }
 
 // Proto 返回本连接的协议版本；未声明时按 v1 处理。
@@ -47,6 +50,11 @@ func (c *Client) Proto() int {
 		return 1
 	}
 	return c.protoVersion
+}
+
+// AADEnabled 返回本连接是否协商了 v2 帧 AAD。
+func (c *Client) AADEnabled() bool {
+	return c != nil && c.aadEnabled
 }
 
 // parseClientProto 解析 WS 升级请求里的 proto 协商位。服务端当前支持 v1

@@ -400,11 +400,21 @@ func (a *Agent) encodeTunnelFrame(tunnelID, connID string, data []byte, isEOF bo
 		return nil, fmt.Errorf("encryption manager is not initialized")
 	}
 
-	frame, payload, err := common.NewBinaryTunnelDataFrame(tunnelID, connID, len(data)+common.TunnelEncryptionOverhead, isEOF)
+	// 协商了 v2 才写 v2 帧；老服务端（无响应头）保持 v1。
+	version := byte(common.TunnelFrameVersionLegacy)
+	if a.aadEnabled() {
+		version = common.TunnelFrameVersionAAD
+	}
+	frame, payload, err := common.NewBinaryTunnelDataFrameVersion(tunnelID, connID, len(data)+common.TunnelEncryptionOverhead, isEOF, version)
 	if err != nil {
 		return nil, err
 	}
-	encrypted, err := a.cryptoMgr.EncryptTo(a.GetClientID(), payload, data)
+	var encrypted []byte
+	if version == common.TunnelFrameVersionAAD {
+		encrypted, err = a.cryptoMgr.EncryptToAAD(a.GetClientID(), payload, data, frame)
+	} else {
+		encrypted, err = a.cryptoMgr.EncryptTo(a.GetClientID(), payload, data)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("encrypt failed: %w", err)
 	}

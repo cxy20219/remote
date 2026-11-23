@@ -1,7 +1,6 @@
 package server
 
 import (
-	"embed"
 	"encoding/json"
 	"errors"
 	"net"
@@ -20,35 +19,8 @@ import (
 // handleConn 的连接关闭与 101 响应头，而不只是 handler 层的返回值。
 func startReauthTestServer(t *testing.T) *Server {
 	t.Helper()
-
 	config, _ := newTestConfig(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("find free port: %v", err)
-	}
-	addr := listener.Addr().String()
-	listener.Close()
-
-	srv := NewServer(config, embed.FS{})
-	srv.Addr = addr
-	go func() { _ = srv.Start() }()
-	t.Cleanup(func() { _ = srv.Stop() })
-
-	client := &http.Client{Timeout: time.Second}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		resp, err := client.Get("http://" + addr + "/health")
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return srv
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("server did not become ready: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	return startTestServerWithConfig(t, config)
 }
 
 func dialReauthWS(t *testing.T, addr, query string) (*websocket.Conn, *http.Response) {

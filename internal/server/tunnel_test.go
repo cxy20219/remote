@@ -929,7 +929,7 @@ func TestServerTunnelBytesRoundTripWhenEncryptionEnabled(t *testing.T) {
 	if string(payload.Data) == string(data) {
 		t.Fatal("expected ciphertext when encryption is enabled")
 	}
-	decrypted, err := srv.decryptTunnelBytes(client, payload.Data)
+	decrypted, err := srv.decryptTunnelBytes(client, payload.Data, payload.AAD())
 	if err != nil {
 		t.Fatalf("decryptTunnelBytes: %v", err)
 	}
@@ -955,7 +955,7 @@ func TestServerTunnelBytesAllowPlaintextWhenEncryptionDisabled(t *testing.T) {
 	if string(payload.Data) != string(data) {
 		t.Fatalf("disabled encryption should pass plaintext through, got %q", payload.Data)
 	}
-	decrypted, err := srv.decryptTunnelBytes(client, payload.Data)
+	decrypted, err := srv.decryptTunnelBytes(client, payload.Data, payload.AAD())
 	if err != nil {
 		t.Fatalf("decryptTunnelBytes: %v", err)
 	}

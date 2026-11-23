@@ -38,9 +38,15 @@ func NewCryptoContextFromKey(key []byte) (*CryptoContext, error) {
 }
 
 // EncryptTo seals plaintext into dst's spare capacity and returns the
-// nonce-prefixed ciphertext. Reusing the destination buffer avoids one full
-// copy of every tunnel chunk.
+// nonce-prefixed ciphertext (legacy v1 frames, no AAD). Reusing the
+// destination buffer avoids one full copy of every tunnel chunk.
 func (cc *CryptoContext) EncryptTo(dst, plaintext []byte) ([]byte, error) {
+	return cc.EncryptToAAD(dst, plaintext, nil)
+}
+
+// EncryptToAAD seals plaintext into dst's spare capacity and binds aad into
+// the GCM tag. v2 tunnel frames pass the whole frame header as aad.
+func (cc *CryptoContext) EncryptToAAD(dst, plaintext, aad []byte) ([]byte, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("crypto context is nil")
 	}
@@ -57,15 +63,20 @@ func (cc *CryptoContext) EncryptTo(dst, plaintext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("generate nonce: %w", err)
 	}
 
-	return cc.gcm.Seal(dst, dst, plaintext, nil), nil
+	return cc.gcm.Seal(dst, dst, plaintext, aad), nil
 }
 
 func (cc *CryptoContext) DecryptBytes(ciphertext []byte) ([]byte, error) {
-	return cc.DecryptTo(nil, ciphertext)
+	return cc.DecryptToAAD(nil, ciphertext, nil)
 }
 
-// DecryptTo opens ciphertext into dst's spare capacity.
+// DecryptTo opens ciphertext into dst's spare capacity (legacy v1, no AAD).
 func (cc *CryptoContext) DecryptTo(dst, ciphertext []byte) ([]byte, error) {
+	return cc.DecryptToAAD(dst, ciphertext, nil)
+}
+
+// DecryptToAAD opens ciphertext whose GCM tag was bound to aad.
+func (cc *CryptoContext) DecryptToAAD(dst, ciphertext, aad []byte) ([]byte, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("crypto context is nil")
 	}
@@ -83,7 +94,7 @@ func (cc *CryptoContext) DecryptTo(dst, ciphertext []byte) ([]byte, error) {
 	}
 
 	nonce, encrypted := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := cc.gcm.Open(dst, nonce, encrypted, nil)
+	plaintext, err := cc.gcm.Open(dst, nonce, encrypted, aad)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}
@@ -120,21 +131,31 @@ func (cm *CryptoManager) RemoveKey(clientID string) {
 	delete(cm.keys, clientID)
 }
 
-// EncryptTo encrypts plaintext into dst's spare capacity.
+// EncryptTo encrypts plaintext into dst's spare capacity (legacy v1, no AAD).
 func (cm *CryptoManager) EncryptTo(clientID string, dst, plaintext []byte) ([]byte, error) {
+	return cm.EncryptToAAD(clientID, dst, plaintext, nil)
+}
+
+// EncryptToAAD encrypts plaintext and binds aad into the GCM tag.
+func (cm *CryptoManager) EncryptToAAD(clientID string, dst, plaintext, aad []byte) ([]byte, error) {
 	ctx, err := cm.context(clientID)
 	if err != nil {
 		return nil, err
 	}
-	return ctx.EncryptTo(dst, plaintext)
+	return ctx.EncryptToAAD(dst, plaintext, aad)
 }
 
 func (cm *CryptoManager) DecryptBytes(clientID string, ciphertext []byte) ([]byte, error) {
+	return cm.DecryptBytesAAD(clientID, ciphertext, nil)
+}
+
+// DecryptBytesAAD decrypts ciphertext whose GCM tag was bound to aad.
+func (cm *CryptoManager) DecryptBytesAAD(clientID string, ciphertext, aad []byte) ([]byte, error) {
 	ctx, err := cm.context(clientID)
 	if err != nil {
 		return nil, err
 	}
-	return ctx.DecryptBytes(ciphertext)
+	return ctx.DecryptToAAD(nil, ciphertext, aad)
 }
 
 func (cm *CryptoManager) context(clientID string) (*CryptoContext, error) {

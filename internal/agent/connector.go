@@ -34,8 +34,10 @@ type Connector struct {
 	mu     sync.Mutex
 	closed bool
 	// proto 是本次连接协商到的服务端协议版本：1 = 老服务端（101 没回
-	// X-Goremote-Proto），2 = 新服务端。C4 的 AAD 协商会用到它。
+	// X-Goremote-Proto），2 = 新服务端。
 	proto int
+	// aad 表示本次连接协商了 v2 帧 AAD（101 回了 X-Goremote-AAD: 1）。
+	aad bool
 }
 
 func NewConnector(serverAddr string, tlsEnabled bool, tlsCA string, insecureSkipVerify bool, identity *AgentIdentity) *Connector {
@@ -83,8 +85,10 @@ func (c *Connector) Connect() error {
 	conn.SetReadLimit(common.MaxWebSocketMessageSize)
 
 	c.proto = 1
+	c.aad = false
 	if resp != nil {
 		c.proto = parseServerProto(resp.Header.Get("X-Goremote-Proto"))
+		c.aad = resp.Header.Get("X-Goremote-AAD") == "1"
 	}
 
 	c.conn = conn
@@ -102,6 +106,13 @@ func (c *Connector) ServerProto() int {
 		return 1
 	}
 	return c.proto
+}
+
+// AADEnabled 返回本次连接是否协商了 v2 帧 AAD。
+func (c *Connector) AADEnabled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.aad
 }
 
 // parseServerProto 解析 101 响应里的 X-Goremote-Proto；缺省或非法按 1 处理。

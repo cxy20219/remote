@@ -168,12 +168,22 @@ func (h *Handler) handleTunnelDataBinary(msg *common.Message) error {
 		return fmt.Errorf("tunnel payload too large: %d bytes", len(payload.Data))
 	}
 
+	// v2 协商防降级：加密隧道协商了 AAD 后只接受 v2 数据帧；未协商的
+	// 连接收到 v2 帧同样拒收。EOF 帧沿用 v1 明文，所以 v1 EOF 放行。
+	if h.agent.isEncryptionEnabled() && h.agent.aadEnabled() {
+		if payload.Version != common.TunnelFrameVersionAAD && !(payload.IsEOF && len(payload.Data) == 0) {
+			return common.ErrTunnelAADRequired
+		}
+	} else if payload.Version == common.TunnelFrameVersionAAD {
+		return common.ErrTunnelAADUnexpected
+	}
+
 	if payload.IsEOF && len(payload.Data) == 0 {
 		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
 		return nil
 	}
 
-	data, err := h.agent.decryptTunnelBytes(payload.Data)
+	data, err := h.agent.decryptTunnelBytes(payload.Data, payload.AAD())
 	if err != nil {
 		h.agent.tunnelManager.CloseLocalConn(payload.ConnID)
 		return fmt.Errorf("decrypt failed: %w", err)

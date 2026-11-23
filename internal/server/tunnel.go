@@ -1040,11 +1040,22 @@ func (s *Server) encodeTunnelFrame(client *Client, tunnelID, connID string, data
 		return nil, fmt.Errorf("encryption manager is not initialized")
 	}
 
-	frame, payload, err := common.NewBinaryTunnelDataFrame(tunnelID, connID, len(data)+common.TunnelEncryptionOverhead, isEOF)
+	// 协商了 v2 才写 v2 帧；老连接保持 v1。v2 的 AAD 是最终帧头整段，
+	// 必须在加密前就把 version/flags/长度/两个 ID 全部写定。
+	version := byte(common.TunnelFrameVersionLegacy)
+	if client.AADEnabled() {
+		version = common.TunnelFrameVersionAAD
+	}
+	frame, payload, err := common.NewBinaryTunnelDataFrameVersion(tunnelID, connID, len(data)+common.TunnelEncryptionOverhead, isEOF, version)
 	if err != nil {
 		return nil, err
 	}
-	encrypted, err := s.cryptoMgr.EncryptTo(client.ClientID, payload, data)
+	var encrypted []byte
+	if version == common.TunnelFrameVersionAAD {
+		encrypted, err = s.cryptoMgr.EncryptToAAD(client.ClientID, payload, data, frame)
+	} else {
+		encrypted, err = s.cryptoMgr.EncryptTo(client.ClientID, payload, data)
+	}
 	if err != nil {
 		return nil, err
 	}
