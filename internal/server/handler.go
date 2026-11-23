@@ -4,11 +4,19 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
 	"goremote/internal/common"
+)
+
+// register_fail 里 DH 校验失败的两条固定原因：agent 会把它们当作「身份不可
+// 用」，清掉本地 ClientID 后重新走注册与审批，所以文案要指向重新审批。
+const (
+	registerFailDHKeyMismatch = "device key mismatch; re-approval required"
+	registerFailDHKeyCorrupt  = "device key state is corrupt"
 )
 
 type Handler struct {
@@ -89,10 +97,25 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 	ok, device, err := h.server.deviceMgr.ReauthClient(
 		payload.ClientID,
 		payload.DevicePubkey,
+		payload.DeviceDHPubkey,
 		payload.Timestamp,
 		payload.Signature,
 	)
 	if err != nil {
+		// DH 公钥与审批时绑定的不一致，或者记录里的公钥已损坏：这两种情况
+		// 不能降级成新注册——降级会让带着合法签名私钥的重放方把设备顶成
+		// pending（记录里的公钥由它带来），正是本次要堵的路径。直接回失败，
+		// 由管理员重新审批来绑定公钥。
+		if errors.Is(err, errDeviceDHKeyMismatch) {
+			slog.Warn("reauth rejected: device dh pubkey does not match the approved key",
+				"client_id", payload.ClientID)
+			return h.sendRegisterFail(client, registerFailDHKeyMismatch)
+		}
+		if errors.Is(err, errDeviceDHKeyCorrupt) {
+			slog.Error("reauth rejected: stored device dh pubkey is corrupt",
+				"client_id", payload.ClientID)
+			return h.sendRegisterFail(client, registerFailDHKeyCorrupt)
+		}
 		slog.Warn("reauth failed, treating as new registration",
 			"client_id", payload.ClientID,
 			"error", err)
@@ -105,10 +128,7 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 		return h.handleNewRegistration(client, payload)
 	}
 
-	if payload.Hostname != "" || payload.OS != "" || payload.DeviceDHPubkey != "" {
-		if err := validateDHPubkeyHex(payload.DeviceDHPubkey); err != nil {
-			return fmt.Errorf("invalid reauth device dh pubkey: %w", err)
-		}
+	if payload.Hostname != "" || payload.OS != "" {
 		if err := validateDeviceTextField(payload.Hostname, 255, "hostname"); err != nil {
 			return err
 		}
@@ -127,9 +147,8 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 			if payload.OS != "" {
 				d.OS = payload.OS
 			}
-			if payload.DeviceDHPubkey != "" {
-				d.DeviceDHPubkey = payload.DeviceDHPubkey
-			}
+			// DeviceDHPubkey 是审批时绑定的身份，不在这里跟随 payload 更新：
+			// 不一致的情况已在 ReauthClient 里拒绝。
 		})
 		if updated := h.server.stateStore.GetDeviceByID(device.ID); updated != nil {
 			device = updated

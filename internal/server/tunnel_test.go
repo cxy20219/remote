@@ -465,7 +465,7 @@ func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
 		t.Fatalf("expected OS to refresh, got %q", device.OS)
 	}
 	if device.DeviceDHPubkey != dhPubHex {
-		t.Fatal("expected device DH public key to refresh")
+		t.Fatal("device DH public key must stay pinned to the approved key")
 	}
 
 	// An administrator-defined alias must survive later reconnects.
@@ -603,7 +603,7 @@ func TestReauth_VerifiesSignature(t *testing.T) {
 	deviceID, _ := dm.RegisterNewClient("1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222", "test", "linux", "10.0.0.4")
 	dm.ApproveDevice(deviceID)
 
-	ok, device, err := dm.ReauthClient(deviceID, "reauth-test-pubkey", 0, "bad-signature")
+	ok, device, err := dm.ReauthClient(deviceID, "reauth-test-pubkey", "2222222222222222222222222222222222222222222222222222222222222222", 0, "bad-signature")
 	if err == nil {
 		t.Fatal("expected error for invalid signature")
 	}
@@ -612,14 +612,14 @@ func TestReauth_VerifiesSignature(t *testing.T) {
 	}
 	_ = device
 
-	ok, device, err = dm.ReauthClient(deviceID, "reauth-test-pubkey", 1234567890, "deadbeef")
+	ok, device, err = dm.ReauthClient(deviceID, "reauth-test-pubkey", "2222222222222222222222222222222222222222222222222222222222222222", 1234567890, "deadbeef")
 	if err == nil {
 		t.Fatal("expected error for bad timestamp")
 	}
 	_ = ok
 	_ = device
 
-	notFound, _, err := dm.ReauthClient("nonexistent-id", "", 0, "")
+	notFound, _, err := dm.ReauthClient("nonexistent-id", "", "", 0, "")
 	if err == nil {
 		t.Fatal("expected error for nonexistent device")
 	}
@@ -654,10 +654,10 @@ func TestReauthRejectsSignatureReplay(t *testing.T) {
 	}
 	signature := common.EncodeBytes(sig)
 
-	if ok, _, err := dm.ReauthClient(deviceID, common.EncodePublicKey(pub), timestamp, signature); err != nil || !ok {
+	if ok, _, err := dm.ReauthClient(deviceID, common.EncodePublicKey(pub), common.EncodeBytes(dhPub[:]), timestamp, signature); err != nil || !ok {
 		t.Fatalf("first ReauthClient failed: ok=%v err=%v", ok, err)
 	}
-	if ok, _, err := dm.ReauthClient(deviceID, common.EncodePublicKey(pub), timestamp, signature); err == nil || ok {
+	if ok, _, err := dm.ReauthClient(deviceID, common.EncodePublicKey(pub), common.EncodeBytes(dhPub[:]), timestamp, signature); err == nil || ok {
 		t.Fatalf("expected replayed ReauthClient to fail: ok=%v err=%v", ok, err)
 	}
 }

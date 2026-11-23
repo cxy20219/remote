@@ -2,7 +2,9 @@ package server
 
 import (
 	"crypto/ed25519"
+	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -20,6 +22,42 @@ const (
 	maxPendingDevices      = 256
 	maxSeenReauthEntries   = 8192
 )
+
+var (
+	// errDeviceDHKeyMismatch 表示 reauth 携带的 DH 公钥与审批时绑定的不一致。
+	// 设备记录里的 DH 公钥决定服务端把隧道密钥封装给谁，审批之后不可变，
+	// 任何差异都只能走重新审批，不能在 reauth 里覆盖。
+	errDeviceDHKeyMismatch = errors.New("device dh pubkey mismatch")
+	// errDeviceDHKeyCorrupt 表示记录里的 DH 公钥无法解析：此时无法判断两者
+	// 是否一致，必须 fail closed，绝不按它重新封装密钥。
+	errDeviceDHKeyCorrupt = errors.New("stored device dh pubkey is corrupt")
+)
+
+// verifyDeviceDHPubkey 判定 reauth 带来的 DH 公钥能否用于本次重连。
+//
+// 两侧都为空是旧版未加密设备（白名单/明文路径），放行。任一侧有值就必须
+// 与记录完全一致：记录为空说明审批时没绑定过公钥，凭空绑定等于把密钥交给
+// 一个从未被审批过的公钥，所以按不一致处理，走重新审批。
+func verifyDeviceDHPubkey(storedHex, payloadHex string) error {
+	if storedHex == "" {
+		if payloadHex == "" {
+			return nil
+		}
+		return errDeviceDHKeyMismatch
+	}
+	storedBytes, err := hex.DecodeString(storedHex)
+	if err != nil || len(storedBytes) != 32 {
+		return errDeviceDHKeyCorrupt
+	}
+	payloadBytes, err := hex.DecodeString(payloadHex)
+	if err != nil || len(payloadBytes) != 32 {
+		return errDeviceDHKeyMismatch
+	}
+	if subtle.ConstantTimeCompare(storedBytes, payloadBytes) != 1 {
+		return errDeviceDHKeyMismatch
+	}
+	return nil
+}
 
 type PendingConn struct {
 	Client   *Client
@@ -181,7 +219,7 @@ func (dm *DeviceManager) RegisterNewClient(deviceSignPubkey, deviceDHPubkey, hos
 	return deviceID, nil
 }
 
-func (dm *DeviceManager) ReauthClient(clientID, deviceSignPubkey string, timestamp int64, signature string) (bool, *DeviceState, error) {
+func (dm *DeviceManager) ReauthClient(clientID, deviceSignPubkey, deviceDHPubkey string, timestamp int64, signature string) (bool, *DeviceState, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -209,6 +247,14 @@ func (dm *DeviceManager) ReauthClient(clientID, deviceSignPubkey string, timesta
 	}
 	if !common.VerifyTimestamp(ed25519.PublicKey(pubKeyBytes), clientID, timestamp, sigBytes) {
 		return false, nil, fmt.Errorf("signature verification failed")
+	}
+
+	// 签名只覆盖 client_id:timestamp，所以 payload 里的 DH 公钥是未签名数据。
+	// 它必须在动任何状态之前与审批时绑定的值核对：通过则本次 register_ok
+	// 仍然按记录里的公钥封装，拒绝则连重放缓存都不写——被拒报文不该烧掉
+	// 签名，否则合法设备重试会收到 replayed 而不是 mismatch。
+	if err := verifyDeviceDHPubkey(device.DeviceDHPubkey, deviceDHPubkey); err != nil {
+		return false, nil, err
 	}
 
 	cacheKey := clientID + ":" + signature
