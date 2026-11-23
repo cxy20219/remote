@@ -11,7 +11,6 @@ import (
 
 type DeviceQuerier interface {
 	GetDeviceByID(id string) *DeviceState
-	AnyDeviceMatches(match func(*DeviceState) bool) bool
 }
 
 type Client struct {
@@ -192,17 +191,6 @@ func (m *ClientManager) TouchIfMatch(clientID string, client *Client) bool {
 		return true
 	}
 	return false
-}
-
-func (m *ClientManager) IsIPWhitelisted(ip string) bool {
-	if m.store == nil {
-		return false
-	}
-	// Scan the store in place instead of cloning every device. Device
-	// whitelists apply even while the device is offline.
-	return m.store.AnyDeviceMatches(func(device *DeviceState) bool {
-		return isIPWhitelisted(ip, device.IPWhitelist)
-	})
 }
 
 func (m *ClientManager) GetIPWhitelist(clientID string) []string {

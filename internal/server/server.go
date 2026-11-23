@@ -732,13 +732,15 @@ func (s *Server) checkClientsTimeout(timeout time.Duration) {
 	var toClose []*Client
 	for _, client := range s.clients.clients {
 		if now.Sub(client.LastPing) > timeout {
-			slog.Warn("client heartbeat timeout", "client_id", client.ClientID)
 			toClose = append(toClose, client)
 		}
 	}
 	s.clients.mu.Unlock()
 
+	// 锁内只收集：日志与 Close 都是 I/O，放在 clients.mu 里会挡住
+	// 心跳 Touch 和其他连接操作。
 	for _, client := range toClose {
+		slog.Warn("client heartbeat timeout", "client_id", client.ClientID)
 		client.Conn.Close()
 	}
 }

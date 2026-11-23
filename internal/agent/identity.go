@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"goremote/internal/common"
 )
@@ -84,6 +85,13 @@ func CreateIdentity(dir string, serverURL string) (*AgentIdentity, error) {
 	return id, nil
 }
 
+// 测试钩子：注入 fsync 失败，验证失败路径不会留下半截文件、也不会破坏
+// 已经存在的 identity。
+var (
+	syncIdentityFile = func(f *os.File) error { return f.Sync() }
+	syncIdentityDir  = func(f *os.File) error { return f.Sync() }
+)
+
 func (id *AgentIdentity) Save(dir string) error {
 	if dir == "" {
 		dir = defaultIdentityDir()
@@ -98,16 +106,51 @@ func (id *AgentIdentity) Save(dir string) error {
 		return fmt.Errorf("marshal identity: %w", err)
 	}
 
+	// 与 server 的 StateStore 同一套原子落盘语义：写 tmp → fsync → rename →
+	// fsync 目录。identity 里是设备私钥和 ClientID，掉电丢一半就要求重新审批。
 	path := filepath.Join(dir, "identity")
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return fmt.Errorf("write identity: %w", err)
-	}
 
+	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("create identity temp file: %w", err)
+	}
+	discard := func(err error) error {
+		file.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return discard(fmt.Errorf("write identity: %w", err))
+	}
+	// 残留的 .tmp 可能带着旧权限，OpenFile 的 0600 只在创建时生效。
+	if err := file.Chmod(0o600); err != nil {
+		return discard(fmt.Errorf("chmod identity temp file: %w", err))
+	}
+	if err := syncIdentityFile(file); err != nil {
+		return discard(fmt.Errorf("sync identity: %w", err))
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close identity temp file: %w", err)
+	}
 	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
 		return fmt.Errorf("rename identity: %w", err)
 	}
 
+	// rename 已经生效，身份文件对进程重启可见。目录 fsync 只影响「掉电后
+	// rename 还在不在」：Windows 上对目录 Sync 不可用，按平台跳过；其他平台
+	// 失败也只记日志、不返回错误——不能让调用方以为身份没写进去。
+	if runtime.GOOS != "windows" {
+		if dirFile, openErr := os.Open(dir); openErr == nil {
+			if syncErr := syncIdentityDir(dirFile); syncErr != nil {
+				slog.Debug("identity file renamed but the directory could not be synced; durable across process restarts, power loss may roll back",
+					"dir", dir, "error", syncErr)
+			}
+			dirFile.Close()
+		}
+	}
 	return nil
 }
 

@@ -775,13 +775,16 @@ func LoginRateLimitMiddleware(rl *RateLimiter, s *Server) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
 
-		if s.IsGloballyWhitelisted(ip) || s.clients.IsIPWhitelisted(ip) {
-			c.Next()
+		// 黑名单优先于白名单：管理员显式封禁的地址，即使同时命中白名单也必须被拒。
+		if s.blacklist.IsBlacklisted(ip) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "IP is blacklisted"})
 			return
 		}
 
-		if s.blacklist.IsBlacklisted(ip) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "IP is blacklisted"})
+		// 只有全局白名单（管理员的「可信来源」）豁免管理面限流。设备白名单
+		// 服务的是隧道反扫描，不能顺带给出登录/WS 的爆破豁免——那是两个信任域。
+		if s.IsGloballyWhitelisted(ip) {
+			c.Next()
 			return
 		}
 
@@ -810,8 +813,8 @@ func AdminWriteRateLimitMiddleware(rl *RateLimiter) gin.HandlerFunc {
 }
 
 // ConnRateLimitMiddleware returns a Gin middleware that rate-limits WebSocket connections per IP.
-// IPs present in global whitelist or any client's whitelist bypass the rate limit.
-// Blacklisted IPs are directly rejected.
+// Only the global whitelist bypasses the rate limit (device whitelists are scoped to
+// tunnel anti-scanning). Blacklisted IPs are rejected before the whitelist is consulted.
 func ConnRateLimitMiddleware(rl *RateLimiter, s *Server) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if rl == nil {
@@ -820,14 +823,15 @@ func ConnRateLimitMiddleware(rl *RateLimiter, s *Server) gin.HandlerFunc {
 		}
 		ip := extractIP(c.ClientIP())
 
-		if s.IsGloballyWhitelisted(ip) || s.clients.IsIPWhitelisted(ip) {
-			c.Next()
-			return
-		}
-
 		if s.blacklist.IsBlacklisted(ip) {
 			slog.Warn("ws connection from blacklisted IP rejected", "ip", ip)
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "IP is blacklisted"})
+			return
+		}
+
+		// 与登录限流一致：设备白名单不再豁免管理面限流，只保留全局白名单。
+		if s.IsGloballyWhitelisted(ip) {
+			c.Next()
 			return
 		}
 

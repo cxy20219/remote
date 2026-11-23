@@ -546,19 +546,6 @@ func (s *StateStore) CountDevicesByStatus(status string) int {
 	return count
 }
 
-// AnyDeviceMatches scans devices under the read lock. The callback must not
-// retain or mutate the device pointer.
-func (s *StateStore) AnyDeviceMatches(match func(*DeviceState) bool) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for i := range s.state.Devices {
-		if match(&s.state.Devices[i]) {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *StateStore) GetDevicesByStatus(status string) []DeviceState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -772,8 +759,20 @@ func (s *StateStore) CompareAndSwapTOTPLastStep(oldStep, newStep int64) bool {
 
 // ConsumeTOTPRecoveryCode 原子消费一个恢复码哈希：命中则移除并返回剩余数量。
 // 并发下同一个恢复码只会有一次 ok=true。比较始终遍历全表，避免提前返回泄漏位置。
+//
+// 落盘顺序是先写后提交：在快照上删掉这个码、写盘成功之后才改内存。
+// 反过来（先删内存再 Save）会出现「接口报 500、码其实已经烧掉，下次 flush
+// 还会把删除写回磁盘」——对外返回失败却让码永久失效，用户失去最后一个
+// 自助出口。现在写失败时内存一个字节都没动，返回失败 ⇒ 码仍然可用。
+//
+// saveMu 把这次快照写盘与其他 Save/flushDirty 串行：拿到 saveMu 之后才取
+// 快照，磁盘上不会被更旧的状态覆盖回来。
 func (s *StateStore) ConsumeTOTPRecoveryCode(hash string) (remaining int, consumed bool, err error) {
 	target := []byte(hash)
+
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
 	s.mu.Lock()
 	idx := -1
 	for i, candidate := range s.state.TOTPRecoveryHashes {
@@ -786,17 +785,44 @@ func (s *StateStore) ConsumeTOTPRecoveryCode(hash string) (remaining int, consum
 		s.mu.Unlock()
 		return n, false, nil
 	}
-	next := make([]string, 0, len(s.state.TOTPRecoveryHashes)-1)
-	next = append(next, s.state.TOTPRecoveryHashes[:idx]...)
-	next = append(next, s.state.TOTPRecoveryHashes[idx+1:]...)
-	s.state.TOTPRecoveryHashes = next
-	s.dirty = true
-	remaining = len(next)
+	hashes := s.state.TOTPRecoveryHashes
+	snapshot := cloneServerState(s.state)
+	next := make([]string, 0, len(hashes)-1)
+	next = append(next, hashes[:idx]...)
+	next = append(next, hashes[idx+1:]...)
+	snapshot.TOTPRecoveryHashes = next
+	current := len(hashes)
 	s.mu.Unlock()
-	if err := s.Save(); err != nil {
-		return remaining, true, err
+
+	if err := s.writeState(snapshot); err != nil {
+		// 内存没动：这个码还能再用，调用方也应该把这个错误报出去。
+		return current, false, err
 	}
+
+	// 提交内存。等待写盘期间可能有别的恢复码被消费，所以按当前列表重新找
+	// 一次；找不到说明已经有人删过了。
+	s.mu.Lock()
+	if commitIdx := findRecoveryHash(s.state.TOTPRecoveryHashes, target); commitIdx >= 0 {
+		remainingHashes := make([]string, 0, len(s.state.TOTPRecoveryHashes)-1)
+		remainingHashes = append(remainingHashes, s.state.TOTPRecoveryHashes[:commitIdx]...)
+		remainingHashes = append(remainingHashes, s.state.TOTPRecoveryHashes[commitIdx+1:]...)
+		s.state.TOTPRecoveryHashes = remainingHashes
+	}
+	remaining = len(s.state.TOTPRecoveryHashes)
+	s.mu.Unlock()
 	return remaining, true, nil
+}
+
+// findRecoveryHash 返回哈希在列表中的下标；遍历全表，不提前返回，避免
+// 通过耗时泄漏命中位置。无命中返回 -1。
+func findRecoveryHash(hashes []string, target []byte) int {
+	idx := -1
+	for i, candidate := range hashes {
+		if subtle.ConstantTimeCompare([]byte(candidate), target) == 1 {
+			idx = i
+		}
+	}
+	return idx
 }
 
 // EncryptionEnabled 表示 state 敏感字段是否走 AES-256-GCM 加密区。

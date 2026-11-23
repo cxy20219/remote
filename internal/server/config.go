@@ -21,7 +21,12 @@ type Config struct {
 	dataDir  string
 }
 
-const defaultMaxBodySizeMB = 10
+const (
+	defaultMaxBodySizeMB = 10
+	// swaggerDefaultEnabled 故意为 false：发布版不该默认暴露一个调试用的 API
+	// 文档入口，需要时用 --swagger 显式打开。测试会钉住这个值。
+	swaggerDefaultEnabled = false
+)
 
 type ServerConfig struct {
 	Host string
@@ -76,7 +81,7 @@ func ParseConfig() *Config {
 
 	flag.BoolVar(&cfg.Tunnel.Enabled, "tunnel", true, "enable tunnel feature")
 	flag.DurationVar(&cfg.Tunnel.ExternalIdleTimeout, "external-idle-timeout", defaultExternalIdleTimeout, "idle read timeout for public tunnel connections (<=0 uses the built-in default)")
-	flag.BoolVar(&cfg.Swagger.Enabled, "swagger", true, "enable swagger UI")
+	flag.BoolVar(&cfg.Swagger.Enabled, "swagger", swaggerDefaultEnabled, "enable swagger UI (off by default)")
 	flag.StringVar(&cfg.Security.StateKey, "state-key", "", "state encryption key (prefer GOREMOTE_STATE_KEY)")
 
 	flag.StringVar(&cfg.Log.Level, "log-level", "info", "log level: debug, info, warn, error")
