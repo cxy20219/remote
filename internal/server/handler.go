@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"goremote/internal/common"
 )
@@ -102,6 +103,23 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 		payload.Signature,
 	)
 	if err != nil {
+		// 签名有效但时间戳超窗：设备时钟漂移，不是身份问题。降级成新注册会
+		// 让设备丢掉 ClientID、要重新审批。按协议版本分流：
+		//   proto>=2：回 clock_skew:<带符号秒数>，agent 保留身份并退避重试；
+		//   老 agent：静默关闭连接（它收到 register_fail 会 clearRegistration），
+		//   让它自己重连，身份与隧道定义都保住。
+		var skew *errReauthClockSkew
+		if errors.As(err, &skew) {
+			seconds := int64(skew.delta / time.Second)
+			slog.Warn("reauth rejected: device clock is outside the allowed window",
+				"client_id", payload.ClientID,
+				"skew_seconds", seconds,
+				"proto", client.Proto())
+			if client.Proto() >= 2 {
+				return h.sendRegisterFail(client, fmt.Sprintf("%s%+ds", common.ClockSkewReasonPrefix, seconds))
+			}
+			return nil
+		}
 		// DH 公钥与审批时绑定的不一致，或者记录里的公钥已损坏：这两种情况
 		// 不能降级成新注册——降级会让带着合法签名私钥的重放方把设备顶成
 		// pending（记录里的公钥由它带来），正是本次要堵的路径。直接回失败，

@@ -39,6 +39,20 @@ var (
 	errDeviceDHKeyCorrupt = errors.New("stored device dh pubkey is corrupt")
 )
 
+// reauthTimestampWindow 是 reauth 时间戳允许的双向偏差。超出后不再降级成
+// 新注册：那会把「设备时钟漂移」变成「身份丢失 + 需要重新审批」。
+const reauthTimestampWindow = 5 * time.Minute
+
+// errReauthClockSkew 表示签名有效、但时间戳超出允许窗口。delta 是服务器
+// 时间减去报文时间（正数 = 设备时钟落后，负数 = 超前），用于告诉运维差多少。
+type errReauthClockSkew struct {
+	delta time.Duration
+}
+
+func (e *errReauthClockSkew) Error() string {
+	return fmt.Sprintf("timestamp outside the allowed window (clock skew %+ds)", int64(e.delta/time.Second))
+}
+
 // verifyDeviceDHPubkey 判定 reauth 带来的 DH 公钥能否用于本次重连。
 //
 // 两侧都为空是旧版未加密设备（白名单/明文路径），放行。任一侧有值就必须
@@ -347,9 +361,6 @@ func (dm *DeviceManager) ReauthClient(clientID, deviceSignPubkey, deviceDHPubkey
 	if device.Status != deviceStatusAuthorized {
 		return false, nil, nil
 	}
-	if !common.IsTimestampValid(timestamp, 5*time.Minute) {
-		return false, nil, fmt.Errorf("timestamp expired")
-	}
 
 	pubKeyBytes, err := hex.DecodeString(device.DeviceSignPubkey)
 	if err != nil {
@@ -361,6 +372,14 @@ func (dm *DeviceManager) ReauthClient(clientID, deviceSignPubkey, deviceDHPubkey
 	}
 	if !common.VerifyTimestamp(ed25519.PublicKey(pubKeyBytes), clientID, timestamp, sigBytes) {
 		return false, nil, fmt.Errorf("signature verification failed")
+	}
+
+	// 时间窗必须在验签之后判定：只有签名有效时，「超窗」才能确定是设备时钟
+	// 漂移；签名无效的报文仍走原来的失败路径。返回 typed error，由 handler
+	// 按协议版本分流，绝不降级成新注册。
+	if !common.IsTimestampValid(timestamp, reauthTimestampWindow) {
+		delta := time.Since(time.Unix(common.TimestampUnixSeconds(timestamp), 0))
+		return false, nil, &errReauthClockSkew{delta: delta}
 	}
 
 	// 签名只覆盖 client_id:timestamp，所以 payload 里的 DH 公钥是未签名数据。

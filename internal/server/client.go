@@ -2,6 +2,8 @@ package server
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +35,28 @@ type Client struct {
 	// pending 循环可能同时到达 register_ok 成功的时刻）。
 	tunnelRestoreScheduled atomic.Bool
 	writeMu                sync.Mutex
+
+	// protoVersion 是本连接协商到的协议版本，来自 WS 升级请求的 ?proto=2。
+	// 老 agent 不声明 → 按 v1 行为处理。
+	protoVersion int
+}
+
+// Proto 返回本连接的协议版本；未声明时按 v1 处理。
+func (c *Client) Proto() int {
+	if c.protoVersion < 1 {
+		return 1
+	}
+	return c.protoVersion
+}
+
+// parseClientProto 解析 WS 升级请求里的 proto 协商位。服务端当前支持 v1
+// （无声明）与 v2；声明更高的版本时协商到 2。非法值按 v1 处理。
+func parseClientProto(raw string) int {
+	version, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || version < 2 {
+		return 1
+	}
+	return 2
 }
 
 // ClientInfo is an immutable snapshot exposed by the admin API.

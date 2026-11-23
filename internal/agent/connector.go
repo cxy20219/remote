@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +33,9 @@ type Connector struct {
 	conn   *websocket.Conn
 	mu     sync.Mutex
 	closed bool
+	// proto 是本次连接协商到的服务端协议版本：1 = 老服务端（101 没回
+	// X-Goremote-Proto），2 = 新服务端。C4 的 AAD 协商会用到它。
+	proto int
 }
 
 func NewConnector(serverAddr string, tlsEnabled bool, tlsCA string, insecureSkipVerify bool, identity *AgentIdentity) *Connector {
@@ -51,7 +56,9 @@ func (c *Connector) Connect() error {
 	if c.tlsEnabled {
 		scheme = "wss"
 	}
-	u := url.URL{Scheme: scheme, Host: c.serverAddr, Path: "/ws"}
+	// 声明 proto=2：新服务端据此按 v2 行为回错误（例如 clock_skew），并回
+	// X-Goremote-Proto；老服务端忽略 query，也不回头，按 v1 处理。
+	u := url.URL{Scheme: scheme, Host: c.serverAddr, Path: "/ws", RawQuery: "proto=2"}
 
 	slog.Info("connecting to server", "addr", c.serverAddr)
 
@@ -69,17 +76,41 @@ func (c *Connector) Connect() error {
 		dialer.TLSClientConfig = tlsConfig
 	}
 
-	conn, _, err := dialer.Dial(u.String(), nil)
+	conn, resp, err := dialer.Dial(u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to dial: %w", err)
 	}
 	conn.SetReadLimit(common.MaxWebSocketMessageSize)
+
+	c.proto = 1
+	if resp != nil {
+		c.proto = parseServerProto(resp.Header.Get("X-Goremote-Proto"))
+	}
 
 	c.conn = conn
 	c.closed = false
 
 	slog.Info("connected to server", "addr", c.serverAddr)
 	return nil
+}
+
+// ServerProto 返回本次连接协商到的服务端协议版本（1 = 未协商）。
+func (c *Connector) ServerProto() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.proto < 1 {
+		return 1
+	}
+	return c.proto
+}
+
+// parseServerProto 解析 101 响应里的 X-Goremote-Proto；缺省或非法按 1 处理。
+func parseServerProto(raw string) int {
+	version, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || version < 2 {
+		return 1
+	}
+	return 2
 }
 
 func (c *Connector) buildTLSConfig() (*tls.Config, error) {

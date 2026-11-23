@@ -479,7 +479,14 @@ func (s *Server) Stop() error {
 }
 
 func (s *Server) handleConn(c *gin.Context) {
-	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
+	// proto 协商位：声明 ?proto=2 才回 X-Goremote-Proto，老 agent 不带
+	// query，按 v1 行为处理（C4 的 AAD 协商会复用这个位）。
+	protoVersion := parseClientProto(c.Query("proto"))
+	var responseHeader http.Header
+	if protoVersion >= 2 {
+		responseHeader = http.Header{"X-Goremote-Proto": []string{"2"}}
+	}
+	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, responseHeader)
 	if err != nil {
 		slog.Error("failed to upgrade connection", "error", err)
 		return
@@ -487,11 +494,12 @@ func (s *Server) handleConn(c *gin.Context) {
 	conn.SetReadLimit(common.MaxWebSocketMessageSize)
 
 	remoteAddr := c.Request.RemoteAddr
-	slog.Debug("connection opened", "remote", remoteAddr)
+	slog.Debug("connection opened", "remote", remoteAddr, "proto", protoVersion)
 
 	client := &Client{
-		Conn:       conn,
-		RemoteAddr: remoteAddr,
+		Conn:         conn,
+		RemoteAddr:   remoteAddr,
+		protoVersion: protoVersion,
 	}
 
 	for {

@@ -127,14 +127,16 @@ func VerifyTimestamp(pubKey ed25519.PublicKey, clientID string, timestamp int64,
 
 func IsTimestampValid(timestamp int64, maxDrift time.Duration) bool {
 	now := time.Now().Unix()
-	diff := now - timestampToUnixSeconds(timestamp)
+	diff := now - TimestampUnixSeconds(timestamp)
 	if diff < 0 {
 		diff = -diff
 	}
 	return diff <= int64(maxDrift.Seconds())
 }
 
-func timestampToUnixSeconds(timestamp int64) int64 {
+// TimestampUnixSeconds 把设备上报的时间戳归一到 Unix 秒。老 agent 发的是
+// 纳秒（UnixNano），服务端的时钟漂移判定和重放窗口都必须按秒比较。
+func TimestampUnixSeconds(timestamp int64) int64 {
 	switch {
 	case timestamp > 1_000_000_000_000_000_00:
 		return timestamp / 1_000_000_000

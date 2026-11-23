@@ -78,6 +78,11 @@ type RegisterFailPayload struct {
 	Reason string `json:"reason"`
 }
 
+// ClockSkewReasonPrefix 是 register_fail 里「设备时钟超出允许窗口」的固定
+// 前缀，后面紧跟带符号的秒数（如 clock_skew:+312s）。agent 据此区分「校时
+// 就能重试」和「身份不可用」：前者必须保留本地身份，后者才清 ClientID。
+const ClockSkewReasonPrefix = "clock_skew:"
+
 type RegisterUpdatePayload struct {
 	Type             string `json:"update_type"`
 	ClientID         string `json:"client_id,omitempty"`

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -209,12 +210,8 @@ func (a *Agent) connect() error {
 				a.connector.Close()
 				return err
 			}
-			if a.identity != nil && a.identity.ClientID != "" {
-				slog.Warn("reauth failed, clearing identity for re-registration", "reason", payload.Reason)
-				a.clearRegistration()
-			}
 			a.connector.Close()
-			return fmt.Errorf("registration failed: %s", payload.Reason)
+			return a.handleRegisterFail(payload.Reason)
 
 		case "ping":
 			continue
@@ -223,6 +220,25 @@ func (a *Agent) connect() error {
 			slog.Debug("unexpected message during registration", "type", msg.Type)
 		}
 	}
+}
+
+// handleRegisterFail 处理服务端的 register_fail。时钟漂移是唯一可以保留本地
+// 身份的错误：服务端已经验签成功，只是时间戳超出允许窗口，此时清掉 ClientID
+// 只会把设备退化成需要重新审批的新设备。其他原因（DH 公钥不一致、记录损坏）
+// 仍然清身份重注册，由管理员重新审批。
+func (a *Agent) handleRegisterFail(reason string) error {
+	if strings.HasPrefix(reason, common.ClockSkewReasonPrefix) {
+		skew := strings.TrimPrefix(reason, common.ClockSkewReasonPrefix)
+		slog.Error("server rejected reauthentication because this device clock is out of sync with the server; keeping the device identity",
+			"skew", skew,
+			"hint", "sync this device clock (enable NTP) and the agent will retry automatically")
+		return fmt.Errorf("registration failed: device clock is out of sync with the server (%s); enable NTP and the agent will retry", skew)
+	}
+	if a.identity != nil && a.identity.ClientID != "" {
+		slog.Warn("reauth failed, clearing identity for re-registration", "reason", reason)
+		a.clearRegistration()
+	}
+	return fmt.Errorf("registration failed: %s", reason)
 }
 
 // clearRegistration forgets the server-side device identity while keeping the
