@@ -60,9 +60,15 @@ var (
 	errExternalConnGlobalLimit    = errors.New("global external connection limit reached")
 )
 
-// portConflictRetryDelays 覆盖「旧进程端口还没退干净」的瞬态冲突：1s/3s/9s
-// 三次后停下等人处理（不换端口）。
-var portConflictRetryDelays = []time.Duration{time.Second, 3 * time.Second, 9 * time.Second}
+// defaultPortConflictRetryDelays 是自动重试的默认退避序列：先覆盖「旧进程
+// 端口还没退干净」的瞬态冲突（1s/3s/9s），再拉长到分钟级周期探测。序列用完后
+// 按最后一个间隔重复，直到重试窗口到期。端口本身永远不换。
+var defaultPortConflictRetryDelays = []time.Duration{time.Second, 3 * time.Second, 9 * time.Second, 30 * time.Second, 60 * time.Second}
+
+// defaultPortConflictRetryWindow 是自动重试的默认总时长上限：到期后停在
+// port_conflict，打一条明确的 WARN，由管理员在面板上手动重试（人工重试会
+// 重新给一个完整窗口）。
+const defaultPortConflictRetryWindow = 10 * time.Minute
 
 // tunnelOpenHook 只给测试用：apply 已经 bind、还没写 tunnel_open 时被调用
 // （此时不持有 tm.mu），用来把“写前再校验”的窗口停下来。生产路径为 nil。
@@ -218,6 +224,12 @@ type TunnelManager struct {
 	listeners        map[int]net.Listener // publicPort -> 监听器
 	server           *Server
 	closed           bool
+
+	// 端口冲突自动重试参数。构造后不再修改；重试协程启动时按值捕获，
+	// 所以协程内部不会读这些字段（测试换参数也不会和协程形成数据竞争）。
+	retryDelays   []time.Duration
+	retryWindow   time.Duration
+	retryExitHook func(tunnelID, reason string) // 只给测试用，生产为 nil
 }
 
 // NewTunnelManager creates a new TunnelManager
@@ -231,6 +243,8 @@ func NewTunnelManager(server *Server, portStart, portEnd int) *TunnelManager {
 		portEnd:          portEnd,
 		listeners:        make(map[int]net.Listener),
 		server:           server,
+		retryDelays:      append([]time.Duration(nil), defaultPortConflictRetryDelays...),
+		retryWindow:      defaultPortConflictRetryWindow,
 	}
 }
 
@@ -740,8 +754,9 @@ func (tm *TunnelManager) externalConnAllowed(tunnel *Tunnel, remoteIP string) bo
 	if tm.server.IsGloballyWhitelisted(remoteIP) {
 		return true
 	}
-	if tm.server.clients != nil && tunnel.ClientID != "" {
-		if whitelist := tm.server.clients.GetIPWhitelist(tunnel.ClientID); isIPWhitelisted(remoteIP, whitelist) {
+	if tm.server.deviceMgr != nil && tunnel.ClientID != "" {
+		// 设备白名单按设备缓存编译结果，accept 路径不再每次重建 matcher。
+		if matcher := tm.server.deviceMgr.IPWhitelistMatcher(tunnel.ClientID); matcher != nil && matcher.Match(remoteIP) {
 			slog.Debug("external connection whitelisted, bypassing rate limit",
 				"remote_ip", remoteIP, "tunnel_id", tunnel.TunnelID, "client_id", tunnel.ClientID)
 			return true
@@ -1378,7 +1393,9 @@ func (tm *TunnelManager) applyTunnel(tunnelID string, client *Client) (Tunnel, e
 			slog.Warn("tunnel port is occupied; keeping the reserved port",
 				"tunnel_id", tunnelID, "public_port", out.PublicPort, "bind_addr", out.BindAddr, "error", err)
 			if startRetry {
-				go tm.retryPortConflict(tunnelID, client)
+				// 参数按值捕获：协程只认启动那一刻的配置，之后不再读管理器字段。
+				go tm.retryPortConflict(tunnelID, client,
+					append([]time.Duration(nil), tm.retryDelays...), tm.retryWindow, tm.retryExitHook)
 			}
 			return out, nil
 		}
@@ -1435,16 +1452,28 @@ func (tm *TunnelManager) applyTunnel(tunnelID string, client *Client) (Tunnel, e
 	return out, nil
 }
 
-// retryPortConflict 用 1s/3s/9s 退避重试瞬态端口冲突；三次后停下等人。
-func (tm *TunnelManager) retryPortConflict(tunnelID string, client *Client) {
-	for _, delay := range portConflictRetryDelays {
+// retryPortConflict 在给定的重试窗口内反复尝试重新绑定被占用的
+// 端口：退避序列用完后按最后一个间隔继续。成功绑定、隧道消失、设备换连接或
+// 服务停止都会让协程退出；窗口用尽则停下并提示人工重试。
+func (tm *TunnelManager) retryPortConflict(tunnelID string, client *Client, delays []time.Duration, window time.Duration, exitHook func(string, string)) {
+	deadline := time.Now().Add(window)
+	reason := "window exhausted"
+	for attempt := 0; ; attempt++ {
+		delay := delays[len(delays)-1]
+		if attempt < len(delays) {
+			delay = delays[attempt]
+		}
+		if time.Now().Add(delay).After(deadline) {
+			// 剩余窗口不够一次完整退避：到点停手，别把最后一次探测拖过上限。
+			break
+		}
 		if !tm.sleepForRetry(delay) {
-			tm.finishRetry(tunnelID)
-			return
+			reason = "server stopping"
+			break
 		}
 		if !tm.isCurrentClient(client) {
-			tm.finishRetry(tunnelID)
-			return
+			reason = "device connection changed"
+			break
 		}
 		tm.mu.Lock()
 		tunnel, ok := tm.tunnels[tunnelID]
@@ -1452,20 +1481,46 @@ func (tm *TunnelManager) retryPortConflict(tunnelID string, client *Client) {
 			tunnel.Status != TunnelStatusPortConflict
 		tm.mu.Unlock()
 		if stop {
-			tm.finishRetry(tunnelID)
-			return
+			reason = "tunnel resolved or removed"
+			break
 		}
 		updated, err := tm.applyTunnel(tunnelID, client)
 		if err != nil {
-			tm.finishRetry(tunnelID)
-			return
+			reason = "apply failed"
+			break
 		}
 		if updated.Status == TunnelStatusActive {
-			tm.finishRetry(tunnelID)
-			return
+			reason = "bound"
+			break
 		}
 	}
 	tm.finishRetry(tunnelID)
+	if reason == "window exhausted" {
+		tm.reportRetryExhausted(tunnelID, window)
+	}
+	if exitHook != nil {
+		exitHook(tunnelID, reason)
+	}
+}
+
+// reportRetryExhausted 在窗口用尽时确认隧道仍在冲突状态，再打一条可执行的
+// WARN：告诉运维自动重试已停止、需要去面板手动重试。
+func (tm *TunnelManager) reportRetryExhausted(tunnelID string, window time.Duration) {
+	tm.mu.RLock()
+	tunnel, ok := tm.tunnels[tunnelID]
+	stillConflicted := ok && tunnel.Status == TunnelStatusPortConflict && tunnel.Client == nil
+	publicPort := 0
+	if ok {
+		publicPort = tunnel.PublicPort
+	}
+	tm.mu.RUnlock()
+	if !stillConflicted {
+		return
+	}
+	slog.Warn("tunnel port is still occupied; stopped automatic retries, retry manually from the admin panel",
+		"tunnel_id", tunnelID,
+		"public_port", publicPort,
+		"retry_window", window)
 }
 
 func (tm *TunnelManager) finishRetry(tunnelID string) {

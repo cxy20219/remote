@@ -1064,6 +1064,7 @@ func TestExternalConnectionDoesNotRaceWithDetach(t *testing.T) {
 	clients.Add(client)
 
 	tm := newTunnelTestManager(t, store, clients, testTunnelPortStart, testTunnelPortEnd)
+	tm.retryDelays = []time.Duration{200 * time.Millisecond}
 	if err := tm.CreateTunnel("tunnel-1", "dev-1", client, "tcp", "127.0.0.1", 22, testTunnelPortStart, "public"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1256,10 +1257,6 @@ func TestApprovalPathRestoresTunnelsAfterRegisterOK(t *testing.T) {
 // 设计 §7：更新到被占用的端口 → 200 + port_conflict，定义保留新端口；
 // 端口释放后自动退避恢复。创建侧已有用例，更新侧原来没有。
 func TestUpdateTunnelToOccupiedPortReportsPortConflict(t *testing.T) {
-	oldDelays := portConflictRetryDelays
-	portConflictRetryDelays = []time.Duration{200 * time.Millisecond}
-	t.Cleanup(func() { portConflictRetryDelays = oldDelays })
-
 	config, store := newTestConfig(t)
 	config.Tunnel.Enabled = true
 	store.AddDevice(&DeviceState{ID: "dev-1", Name: "dev-1", Status: deviceStatusAuthorized})
@@ -1321,15 +1318,16 @@ func TestUpdateTunnelToOccupiedPortReportsPortConflict(t *testing.T) {
 	}
 }
 
-// 非阻塞 3 的配套：端口冲突退避链必须是完整的三次。常量钉死 1s/3s/9s；
-// 行为上要求第三次（最后一条延时）真的会尝试，并且三次之后停下来等人。
+// 非阻塞 3 的配套：端口冲突退避链必须是完整的 1s/3s/9s/30s/60s；序列用尽后
+// 按最后一个间隔继续探测，直到重试窗口到期才停下等人。
 func TestPortConflictRetryChainIsComplete(t *testing.T) {
-	want := []time.Duration{time.Second, 3 * time.Second, 9 * time.Second}
-	if !reflect.DeepEqual(portConflictRetryDelays, want) {
-		t.Fatalf("portConflictRetryDelays = %v, want %v", portConflictRetryDelays, want)
+	want := []time.Duration{time.Second, 3 * time.Second, 9 * time.Second, 30 * time.Second, 60 * time.Second}
+	if !reflect.DeepEqual(defaultPortConflictRetryDelays, want) {
+		t.Fatalf("defaultPortConflictRetryDelays = %v, want %v", defaultPortConflictRetryDelays, want)
 	}
-	oldDelays := portConflictRetryDelays
-	t.Cleanup(func() { portConflictRetryDelays = oldDelays })
+	if defaultPortConflictRetryWindow != 10*time.Minute {
+		t.Fatalf("defaultPortConflictRetryWindow = %v, want 10m", defaultPortConflictRetryWindow)
+	}
 
 	_, store := newTestConfig(t)
 	store.AddDevice(&DeviceState{ID: "dev-1", Name: "dev-1", Status: deviceStatusAuthorized})
@@ -1350,7 +1348,7 @@ func TestPortConflictRetryChainIsComplete(t *testing.T) {
 	if err := tm.CreateTunnel("chain-1", "dev-1", client, "tcp", "127.0.0.1", 22, port1, "public"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	portConflictRetryDelays = []time.Duration{30 * time.Millisecond, 30 * time.Millisecond, 800 * time.Millisecond}
+	tm.retryDelays = []time.Duration{30 * time.Millisecond, 30 * time.Millisecond, 800 * time.Millisecond}
 	if _, err := tm.ApplyTunnel("chain-1"); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -1361,7 +1359,7 @@ func TestPortConflictRetryChainIsComplete(t *testing.T) {
 		return tunnel.Status == TunnelStatusActive
 	}, "the last retry in the chain must still be attempted")
 
-	// 场景 2：三次都失败后必须停下，不再自动重试；手动 retry 才恢复。
+	// 场景 2：窗口用尽后必须停下，不再自动重试；手动 retry 才恢复。
 	port2 := testTunnelPortStart + 31
 	blocker2, err := net.Listen("tcp", fmt.Sprintf(":%d", port2))
 	if err != nil {
@@ -1371,7 +1369,8 @@ func TestPortConflictRetryChainIsComplete(t *testing.T) {
 	if err := tm.CreateTunnel("chain-2", "dev-1", client, "tcp", "127.0.0.1", 22, port2, "public"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	portConflictRetryDelays = []time.Duration{30 * time.Millisecond, 30 * time.Millisecond, 80 * time.Millisecond}
+	tm.retryDelays = []time.Duration{30 * time.Millisecond, 30 * time.Millisecond, 80 * time.Millisecond}
+	tm.retryWindow = 200 * time.Millisecond
 	if _, err := tm.ApplyTunnel("chain-2"); err != nil {
 		t.Fatalf("apply: %v", err)
 	}

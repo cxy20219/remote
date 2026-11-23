@@ -214,10 +214,14 @@ type StateStore struct {
 	path          string
 	encryptionKey []byte
 	dirty         bool
-	stopCh        chan struct{}
-	stopOnce      sync.Once
-	startOnce     sync.Once
-	wg            sync.WaitGroup
+	// devicesVersion 在设备记录发生任何变化（增/删/改/回滚）时递增。
+	// 隧道 accept 路径按它判断编译好的设备白名单是否过期，避免每次连接都
+	// 全量重建 matcher。
+	devicesVersion uint64
+	stopCh         chan struct{}
+	stopOnce       sync.Once
+	startOnce      sync.Once
+	wg             sync.WaitGroup
 }
 
 func NewStateStore(path string) *StateStore {
@@ -522,6 +526,14 @@ func (s *StateStore) GetDeviceByID(id string) *DeviceState {
 	return nil
 }
 
+// DevicesVersion 返回设备记录的变更版本号。任何设备增删改都会让它递增，
+// 读取方可以据此判断自己缓存的派生数据（例如编译后的 IP 白名单）是否过期。
+func (s *StateStore) DevicesVersion() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.devicesVersion
+}
+
 func (s *StateStore) GetDeviceBySignPubkey(pubkey, status string) *DeviceState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -576,6 +588,7 @@ func (s *StateStore) AddDevice(device *DeviceState) {
 	}
 	s.deviceIndex[device.ID] = len(s.state.Devices)
 	s.state.Devices = append(s.state.Devices, *device)
+	s.devicesVersion++
 	s.dirty = true
 }
 
@@ -585,6 +598,7 @@ func (s *StateStore) UpdateDevice(id string, fn func(*DeviceState)) bool {
 	for i := range s.state.Devices {
 		if s.state.Devices[i].ID == id {
 			fn(&s.state.Devices[i])
+			s.devicesVersion++
 			s.dirty = true
 			return true
 		}
@@ -623,6 +637,7 @@ func (s *StateStore) takeDeviceLocked(id string) (bool, DeviceState) {
 		for j := i; j < len(s.state.Devices); j++ {
 			s.deviceIndex[s.state.Devices[j].ID] = j
 		}
+		s.devicesVersion++
 		s.dirty = true
 		return true, d
 	}
@@ -643,6 +658,7 @@ func (s *StateStore) restoreRemovedDevice(device DeviceState) {
 	}
 	s.state.Devices = append(s.state.Devices, device)
 	s.rebuildDeviceIndexLocked()
+	s.devicesVersion++
 	s.dirty = true
 }
 

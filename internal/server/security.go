@@ -67,15 +67,6 @@ func (m *ipMatcher) Match(ipStr string) bool {
 	return false
 }
 
-// isIPWhitelisted checks if an IP address is in the whitelist.
-// Supports exact IP match and CIDR notation (e.g. "192.168.1.0/24").
-func isIPWhitelisted(ipStr string, whitelist []string) bool {
-	if len(whitelist) == 0 {
-		return false
-	}
-	return newIPMatcher(whitelist).Match(ipStr)
-}
-
 // validateIPList rejects malformed IP/CIDR entries before they are persisted.
 func validateIPList(entries []string) error {
 	for _, entry := range entries {

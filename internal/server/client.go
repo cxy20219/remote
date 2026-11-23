@@ -193,20 +193,6 @@ func (m *ClientManager) TouchIfMatch(clientID string, client *Client) bool {
 	return false
 }
 
-func (m *ClientManager) GetIPWhitelist(clientID string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	client, ok := m.clients[clientID]
-	if !ok || m.store == nil {
-		return nil
-	}
-	device := m.store.GetDeviceByID(client.ClientID)
-	if device == nil {
-		return nil
-	}
-	return device.IPWhitelist
-}
-
 func (c *Client) WriteJSON(v interface{}) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

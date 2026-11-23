@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"goremote/internal/common"
 )
 
 // IPv6 同一 /64 内的不同地址必须共用一份违规预算：换地址不能把计数清零。
@@ -144,6 +146,7 @@ func TestExternalConnAllowedKeepsWhitelistBypass(t *testing.T) {
 	clients.SetStore(store)
 	clients.Add(&Client{ClientID: "dev-whitelist"})
 	srv.clients = clients
+	srv.deviceMgr = NewDeviceManager(store, common.NewCryptoManager())
 	tunnel.ClientID = "dev-whitelist"
 
 	if !tm.externalConnAllowed(tunnel, "2001:db8:1::7") {

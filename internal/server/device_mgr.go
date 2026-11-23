@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -75,14 +76,24 @@ type DeviceManager struct {
 	pendingConns map[string]*PendingConn
 	cryptoMgr    *common.CryptoManager
 	seenReauth   map[string]int64
+
+	// 设备白名单按设备缓存编译结果。公网 accept 每次都要判断来源是否命中
+	// 该设备的白名单，而编译 matcher 是 O(白名单条目) 的工作；缓存用
+	// StateStore 的设备版本号做失效（任何设备改动都会让版本递增）。
+	whitelistMu     sync.RWMutex
+	whitelistGen    uint64
+	whitelistCache  map[string]*ipMatcher
+	whitelistHits   atomic.Int64
+	whitelistMisses atomic.Int64
 }
 
 func NewDeviceManager(store *StateStore, cryptoMgr *common.CryptoManager) *DeviceManager {
 	dm := &DeviceManager{
-		store:        store,
-		pendingConns: make(map[string]*PendingConn),
-		cryptoMgr:    cryptoMgr,
-		seenReauth:   make(map[string]int64),
+		store:          store,
+		pendingConns:   make(map[string]*PendingConn),
+		cryptoMgr:      cryptoMgr,
+		seenReauth:     make(map[string]int64),
+		whitelistCache: make(map[string]*ipMatcher),
 	}
 
 	for _, device := range store.GetAllDevices() {
@@ -159,6 +170,53 @@ func sealEncKeyForDevice(device *DeviceState, encKey []byte) (string, string, er
 		return "", "", fmt.Errorf("encrypt enc_key: %w", err)
 	}
 	return encKeyEncrypted, common.EncodeBytes(serverDHPub[:]), nil
+}
+
+// IPWhitelistMatcher 返回设备白名单编译后的 matcher；设备不存在或白名单为空
+// 时返回 nil。结果按设备缓存，并用 StateStore.DevicesVersion 判断是否过期：
+// 任何设备增删改都会让版本递增，下一个 accept 会重建（而不是逐个调用点手工
+// 失效——那样迟早漏掉某条变更路径）。
+func (dm *DeviceManager) IPWhitelistMatcher(deviceID string) *ipMatcher {
+	if deviceID == "" {
+		return nil
+	}
+	gen := dm.store.DevicesVersion()
+
+	dm.whitelistMu.RLock()
+	if dm.whitelistGen == gen {
+		if matcher, ok := dm.whitelistCache[deviceID]; ok {
+			dm.whitelistMu.RUnlock()
+			dm.whitelistHits.Add(1)
+			return matcher
+		}
+	}
+	dm.whitelistMu.RUnlock()
+
+	// 冷路径：读设备并编译。期间设备可能又变了，所以只把结果写进与 gen
+	// 一致的缓存；版本已经前进时直接返回本次编译结果，不做越界回填。
+	device := dm.store.GetDeviceByID(deviceID)
+	var matcher *ipMatcher
+	if device != nil && len(device.IPWhitelist) > 0 {
+		matcher = newIPMatcher(device.IPWhitelist)
+	}
+
+	dm.whitelistMu.Lock()
+	if gen > dm.whitelistGen {
+		dm.whitelistCache = make(map[string]*ipMatcher)
+		dm.whitelistGen = gen
+	}
+	if gen == dm.whitelistGen {
+		dm.whitelistCache[deviceID] = matcher
+	}
+	dm.whitelistMu.Unlock()
+
+	dm.whitelistMisses.Add(1)
+	return matcher
+}
+
+// WhitelistCacheStats 返回白名单 matcher 缓存的命中/未命中次数（观测用）。
+func (dm *DeviceManager) WhitelistCacheStats() (hits, misses int64) {
+	return dm.whitelistHits.Load(), dm.whitelistMisses.Load()
 }
 
 func (dm *DeviceManager) RegisterNewClient(deviceSignPubkey, deviceDHPubkey, hostname, osName, remoteIP string) (deviceID string, err error) {
