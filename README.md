@@ -27,7 +27,7 @@
 - **管理面加固**：支持管理员改密、按来源 IP 的登录失败临时锁定、HttpOnly Cookie，会话修改密码后自动吊销；首次启动不生成任何密码：通过本机 loopback 或一次性令牌完成初始化向导后，密码只以 bcrypt hash 写入 state，日志不含凭据。
 - **两步验证 (TOTP)**：可扫码启用（RFC 6238，SHA-1/6 位/30 秒，±1 时间窗），登录需要密码 + 动态码；10 个一次性恢复码、防重放、挑战绑定来源 IP；密码失败按 IP 计数，动态码失败另有跨 IP 账户级退避（5 分钟封顶、恢复码豁免）。**启用前必须配置 `GOREMOTE_STATE_KEY`**（否则 setup 直接 409），密钥与恢复码哈希只进加密区。注意：没配 TLS 时二次验证保护有限；反代部署必须配 `--trusted-proxies`。详见 [docs/TOTP-2FA.md](docs/TOTP-2FA.md)。
 - **管理面板输出转义**：设备上报的主机名、隧道地址、黑名单原因等动态内容统一转义，避免管理端存储型 XSS。
-- **敏感状态加密**：可通过 `GOREMOTE_STATE_KEY` 或 `--state-key` 加密 `server-state.json` 中的服务端私钥、管理员密码 hash 和设备隧道密钥。
+- **敏感状态加密**：可通过 `GOREMOTE_STATE_KEY`、`--state-key-file` 或 `--state-key`（会出现在 `ps`，仅作过渡）加密 `server-state.json` 中的服务端私钥、管理员密码 hash 和设备隧道密钥。口令类密钥用 argon2id（v2 信封）；`hex:`/`base64:` 全熵密钥直通；旧 v1 文件在启动时自动迁移，迁移失败不影响启动。
 - **访问控制**：支持全局/设备级 IP 白名单、黑名单和自动拉黑。
 - **端口防扫描**：隧道公网端口带连接频率限制，异常扫描会被拒绝并可触发自动黑名单。
 
@@ -62,7 +62,7 @@ chmod +x server-linux-amd64
 ./server-linux-amd64
 
 # 可选：启用状态文件敏感字段加密，生产环境建议使用随机 32 字节以上密钥
-GOREMOTE_STATE_KEY='CHANGE-ME-long-random-state-key' ./server-linux-amd64
+GOREMOTE_STATE_KEY='CHANGE-ME-long-random-state-key-0123456789' ./server-linux-amd64
 
 # 3. 完成首次初始化（二选一）
 #    a) 无反代直连：本机/SSH 转发打开 http://127.0.0.1:8080/setup.html（免令牌）

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -41,7 +42,12 @@ type TLSConfig struct {
 }
 
 type SecurityConfig struct {
-	StateKey       string
+	StateKey     string
+	StateKeyFile string
+	// StateKeyFromFlag 记录密钥是否来自 --state-key：命令行可见，启动时要告警。
+	StateKeyFromFlag bool
+	// StateKDFLegacy 强制只写 v1 状态格式，用于升级后的一次性回滚。
+	StateKDFLegacy bool
 	AllowedOrigins []string
 	// TrustedProxies 只信任这里列出的反代地址；为空表示不信任任何代理头，
 	// 直接使用 TCP 对端 IP（默认行为）。反代部署必须显式配置。
@@ -82,7 +88,9 @@ func ParseConfig() *Config {
 	flag.BoolVar(&cfg.Tunnel.Enabled, "tunnel", true, "enable tunnel feature")
 	flag.DurationVar(&cfg.Tunnel.ExternalIdleTimeout, "external-idle-timeout", defaultExternalIdleTimeout, "idle read timeout for public tunnel connections (<=0 uses the built-in default)")
 	flag.BoolVar(&cfg.Swagger.Enabled, "swagger", swaggerDefaultEnabled, "enable swagger UI (off by default)")
-	flag.StringVar(&cfg.Security.StateKey, "state-key", "", "state encryption key (prefer GOREMOTE_STATE_KEY)")
+	flag.StringVar(&cfg.Security.StateKey, "state-key", "", "state encryption key (visible in ps; prefer GOREMOTE_STATE_KEY or --state-key-file)")
+	flag.StringVar(&cfg.Security.StateKeyFile, "state-key-file", "", "path to a 0600 file holding the state encryption key (no trailing newline required)")
+	stateKDF := flag.String("state-kdf", "", "state encryption format: v2 (default, argon2id for passphrases) or legacy (write v1 for rollback)")
 
 	flag.StringVar(&cfg.Log.Level, "log-level", "info", "log level: debug, info, warn, error")
 	flag.StringVar(&cfg.Log.File, "log-file", "", "log file path (empty writes JSON logs to stdout)")
@@ -98,11 +106,98 @@ func ParseConfig() *Config {
 	cfg.Server.TLS.Enabled = cfg.Server.TLS.Cert != "" && cfg.Server.TLS.Key != ""
 	cfg.Security.AllowedOrigins = splitCommaList(*allowedOrigins)
 	cfg.Security.TrustedProxies = splitCommaList(*trustedProxies)
+
+	legacyKDF, err := parseStateKDF(*stateKDF)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	cfg.Security.StateKDFLegacy = legacyKDF
+
+	// 密钥来源三者互斥：同时给两个无法判断用哪个，用错密钥要在 Load 时才
+	// 以 GCM 认证失败暴露，报错误导。这里直接失败并点名冲突项。
+	envKey := os.Getenv("GOREMOTE_STATE_KEY")
+	if sources := stateKeySources(cfg.Security.StateKey, envKey, cfg.Security.StateKeyFile); len(sources) > 1 {
+		fmt.Fprintf(os.Stderr, "state encryption key configured through multiple sources (%s); configure exactly one\n", strings.Join(sources, ", "))
+		os.Exit(2)
+	}
+	cfg.Security.StateKeyFromFlag = cfg.Security.StateKey != ""
 	if cfg.Security.StateKey == "" {
-		cfg.Security.StateKey = os.Getenv("GOREMOTE_STATE_KEY")
+		cfg.Security.StateKey = envKey
+	}
+	if cfg.Security.StateKeyFile != "" {
+		key, err := readStateKeyFile(cfg.Security.StateKeyFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "--state-key-file: %v\n", err)
+			os.Exit(2)
+		}
+		cfg.Security.StateKey = key
+	}
+	// 在启动入口就校验格式：否则要等到 NewServer 里 panic 才暴露。
+	if _, _, err := splitStateKey(cfg.Security.StateKey); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid state encryption key: %v\n", err)
+		os.Exit(2)
 	}
 
 	return cfg
+}
+
+// parseStateKDF 解析 --state-kdf。默认（空）写 v2；legacy 只写 v1 供回滚。
+func parseStateKDF(raw string) (legacy bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "v2":
+		return false, nil
+	case "legacy":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid --state-kdf value %q: want v2 (default) or legacy", raw)
+	}
+}
+
+// stateKeySources 汇总实际配置的密钥来源，用于互斥校验。
+func stateKeySources(flagKey, envKey, filePath string) []string {
+	sources := make([]string, 0, 3)
+	if flagKey != "" {
+		sources = append(sources, "--state-key")
+	}
+	if envKey != "" {
+		sources = append(sources, "GOREMOTE_STATE_KEY")
+	}
+	if filePath != "" {
+		sources = append(sources, "--state-key-file")
+	}
+	return sources
+}
+
+// readStateKeyFile 读取 --state-key-file。只接受普通文件，且不能被组/其他
+// 用户读到或写到；symlink 一律拒绝，避免部署时把密钥指向一个可被替换的路径。
+// Windows 没有可用的 POSIX 权限位，跳过权限检查（该 flag 的隔离保证只在
+// POSIX 上成立）。
+func readStateKeyFile(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%s is a symlink; point the flag at the real key file", path)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			return "", fmt.Errorf("%s has mode %04o; it must not be accessible by group or others (use 0600)", path, perm)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	key := strings.TrimSpace(string(data))
+	if key == "" {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	return key, nil
 }
 
 func splitCommaList(raw string) []string {

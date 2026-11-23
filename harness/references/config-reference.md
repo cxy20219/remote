@@ -17,25 +17,32 @@
 | `--external-idle-timeout` | duration | `10m` | 公网隧道连接的空闲读超时；超过即关闭该连接。SSH 等长静默隧道可调大，批量端口转发可调小；`<=0` 使用内置默认 10m |
 | `--swagger` | bool | `false` | 是否启用 Swagger UI（仅认证后可访问）；默认关闭，发布版不暴露该调试入口，需要时显式 `--swagger` |
 | `--allowed-origins` | string | 空 | 允许打开 `/ws` 的浏览器 Origin，逗号分隔，如 `https://admin.example.com`；空值只允许无 Origin 的 Agent 连接 |
-| `--state-key` | string | 空 | 状态文件敏感字段加密密钥；优先使用环境变量 `GOREMOTE_STATE_KEY` |
+| `--state-key` | string | 空 | 状态文件敏感字段加密密钥；会出现在 `ps` / `systemctl show ExecStart`，仅作过渡，优先用 `GOREMOTE_STATE_KEY` 或 `--state-key-file` |
+| `--state-key-file` | string | 空 | 从文件读取状态加密密钥；要求普通文件、非 symlink、组/其他人不可读写（0600），Windows 跳过权限位检查 |
+| `--state-kdf` | string | 空 | 状态信封格式：空/`v2`（默认，口令走 argon2id）、`legacy`（只写 v1，供回滚；会把已迁移的 v2 降级回 v1，需显式指定） |
 | `--trusted-proxies` | string | 空 | 逗号分隔的反代 IP/CIDR；非空时信任 `X-Forwarded-For` / `X-Real-IP`（用于限流和 challenge 绑定），同时**关闭初始化的 loopback 免令牌**，初始化一律要求一次性令牌。格式非法时服务端拒绝启动 |
 | `--log-level` | string | `info` | `debug` / `info` / `warn` / `error` |
 | `--log-file` | string | 空 | 空=JSON 日志写 stdout；文件权限 0600 |
 | `--log-max-size-mb` | int | `50` | 单个日志文件轮转阈值 |
 | `--log-max-backups` | int | `5` | 保留的历史日志文件数量 |
 
-> `--state-key` 的值会出现在进程命令行中，生产环境优先使用 `GOREMOTE_STATE_KEY`。
+> 三种密钥来源（`--state-key` / `GOREMOTE_STATE_KEY` / `--state-key-file`）互斥，同时配置两个及以上时服务端拒绝启动并点名冲突项。
+> `--state-key` 的值会出现在进程命令行中，生产环境优先使用 `GOREMOTE_STATE_KEY` 或 `--state-key-file`。
 > 明文监听在公网接口且未启用 TLS 时，服务端会输出安全告警；管理 Cookie 和 Agent 控制消息在链路上不加密。
 
 ### 状态加密密钥格式
 
 | 形式 | 示例 | 说明 |
 |------|------|------|
-| 原始字符串 | 32 字符以上随机串 | 经 SHA-256 派生为 32 字节密钥 |
-| hex | `hex:<64位hex>` | 必须解码为 32 字节 |
-| base64 | `base64:<32字节base64>` | 必须解码为 32 字节 |
+| 原始字符串 | 32 字符以上随机串 | 走 argon2id（64MiB / 3 轮 / 2 并行），salt 随机生成并持久化 |
+| hex | `hex:<64位hex>` | 必须解码为 32 字节；全熵密钥直通，不再做 KDF |
+| base64 | `base64:<32字节base64>` | 必须解码为 32 字节；全熵密钥直通，不再做 KDF |
 
 启用后 `server-state.json` 中的服务端签名私钥、管理员密码 hash、设备隧道密钥写入 `encrypted` 字段；旧明文状态会自动重写为加密格式，之后启动必须提供同一密钥。
+
+**信封格式**：v2 在原有 `version/algorithm/nonce/ciphertext` 上增加 `kdf`（`argon2id-v1` / `none`）、`kdf_params`、`salt`，业务 schema 不变。旧 v1 文件（单次 SHA-256 派生、无 salt）启动时解锁成功后自动原子重写为 v2：写盘失败只记 ERROR、继续以内存态启动，文件保持 v1、下次落盘再试。每次写入复用文件里的 salt/params，只换 nonce。读取时对 `kdf_params` 做上限校验（内存 ≤256MiB、轮数 ≤10、并行度 ≤16、salt ≥16 字节），超限报错而不是静默降级。
+
+**回滚**：升级前先备份 `server-state.json`；若需要退回旧二进制，用 `--state-kdf=legacy` 启动，服务端会把 v2 降级回 v1 格式（口令仍是同一口令，旧派生为 SHA-256），之后旧二进制才能读。已经是 v1 的文件在该开关下不会被迁移。
 
 ---
 

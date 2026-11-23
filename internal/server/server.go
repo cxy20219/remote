@@ -87,8 +87,12 @@ type Server struct {
 }
 
 func NewServer(config *Config, staticFS embed.FS) *Server {
+	if config.Security.StateKeyFromFlag {
+		slog.Warn("--state-key is visible in the process command line (ps, systemctl show ExecStart); use GOREMOTE_STATE_KEY or --state-key-file instead")
+	}
 	statePath := filepath.Join(config.DataDir(), "server-state.json")
 	stateStore := NewStateStore(statePath)
+	stateStore.SetStateKDFLegacy(config.Security.StateKDFLegacy)
 	if err := stateStore.SetEncryptionKey(config.Security.StateKey); err != nil {
 		slog.Error("invalid state encryption key", "error", err)
 		panic(err)
@@ -309,7 +313,7 @@ func (s *Server) Start() error {
 	// 两步验证的密钥只在 state 加密区里才真正加密；没配密钥时是 0600 明文文件，
 	// 每次启动都要显式提醒，不能静默降级。
 	if totpCfg := s.stateStore.TOTPConfig(); totpCfg.Enabled() && !s.stateStore.EncryptionEnabled() {
-		slog.Warn("admin TOTP is enabled but state encryption is disabled; the TOTP secret is stored in plaintext in server-state.json (mode 0600). Set GOREMOTE_STATE_KEY or --state-key to move it into the encrypted state blob")
+		slog.Warn("admin TOTP is enabled but state encryption is disabled; the TOTP secret is stored in plaintext in server-state.json (mode 0600). Set GOREMOTE_STATE_KEY or --state-key-file to move it into the encrypted state blob")
 	}
 	// 密钥损坏时所有二次验证都会 fail closed；启动就要喊一声，否则登录会表现成
 	// 「验证已过期 / 动态码错误」，排查方向完全是错的。

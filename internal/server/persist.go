@@ -207,13 +207,21 @@ func cloneServerState(state *ServerState) ServerState {
 }
 
 type StateStore struct {
-	mu            sync.RWMutex
-	saveMu        sync.Mutex
-	state         *ServerState
-	deviceIndex   map[string]int
-	path          string
-	encryptionKey []byte
-	dirty         bool
+	mu          sync.RWMutex
+	saveMu      sync.Mutex
+	state       *ServerState
+	deviceIndex map[string]int
+	path        string
+
+	// 状态加密：rawStateKey 是配置的原始密钥（空 = 不加密），在 Load 之前
+	// 由 SetEncryptionKey 设置。envelope 是当前磁盘信封对应的派生信息；
+	// pendingEnvelope 是 v1↔v2 待迁移目标，写盘成功后才提交（见 writeState）。
+	rawStateKey     string
+	kdfLegacy       bool
+	envelope        *stateEnvelope
+	pendingEnvelope *stateEnvelope
+
+	dirty bool
 	// devicesVersion 在设备记录发生任何变化（增/删/改/回滚）时递增。
 	// 隧道 accept 路径按它判断编译好的设备白名单是否过期，避免每次连接都
 	// 全量重建 matcher。
@@ -270,7 +278,16 @@ func (s *StateStore) Load() error {
 
 	s.state = &state
 	s.rebuildDeviceIndexLocked()
-	if (len(s.encryptionKey) > 0 && wasPlaintext) || legacy.AdminPasswordPlain != "" {
+	switch {
+	case s.pendingEnvelope != nil:
+		// 旧格式迁移（v1→v2，或 --state-kdf=legacy 下的 v2→v1）：解密已经
+		// 成功，写失败不阻塞启动。文件保持原格式，下次 Save 再试；绝不在
+		// 解密成功前碰文件，最坏结果是“还是旧格式”，不是“文件损坏”。
+		if err := s.writeState(cloneServerState(&state)); err != nil {
+			slog.Error("state encryption envelope migration failed; keeping the previous format on disk and retrying on next save",
+				"path", s.path, "error", err)
+		}
+	case (len(s.rawStateKey) > 0 && wasPlaintext) || legacy.AdminPasswordPlain != "":
 		if err := s.writeState(cloneServerState(&state)); err != nil {
 			return err
 		}
@@ -292,6 +309,16 @@ func (s *StateStore) initNew() error {
 		ServerSignPubkey:  hex.EncodeToString(pubKey),
 		Settings:          defaultSettings(),
 		Devices:           []DeviceState{},
+	}
+
+	// 新文件必须在第一次写盘前定下信封：口令模式下 salt 一旦生成就要持久化，
+	// 之后每次 Save 只能复用它。
+	if s.rawStateKey != "" {
+		envelope, err := s.buildEnvelope()
+		if err != nil {
+			return err
+		}
+		s.envelope = envelope
 	}
 
 	if err := s.writeState(cloneServerState(s.state)); err != nil {
@@ -373,6 +400,15 @@ func (s *StateStore) writeState(state ServerState) error {
 	if s.path == "" {
 		return nil
 	}
+	// 防御：配置了密钥但还没经过 Load（直接构造的 store）。先定下信封，
+	// 绝不把敏感字段以明文写进一个按加密配置运行的进程。
+	if s.rawStateKey != "" && s.envelope == nil && s.pendingEnvelope == nil {
+		envelope, err := s.buildEnvelope()
+		if err != nil {
+			return err
+		}
+		s.envelope = envelope
+	}
 	if err := s.encryptSensitiveState(&state); err != nil {
 		return err
 	}
@@ -414,6 +450,13 @@ func (s *StateStore) writeState(state ServerState) error {
 	if err := os.Rename(tmp, s.path); err != nil {
 		os.Remove(tmp)
 		return err
+	}
+	// rename 已经生效：磁盘上就是新信封。现在才提交迁移目标，后续 Save
+	// 复用同一 salt/params（换 salt = 换密钥）。
+	if s.pendingEnvelope != nil {
+		s.envelope = s.pendingEnvelope
+		s.pendingEnvelope = nil
+		slog.Info("state encryption envelope migrated", "version", s.envelope.version, "kdf", s.envelope.kdf)
 	}
 	// rename 已经生效：从这里开始磁盘就是新内容了。目录 fsync 只是让这次
 	// rename 也扛住掉电，失败不上报、不回滚。
@@ -842,10 +885,12 @@ func findRecoveryHash(hashes []string, target []byte) int {
 }
 
 // EncryptionEnabled 表示 state 敏感字段是否走 AES-256-GCM 加密区。
+// 配置了密钥即为 true：真正派生的 AES key 要到 Load 读到信封（或首次写盘）
+// 才确定，TOTP 门禁不能等派生完成才放行。
 func (s *StateStore) EncryptionEnabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.encryptionKey) > 0
+	return s.rawStateKey != ""
 }
 
 func (s *StateStore) SetAdminPassword(password string) error {
