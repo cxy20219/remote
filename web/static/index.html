@@ -92,6 +92,9 @@ tbody tr:hover td{background:#f8fafc}
 #tunnels thead th,#tunnels tbody td{padding-left:10px;padding-right:10px}
 /* 状态格次要行：最后在线/24h 次数/上次断开时刻，11px 次要色，不新增列 */
 .cell-sub{display:block;margin-top:2px;font-size:11px;line-height:12px;color:#94a3b8;white-space:nowrap}
+/* agent 版本次要行：落后用主题 amber + 「落后」角标；未知保持灰、不标黄 */
+.cell-sub.ver-outdated{color:#d97706;font-weight:600}
+.ver-tag{display:inline-block;margin-left:4px;padding:0 4px;border-radius:3px;background:#fffbeb;color:#d97706;font-size:10px;line-height:12px;vertical-align:1px}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
@@ -836,6 +839,19 @@ async function loadDevices() {
   }
 }
 
+// agent 版本次要行：空串=未知（灰，不标黄）；落后=amber +「落后」角标，服务端已算好 agent_outdated。
+function deviceVersionHtml(d) {
+  const version = typeof d.agent_version === 'string' ? d.agent_version : '';
+  if (!version) {
+    return '<span class="cell-sub ver-line" title="老版本 agent 或本地开发构建，拿不到版本号">未知</span>';
+  }
+  if (d.agent_outdated) {
+    return '<span class="cell-sub ver-line ver-outdated" title="agent 版本低于服务端">' + esc(version) +
+      '<span class="ver-tag">落后</span></span>';
+  }
+  return '<span class="cell-sub ver-line" title="agent 版本">' + esc(version) + '</span>';
+}
+
 // 设备状态格：在线/离线 + 次要行（最后在线相对时间 · 24h 断开次数），悬停看最近断开原因。
 function deviceStatusCellHtml(d) {
   const badge = d.online
@@ -866,7 +882,7 @@ function renderDevices() {
     const encBadge = d.enc_enabled
       ? '<span class="badge badge-enc-on">&#128274; 加密</span>'
       : '<span class="badge badge-enc-off">&#128275; 明文</span>';
-    return '<tr><td><strong>' + esc(name) + '</strong></td><td>' + esc(d.hostname) + '</td><td>' + esc(d.os) + '</td><td>' +
+    return '<tr><td><strong>' + esc(name) + '</strong>' + deviceVersionHtml(d) + '</td><td>' + esc(d.hostname) + '</td><td>' + esc(d.os) + '</td><td>' +
       encBadge + '</td>' + deviceStatusCellHtml(d) + '<td style="font-size:12px">' + esc(fmtDate(d.approved_at, false)) + '</td><td>' +
       '<button class="btn btn-ghost" onclick="openDeviceModal(' + jsArg(d.id) + ')">配置</button> ' +
       '<button class="btn btn-danger" onclick="deleteDevice(' + jsArg(d.id) + ',' + jsArg(name) + ')">删除</button>' +
