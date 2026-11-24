@@ -82,10 +82,14 @@ tbody tr:hover td{background:#f8fafc}
 #tunnels td.tunnel-device{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* 状态列：速率上下行分两行，正常连接用主题绿 #16a34a；数字 tabular-nums 等宽不跳 */
 #tunnels td.tunnel-status{min-width:116px}
+#tunnels td.tunnel-status .badge{display:flex;width:max-content}
+#tunnels td.tunnel-status .cell-sub{margin-top:0}
 #tunnels .tunnel-rate{color:#16a34a}
-#tunnels .tunnel-rate-line{display:block;font-variant-numeric:tabular-nums;white-space:nowrap}
+#tunnels .tunnel-rate-line{display:block;line-height:17px;font-variant-numeric:tabular-nums;white-space:nowrap}
 /* 9 列 + 速率串比卡片内容区宽：左右内边距 14→10 各列共省 72px，表头不再溢出卡片 */
 #tunnels thead th,#tunnels tbody td{padding-left:10px;padding-right:10px}
+/* 状态格次要行：最后在线/24h 次数/上次断开时刻，11px 次要色，不新增列 */
+.cell-sub{display:block;margin-top:2px;font-size:11px;line-height:12px;color:#94a3b8;white-space:nowrap}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
@@ -460,6 +464,44 @@ function fmtDate(value, withTime = true) {
   return withTime ? date.toLocaleString() : date.toLocaleDateString();
 }
 
+// 相对时间：设备状态格次要行「最后在线」。
+function fmtRelativeTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const diff = Date.now() - date.getTime();
+  if (diff <= 0) return '刚刚';
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return minutes + ' 分钟前';
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + ' 小时前';
+  const days = Math.floor(hours / 24);
+  if (days < 30) return days + ' 天前';
+  return fmtDate(value, false);
+}
+
+// 状态格次要行的 HH:MM（隧道「上次 12:34」）。
+function fmtClock(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
+}
+
+// 断开原因中文名，服务端契约：read_timeout/write_error/heartbeat_timeout/server_shutdown/unknown。
+const DISCONNECT_REASON_LABELS = {
+  read_timeout: '读超时',
+  write_error: '写失败',
+  heartbeat_timeout: '心跳超时',
+  server_shutdown: '服务重启',
+  unknown: '未知原因'
+};
+function disconnectReasonLabel(reason) {
+  if (!reason) return '';
+  return DISCONNECT_REASON_LABELS[reason] || String(reason);
+}
+
 async function apiFetch(path, options) {
   const response = await fetch(path, options);
   if (response.status === 401) {
@@ -783,6 +825,24 @@ async function loadDevices() {
   }
 }
 
+// 设备状态格：在线/离线 + 次要行（最后在线相对时间 · 24h 断开次数），悬停看最近断开原因。
+function deviceStatusCellHtml(d) {
+  const badge = d.online
+    ? '<span class="badge badge-online">在线</span>'
+    : '<span class="badge badge-offline">离线</span>';
+  const seen = fmtRelativeTime(d.last_seen);
+  const count = Number(d.disconnects_24h);
+  const parts = [];
+  if (seen) parts.push(seen);
+  if (Number.isFinite(count)) parts.push('24h ' + count + ' 次');
+  if (!parts.length) return '<td>' + badge + '</td>';
+  const when = d.last_disconnect_at ? fmtDate(d.last_disconnect_at) : '';
+  const reason = disconnectReasonLabel(d.last_disconnect_reason);
+  const detail = [when, reason].filter(Boolean).join(' · ');
+  return '<td class="device-status" title="' + esc(detail ? '最近断开：' + detail : '暂无断开记录') + '">' + badge +
+    '<span class="cell-sub">' + esc(parts.join(' · ')) + '</span></td>';
+}
+
 function renderDevices() {
   const authorized = deviceList.filter(d => d.status === 'authorized');
   const container = document.getElementById('devices');
@@ -795,11 +855,8 @@ function renderDevices() {
     const encBadge = d.enc_enabled
       ? '<span class="badge badge-enc-on">&#128274; 加密</span>'
       : '<span class="badge badge-enc-off">&#128275; 明文</span>';
-    const onBadge = d.online
-      ? '<span class="badge badge-online">在线</span>'
-      : '<span class="badge badge-offline">离线</span>';
     return '<tr><td><strong>' + esc(name) + '</strong></td><td>' + esc(d.hostname) + '</td><td>' + esc(d.os) + '</td><td>' +
-      encBadge + '</td><td>' + onBadge + '</td><td style="font-size:12px">' + esc(fmtDate(d.approved_at, false)) + '</td><td>' +
+      encBadge + '</td>' + deviceStatusCellHtml(d) + '<td style="font-size:12px">' + esc(fmtDate(d.approved_at, false)) + '</td><td>' +
       '<button class="btn btn-ghost" onclick="openDeviceModal(' + jsArg(d.id) + ')">配置</button> ' +
       '<button class="btn btn-danger" onclick="deleteDevice(' + jsArg(d.id) + ',' + jsArg(name) + ')">删除</button>' +
       '</td></tr>';
@@ -957,7 +1014,11 @@ function tunnelStatusHtml(t) {
   }
   const meta = TUNNEL_STATUS[status] || { label: status };
   const reason = meta.label + ((t && t.last_error) ? ' · ' + t.last_error : '');
-  return '<span class="badge badge-err" title="' + esc(reason) + '">未连接</span>';
+  const lastClock = fmtClock(t && t.last_disconnect_at);
+  const sub = lastClock
+    ? '<span class="cell-sub" title="上次断开 ' + esc(fmtDate(t.last_disconnect_at)) + '">上次 ' + esc(lastClock) + '</span>'
+    : '';
+  return '<span class="badge badge-err" title="' + esc(reason) + '">未连接</span>' + sub;
 }
 
 // 状态格带 tunnel_id/status，供 2 秒轮询原地更新，不重建表格。
