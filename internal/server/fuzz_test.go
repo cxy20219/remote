@@ -45,29 +45,54 @@ func FuzzVerifyTOTP(f *testing.F) {
 		if err != nil {
 			t.Fatalf("TOTPCodeAt rejected a well-formed secret: %v", err)
 		}
-		got, err := verifyTOTP(valid, want, now, -1)
-		if err != nil {
-			t.Fatalf("verifyTOTP rejected the current code: %v", err)
-		}
-		if got != step {
-			t.Fatalf("verifyTOTP matched step %d, want %d", got, step)
-		}
-		if _, err := verifyTOTP(valid, want, now, step); !errors.Is(err, ErrTOTPReplay) {
-			t.Fatalf("verifyTOTP accepted a replayed code, err = %v", err)
-		}
-
 		key, err := decodeTOTPSecret(valid)
 		if err != nil {
 			t.Fatalf("decodeTOTPSecret rejected a well-formed secret: %v", err)
 		}
+		// 6 位码只有 1e-6 的碰撞概率，但 verifyTOTP 从 step-1 开始扫：窗口内
+		// 相邻步的码撞上当前码时，返回的命中步是前者（不是 step）。fuzz 每秒
+		// 几万次迭代，按「必须命中 step」断言迟早会假红。所以先算出窗口内的
+		// 三个码，再断言可证明的性质：命中落在窗口内、且命中步的码就是提交的码。
+		inWindow := make(map[string]int64, 2*totpSkewSteps+1)
+		for offset := -int64(totpSkewSteps); offset <= int64(totpSkewSteps); offset++ {
+			if step+offset < 0 {
+				continue
+			}
+			inWindow[hotp(key, uint64(step+offset), totpDigits)] = step + offset
+		}
+
+		got, err := verifyTOTP(valid, want, now, -1)
+		if err != nil {
+			t.Fatalf("verifyTOTP rejected the current code: %v", err)
+		}
+		if diff := got - step; diff < -totpSkewSteps || diff > totpSkewSteps {
+			t.Fatalf("verifyTOTP matched step %d, outside the window around %d", got, step)
+		}
+		if matched := hotp(key, uint64(got), totpDigits); matched != want {
+			t.Fatalf("verifyTOTP matched step %d whose code %q is not the submitted code %q", got, matched, want)
+		}
+		if _, err := verifyTOTP(valid, want, now, got); !errors.Is(err, ErrTOTPReplay) {
+			t.Fatalf("verifyTOTP accepted a replayed code, err = %v", err)
+		}
+
 		for _, offset := range []int64{-totpSkewSteps, totpSkewSteps} {
+			if step+offset < 0 {
+				continue
+			}
 			neighbor := hotp(key, uint64(step+offset), totpDigits)
 			if _, err := verifyTOTP(valid, neighbor, now, -1); err != nil {
 				t.Fatalf("verifyTOTP rejected the code at step%+d: %v", offset, err)
 			}
 		}
 		for _, offset := range []int64{-totpSkewSteps - 1, totpSkewSteps + 1} {
+			if step+offset < 0 {
+				continue
+			}
 			outside := hotp(key, uint64(step+offset), totpDigits)
+			if _, collides := inWindow[outside]; collides {
+				// 外侧码与窗口内某个码相同：verifyTOTP 无从区分，跳过这条断言。
+				continue
+			}
 			if _, err := verifyTOTP(valid, outside, now, -1); !errors.Is(err, ErrTOTPInvalidCode) {
 				t.Fatalf("verifyTOTP accepted the code at step%+d, err = %v", offset, err)
 			}

@@ -51,6 +51,18 @@ jobs:
             exit 1
           fi
 
+      # 依赖守卫：websocket 钉在未打 tag 的安全修复提交上（mask key PRNG，
+      # GO-2026-6278）。任何人跑一次 `go get -u` 都会把它解析回最新 tag v1.5.3，
+      # 也就是悄悄降级回有漏洞的版本——这条断言让那种改动在 CI 上直接红。
+      - name: Guard gorilla/websocket pin
+        run: |
+          pinned='v1.5.4-0.20240701034025-d67f41855da4'
+          got="$(go list -m -f '{{.Version}}' github.com/gorilla/websocket)"
+          if [ "$got" != "$pinned" ]; then
+            echo "::error::github.com/gorilla/websocket must stay pinned to ${pinned}; got ${got}"
+            exit 1
+          fi
+
       - name: Build
         run: go build ./...
 
@@ -82,10 +94,10 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
 
       # 只看可被本仓库代码触达的漏洞：依赖里带进来的不可达 CVE 不该长期占着红灯。
+      # 用显式路径调用：`go install` 落在 $(go env GOPATH)/bin，同一步内的
+      # `echo >> $GITHUB_PATH` 对当前 shell 不生效，别赌 runner 的默认 PATH。
       - name: Run govulncheck
-        run: |
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          govulncheck ./...
+        run: '"$(go env GOPATH)/bin/govulncheck" ./...'
 
   fuzz:
     name: fuzz ${{ matrix.target }} (30s)

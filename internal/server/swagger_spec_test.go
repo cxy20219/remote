@@ -54,6 +54,11 @@ func readSwaggerSpec(t *testing.T) map[string]map[string]json.RawMessage {
 
 // TestSwaggerCoversEveryAPIRoute 双向比对「注册的路由」与「文档里的 path+method」。
 // 少一条说明加了路由没写注解；多一条说明删了路由没重新生成文档。
+//
+// 已知边界：这条测试只到 path+method 粒度，不校验请求/响应字段、参数与状态码。
+// 字段级漂移由 CI 的 swagger job 兜底——它重跑 scripts/gen-swagger.sh 并要求
+// docs/ 生成后没有任何改动，所以「改了 struct 的 json tag 但没重新生成」会在
+// 那里红。不要在这条测试里再叠一层字段断言。
 func TestSwaggerCoversEveryAPIRoute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)

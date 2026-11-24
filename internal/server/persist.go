@@ -83,7 +83,7 @@ type TunnelState struct {
 type ServerState struct {
 	// SchemaVersion 在明文区：版本必须在解密之前可读（否则「文件太新」要等
 	// 密钥配对才知道），而且它是兼容标记，不是秘密。JSON 里排最前便于人工查看。
-	SchemaVersion     int             `json:"schema_version"`
+	SchemaVersion     int             `json:"schema_version,omitempty"`
 	ServerSignPrivkey string          `json:"server_sign_privkey"`
 	ServerSignPubkey  string          `json:"server_sign_pubkey"`
 	AdminPasswordHash string          `json:"admin_password_hash"`
@@ -351,26 +351,27 @@ func (s *StateStore) Load() error {
 	s.state = &state
 	s.rebuildDeviceIndexLocked()
 	migrated := loadedSchemaVersion != state.SchemaVersion
+	// 明文重写（首次启用加密 / 清掉旧版明文密码）和 schema 迁移都是「内存已经
+	// 是新结构，磁盘还是旧的」，落盘失败必须 fail closed：继续跑会让内存与磁盘
+	// 分叉，由 NewServer panic 让下次启动重跑同一步。
+	needsRewrite := migrated || (len(s.rawStateKey) > 0 && wasPlaintext) || legacy.AdminPasswordPlain != ""
 	switch {
+	case needsRewrite:
+		// 这里也覆盖「迁移 + 信封迁移同时触发」：writeState 成功时才提交新信封，
+		// 失败则连信封一起保留旧状态，绝不半途写坏。
+		if err := s.writeState(cloneServerState(&state)); err != nil {
+			return fmt.Errorf("persist state rewrite: %w", err)
+		}
 	case s.pendingEnvelope != nil:
-		// 旧格式迁移（v1→v2，或 --state-kdf=legacy 下的 v2→v1）：解密已经
+		// 只是信封格式迁移（v1→v2，或 --state-kdf=legacy 下的 v2→v1）：解密已经
 		// 成功，写失败不阻塞启动。文件保持原格式，下次 Save 再试；绝不在
 		// 解密成功前碰文件，最坏结果是“还是旧格式”，不是“文件损坏”。
 		if err := s.writeState(cloneServerState(&state)); err != nil {
 			slog.Error("state encryption envelope migration failed; keeping the previous format on disk and retrying on next save",
 				"path", s.path, "error", err)
 		}
-	case migrated:
-		// schema 迁移只改内存，落盘成功才算完成。失败 fail closed（返回错误，
-		// 由 NewServer panic）：文件经 tmp+rename 保持原样，下次启动重跑同一步。
-		if err := s.writeState(cloneServerState(&state)); err != nil {
-			return fmt.Errorf("persist state schema migration: %w", err)
-		}
-	case (len(s.rawStateKey) > 0 && wasPlaintext) || legacy.AdminPasswordPlain != "":
-		if err := s.writeState(cloneServerState(&state)); err != nil {
-			return err
-		}
 	}
+	// 只有写盘成功（或根本不需要写）才会走到这里，所以这条日志不会谎报。
 	if migrated {
 		slog.Info("state schema migrated", "path", s.path, "from", loadedSchemaVersion, "to", state.SchemaVersion)
 	}

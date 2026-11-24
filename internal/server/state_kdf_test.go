@@ -265,6 +265,10 @@ func TestStateKDFMigrationFailureKeepsLegacyFile(t *testing.T) {
 	path := filepath.Join(dir, "server-state.json")
 	key := strings.Repeat("m", 32)
 	newLegacyStateFixture(t, path, key)
+	// 这条用例只覆盖「信封迁移写盘失败不阻塞启动」的容忍语义，所以先把 schema
+	// 盖成当前版本：否则会同时触发 schema 迁移，而那是必须 fail closed 的
+	// （见 TestSchemaAndEnvelopeMigrationFailsClosed）。
+	stampStateSchemaVersion(t, path, stateSchemaVersion)
 
 	// 用同名目录占住 .tmp：Load 能读文件，但迁移写盘必然失败。
 	if err := os.Mkdir(path+".tmp", 0o700); err != nil {

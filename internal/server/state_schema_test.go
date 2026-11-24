@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,29 @@ func writeLegacySchemaStateFile(t *testing.T) string {
 		t.Fatalf("write v0 state: %v", err)
 	}
 	return path
+}
+
+// stampStateSchemaVersion 给测试文件盖上指定 schema 版本，模拟「信封还是旧格式、
+// 但 schema 已经是当前版本」的中间态。信封迁移的容忍语义只适用于这种文件；
+// schema 迁移本身必须 fail closed。
+func stampStateSchemaVersion(t *testing.T, path string, version int) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("parse state file: %v", err)
+	}
+	raw["schema_version"] = json.RawMessage(strconv.Itoa(version))
+	patched, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal state file: %v", err)
+	}
+	if err := os.WriteFile(path, patched, 0o600); err != nil {
+		t.Fatalf("write state file: %v", err)
+	}
 }
 
 // readStateSchemaVersion 直接读盘上的明文层，不经过 StateStore。
@@ -235,5 +259,43 @@ func TestMigrationKeepsEncryptedStateDecryptable(t *testing.T) {
 	if strings.Contains(string(rewritten), "server_sign_privkey\": \"") &&
 		!strings.Contains(string(rewritten), `"server_sign_privkey": ""`) {
 		t.Fatal("migrated state leaked the signing key into the plaintext layer")
+	}
+}
+
+// TestSchemaAndEnvelopeMigrationFailsClosed 覆盖「schema 迁移 + 加密信封迁移同时
+// 触发」时的写盘失败：信封分支曾排在前面，写失败只记日志就继续启动，内存已是
+// 新结构而磁盘还是旧文件，日志还会谎报 migrated。两者同时触发必须 fail closed。
+func TestSchemaAndEnvelopeMigrationFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server-state.json")
+	key := strings.Repeat("k", 32)
+	newLegacyStateFixture(t, path, key) // v1 信封，且没有 schema_version
+
+	// 让 writeState 在创建 .tmp 时失败：同名目录占位，任何用户都会拿到 EISDIR。
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+		t.Fatalf("block state temp file: %v", err)
+	}
+
+	store := NewStateStore(path)
+	if err := store.SetEncryptionKey(key); err != nil {
+		t.Fatalf("set encryption key: %v", err)
+	}
+	if err := store.Load(); err == nil {
+		t.Fatal("Load must fail closed when a migrated state cannot be persisted")
+	}
+
+	// 磁盘文件必须原样停在校验前的版本：不能写成半迁移的内容。
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var probe struct {
+		SchemaVersion *int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		t.Fatalf("parse state file: %v", err)
+	}
+	if probe.SchemaVersion != nil {
+		t.Fatalf("failed migration still stamped schema_version %d on disk", *probe.SchemaVersion)
 	}
 }
