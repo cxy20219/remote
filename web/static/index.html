@@ -80,6 +80,9 @@ tbody tr:hover td{background:#f8fafc}
 #tunnels code,#tunnels .mono,#tunnels .tunnel-exposure{white-space:nowrap}
 /* 设备名可能很长（默认主机名），限定列宽并省略，完整值放在 title 里，避免把操作列挤出卡片 */
 #tunnels td.tunnel-device{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 状态列：最小 150px 防止速率串变化导致列宽跳动；数字 tabular-nums 等宽对齐 */
+#tunnels td.tunnel-status{min-width:150px}
+#tunnels .tunnel-rate{font-variant-numeric:tabular-nums;white-space:nowrap}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
@@ -924,11 +927,35 @@ function tunnelStatusValue(t) {
 function tunnelStatusLabel(status) {
   return (TUNNEL_STATUS[status] || { label: status }).label;
 }
-function tunnelStatusBadge(t) {
+// 状态列只显示实时速率（B/s → KB/s → MB/s → GB/s，B/s 取整、其余 1 位小数）。
+function fmtRate(bytesPerSec) {
+  const n = Number(bytesPerSec);
+  if (!Number.isFinite(n) || n <= 0) return '0 B/s';
+  if (n < 1024) return Math.round(n) + ' B/s';
+  const units = ['KB/s', 'MB/s', 'GB/s'];
+  let value = n / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return value.toFixed(1) + ' ' + units[unit];
+}
+
+// active 显示 ↑rx ↓tx（rx=外部→目标，tx=目标→外部）；其余状态一律红色「未连接」，
+// 具体原因（等待设备/端口被占用…）和 last_error 放进 title，不丢诊断信息。
+function tunnelStatusHtml(t) {
   const status = tunnelStatusValue(t);
-  const meta = TUNNEL_STATUS[status] || { label: status, cls: 'badge-err' };
-  const title = (t && t.last_error) ? ' title="' + esc(t.last_error) + '"' : '';
-  return '<span class="badge ' + meta.cls + '"' + title + '>' + esc(meta.label) + '</span>';
+  if (status === 'active') {
+    return '<span class="mono tunnel-rate">↑' + esc(fmtRate(t.rx_rate)) + ' ↓' + esc(fmtRate(t.tx_rate)) + '</span>';
+  }
+  const meta = TUNNEL_STATUS[status] || { label: status };
+  const reason = meta.label + ((t && t.last_error) ? ' · ' + t.last_error : '');
+  return '<span class="badge badge-err" title="' + esc(reason) + '">未连接</span>';
+}
+
+// 状态格带 tunnel_id/status，供 2 秒轮询原地更新，不重建表格。
+function tunnelStatusCellHtml(t) {
+  const tid = t.tunnel_id || '';
+  const status = tunnelStatusValue(t);
+  return '<td class="tunnel-status" data-tid="' + esc(tid) + '" data-status="' + esc(status) + '">' + tunnelStatusHtml(t) + '</td>';
 }
 
 async function loadTunnels() {
@@ -961,12 +988,46 @@ async function loadTunnels() {
       return '<tr><td><code>' + esc(tunnelId.substring(0, 18)) + '&hellip;</code></td><td class="tunnel-device" title="' + esc(host) + '">' + esc(host) +
         '</td><td class="tunnel-exposure">' + esc(tunnelExposureLabel(exposure)) + '</td><td><span class="port-highlight">' + esc(tunnelListenAddr(t)) +
         '</span></td><td><span class="mono">' + esc(localAddr) + ':' + localPort + '</span></td><td>' + esc(protocol) +
-        '</td><td>' + esc(fmtDate(t.created_at)) + '</td><td>' + tunnelStatusBadge(t) + '</td><td class="row-actions">' + actions + '</td></tr>';
+        '</td><td>' + esc(fmtDate(t.created_at)) + '</td>' + tunnelStatusCellHtml(t) + '<td class="row-actions">' + actions + '</td></tr>';
     }).join('');
     document.getElementById('tunnels').innerHTML =
       '<table><thead><tr><th>隧道 ID</th><th>设备</th><th>入口类型</th><th>监听入口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
   } catch (e) {
     document.getElementById('tunnels').innerHTML = '<div class="empty">加载失败</div>';
+  }
+}
+
+// 2 秒轮询只原地刷新状态列：保留 DOM，点击/悬浮不被打断。
+// 状态迁移（连接 ↔ 断开）或行数不一致时整表重绘一次，让操作列的「重试」按钮同步。
+let tunnelRateBusy = false;
+async function refreshTunnelRates() {
+  if (document.hidden || tunnelRateBusy) return;
+  tunnelRateBusy = true;
+  try {
+    const { response, data } = await apiJSON('/api/tunnels');
+    if (!response.ok || !data) return;
+    const tunnels = Array.isArray(data.tunnels) ? data.tunnels : [];
+    const cells = document.querySelectorAll('#tunnels td.tunnel-status');
+    if (!cells.length) return; // 表格还没渲染（加载中/空/失败），交给 loadTunnels
+    let rebuild = cells.length !== tunnels.length;
+    const updates = [];
+    if (!rebuild) {
+      const byId = new Map();
+      cells.forEach(cell => byId.set(cell.dataset.tid, cell));
+      tunnels.forEach(t => {
+        const cell = byId.get(t.tunnel_id || '');
+        if (!cell) { rebuild = true; return; }
+        const status = tunnelStatusValue(t);
+        if (cell.dataset.status !== status) rebuild = true;
+        updates.push({ cell: cell, html: tunnelStatusHtml(t), status: status });
+      });
+    }
+    if (rebuild) { await loadTunnels(); return; }
+    updates.forEach(u => { u.cell.innerHTML = u.html; u.cell.dataset.status = u.status; });
+  } catch (e) {
+    // 速率刷新失败不打断页面，等下一轮
+  } finally {
+    tunnelRateBusy = false;
   }
 }
 
@@ -1265,6 +1326,9 @@ loadPendingDevices();
 loadTunnels();
 loadPortStatus();
 setInterval(() => { checkHealth(); loadDevices(); loadPendingDevices(); loadTunnels(); loadPortStatus(); }, 10000);
+// 状态列 2 秒刷新速率；页面隐藏时暂停，可见时立即补一次。
+setInterval(refreshTunnelRates, 2000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshTunnelRates(); });
 </script>
 </body>
 </html>
