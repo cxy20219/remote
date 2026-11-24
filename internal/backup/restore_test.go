@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -605,25 +607,48 @@ func TestRestoredDataStartsServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the restored data dir cannot be loaded: %v", err)
 	}
-	go func() { _ = srv.Start() }()
-
-	deadline := time.Now().Add(10 * time.Second)
-	started := false
-	for time.Now().Before(deadline) {
-		lock, lockErr := common.TryLockFile(filepath.Join(targetData, ".lock"))
-		if lockErr == nil {
-			lock.Release()
-			time.Sleep(20 * time.Millisecond)
-			continue
-		}
-		if errors.Is(lockErr, common.ErrLockBusy) {
-			started = true
-			break
-		}
-		t.Fatalf("unexpected lock error: %v", lockErr)
+	// 用真实监听等就绪，而不是拿 TryLockFile 去探 data/.lock：探锁自己会抢锁，
+	// 撞上 Start 的取锁就让 Start 以 lock busy 直接失败，用例最后只看到超时。
+	// /health 返回 200 就一定已过取锁那一步。
+	listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatalf("find free port: %v", listenErr)
 	}
-	if !started {
-		t.Fatal("the restored server never took the data dir lock (it did not start)")
+	addr := listener.Addr().String()
+	_ = listener.Close()
+	srv.Addr = addr
+
+	// Start 的错误不能丢：等就绪时 Start 已经返回就先打出那个错误。
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start() }()
+
+	client := &http.Client{Timeout: time.Second}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		select {
+		case err := <-startErr:
+			if err == nil {
+				t.Fatal("the restored server returned from Start() before it was ready")
+			}
+			t.Fatalf("the restored server failed to start: %v", err)
+		default:
+		}
+		resp, getErr := client.Get("http://" + addr + "/health")
+		if getErr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the restored server did not become ready: %v", getErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// 服务已经在应答请求，说明它确实持住了 data/.lock：此刻另开描述符抢不到。
+	if held, probeErr := common.ProbeLockFile(filepath.Join(targetData, ".lock")); probeErr != nil || !held {
+		t.Fatalf("data/.lock is not held by the running server: held=%v err=%v", held, probeErr)
 	}
 	if err := srv.Stop(); err != nil {
 		t.Fatalf("stop: %v", err)

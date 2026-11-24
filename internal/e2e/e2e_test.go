@@ -40,6 +40,9 @@ type harness struct {
 	srv      *server.Server
 	agents   []*agent.Agent
 	identity string
+	// agentErrs 收每个 agent Run() 的返回值：agent 起不来时等注册只会等到超时，
+	// 错误必须当场打出来。Stop 之后 Run 正常返回 nil，不会被当失败。
+	agentErrs []<-chan error
 }
 
 func newHarness(t *testing.T) *harness {
@@ -87,7 +90,10 @@ func newHarness(t *testing.T) *harness {
 	}
 	h.client = &http.Client{Jar: jar, Timeout: 10 * time.Second}
 
-	go func() { _ = srv.Start() }()
+	// Start 的错误不许丢：进程内服务端起不来时，等 /health 只会等到超时，
+	// 真实原因（端口被占、状态读不出来、fd 用尽）必须当场打出来。
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start() }()
 	// LIFO：先注册 server 的清理，后注册 agent 的，这样 agent 先停、server 后停。
 	t.Cleanup(func() {
 		if err := srv.Stop(); err != nil {
@@ -96,6 +102,11 @@ func newHarness(t *testing.T) *harness {
 	})
 
 	h.waitFor("server /health", 15*time.Second, func() (bool, string) {
+		select {
+		case err := <-startErr:
+			h.t.Fatalf("server failed to start: %v", err)
+		default:
+		}
 		status, _, err := h.request(http.MethodGet, "/health", nil)
 		if err != nil {
 			return false, err.Error()
@@ -137,7 +148,9 @@ func (h *harness) startAgent(legacy bool) *agent.Agent {
 	config.Server.LegacyHandshake = legacy
 
 	instance := agent.NewAgent(config, identity)
-	go func() { _ = instance.Run() }()
+	agentErr := make(chan error, 1)
+	go func() { agentErr <- instance.Run() }()
+	h.agentErrs = append(h.agentErrs, agentErr)
 	h.agents = append(h.agents, instance)
 	h.t.Cleanup(func() { instance.Stop() })
 	return instance
@@ -183,6 +196,7 @@ func (h *harness) waitFor(step string, timeout time.Duration, check func() (bool
 	deadline := time.Now().Add(timeout)
 	last := "no attempt"
 	for time.Now().Before(deadline) {
+		h.failOnAgentExit()
 		ok, detail := check()
 		if ok {
 			return
@@ -191,6 +205,21 @@ func (h *harness) waitFor(step string, timeout time.Duration, check func() (bool
 		time.Sleep(50 * time.Millisecond)
 	}
 	h.t.Fatalf("%s: timed out after %s (last observed: %s)", step, timeout, last)
+}
+
+// failOnAgentExit 在每次等待前检查 agent goroutine：它带着错误退出时立刻打出原因，
+// 别让「等注册」等到超时。Stop() 之后 Run 正常返回 nil，这里跳过。
+func (h *harness) failOnAgentExit() {
+	h.t.Helper()
+	for _, errCh := range h.agentErrs {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				h.t.Fatalf("agent exited with an error: %v", err)
+			}
+		default:
+		}
+	}
 }
 
 // waitForPendingDevice 等 agent 的注册申请出现在待审批列表里。

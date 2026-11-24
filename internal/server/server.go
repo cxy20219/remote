@@ -416,7 +416,11 @@ func (s *Server) Start() error {
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
+	// 放锁也在 lifecycleMu 下：dataLock 的每一次读写都走同一把锁，
+	// dataLockHeld（以及任何想观察「锁还在不在」的调用方）才不用自己猜时序。
+	s.lifecycleMu.Lock()
 	s.releaseDataLock()
+	s.lifecycleMu.Unlock()
 	return err
 }
 
@@ -471,6 +475,17 @@ func cleanReportedVersion(raw string) string {
 		return ""
 	}
 	return sanitized
+}
+
+// dataLockHeld 报告 data/.lock 是否已被本实例持住。
+//
+// 等「服务已经持锁」的调用方必须读这个，不能用 common.TryLockFile 去试探：
+// 试探本身会抢锁，一旦正好撞上 Start 里的取锁，Start 就以 lock busy 直接失败、
+// 再也不去持锁，等待方最后只能看到「10 秒没拿到锁」——真实原因被藏掉。
+func (s *Server) dataLockHeld() bool {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.dataLock != nil
 }
 
 // releaseDataLock 幂等释放 data/.lock。任何一条启动失败路径都必须走到这里，

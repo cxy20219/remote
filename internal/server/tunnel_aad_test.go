@@ -28,12 +28,13 @@ func startTestServerWithConfig(t *testing.T, config *Config) *Server {
 
 	srv := mustNewServer(t, config, embed.FS{})
 	srv.Addr = addr
-	go func() { _ = srv.Start() }()
+	startErr := startServerAsync(srv)
 	t.Cleanup(func() { _ = srv.Stop() })
 
 	client := &http.Client{Timeout: time.Second}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		requireServerRunning(t, startErr)
 		resp, err := client.Get("http://" + addr + "/health")
 		if err == nil {
 			resp.Body.Close()

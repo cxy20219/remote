@@ -88,35 +88,42 @@ func TestBackupStatusEndpoint(t *testing.T) {
 
 // TestStartHoldsDataDirLock 证明「服务在跑」这件事有一个内核级的判据，
 // 而不是靠人去猜：Start 持锁，Stop 之后锁必须能重新拿到。
+//
+// 这两条用例起真实监听 + 真实 flock，故意不加 t.Parallel()：并行时判据窗口被
+// 拉长，失败只会表现成超时，而这里要的是确定性。
 func TestStartHoldsDataDirLock(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)
 	srv := mustNewServer(t, config, embed.FS{})
-	go func() { _ = srv.Start() }()
+	startErr := startServerAsync(srv)
 
 	lockPath := filepath.Join(config.DataDir(), ".lock")
+	// 等 Start 持锁只能读 dataLockHeld，不能拿 TryLockFile 去试探：试探本身会抢锁，
+	// 一旦撞上 Start 的取锁，Start 就以 lock busy 直接失败、再也不持锁，用例最后
+	// 只能看到「10 秒没拿到锁」——真实原因被藏掉（CI 上真实发生过）。
 	deadline := time.Now().Add(10 * time.Second)
-	for {
-		lock, err := common.TryLockFile(lockPath)
-		if err == nil {
-			lock.Release()
-			if time.Now().After(deadline) {
-				t.Fatal("the server never took the data dir lock")
-			}
-			time.Sleep(20 * time.Millisecond)
-			continue
+	for !srv.dataLockHeld() {
+		requireServerRunning(t, startErr)
+		if time.Now().After(deadline) {
+			t.Fatal("the server never took the data dir lock")
 		}
-		if errors.Is(err, common.ErrLockBusy) {
-			break
-		}
-		t.Fatalf("unexpected lock error: %v", err)
+		time.Sleep(5 * time.Millisecond)
 	}
+
+	// 内核级判据：锁真的落在文件描述上——服务持锁期间，另一个描述符抢不到。
+	lock, err := common.TryLockFile(lockPath)
+	if lock != nil {
+		lock.Release()
+	}
+	if !errors.Is(err, common.ErrLockBusy) {
+		t.Fatalf("another lock attempt on data/.lock succeeded (err = %v): the running server is not holding it", err)
+	}
+
 	if err := srv.Stop(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
-	lock, err := common.TryLockFile(lockPath)
+	lock, err = common.TryLockFile(lockPath)
 	if err != nil {
 		t.Fatalf("the lock was not released after Stop: %v", err)
 	}
@@ -126,28 +133,19 @@ func TestStartHoldsDataDirLock(t *testing.T) {
 // TestSecondServerOnSameDataDirRefusesToStart 是「服务在跑时不许恢复」的另一半：
 // 同一份 data 上起第二个实例必须当场失败，并点名 data/.lock。
 func TestSecondServerOnSameDataDirRefusesToStart(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)
 	first := mustNewServer(t, config, embed.FS{})
-	go func() { _ = first.Start() }()
+	startErr := startServerAsync(first)
 
-	lockPath := filepath.Join(config.DataDir(), ".lock")
+	// 同上：不能用 TryLockFile 探锁，否则会和 first 自己的取锁撞车。
 	deadline := time.Now().Add(10 * time.Second)
-	for {
-		lock, err := common.TryLockFile(lockPath)
-		if err == nil {
-			lock.Release()
-			if time.Now().After(deadline) {
-				t.Fatal("the first server never took the data dir lock")
-			}
-			time.Sleep(20 * time.Millisecond)
-			continue
+	for !first.dataLockHeld() {
+		requireServerRunning(t, startErr)
+		if time.Now().After(deadline) {
+			t.Fatal("the first server never took the data dir lock")
 		}
-		if errors.Is(err, common.ErrLockBusy) {
-			break
-		}
-		t.Fatalf("unexpected lock error: %v", err)
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	secondConfig := newTestConfigForDir(t, config.DataDir())

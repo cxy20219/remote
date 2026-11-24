@@ -823,13 +823,14 @@ func TestServerStartUninitializedGate(t *testing.T) {
 
 	srv := mustNewServer(t, config, embed.FS{})
 	srv.Addr = addr
-	go func() { _ = srv.Start() }()
+	startErr := startServerAsync(srv)
 	defer srv.Stop()
 
 	base := "http://" + addr
 	client := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		requireServerRunning(t, startErr)
 		resp, err := client.Get(base + "/health")
 		if err == nil {
 			resp.Body.Close()
