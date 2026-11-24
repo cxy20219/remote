@@ -83,6 +83,8 @@ tbody tr:hover td{background:#f8fafc}
 /* 状态列：最小 150px 防止速率串变化导致列宽跳动；数字 tabular-nums 等宽对齐 */
 #tunnels td.tunnel-status{min-width:150px}
 #tunnels .tunnel-rate{font-variant-numeric:tabular-nums;white-space:nowrap}
+/* 9 列 + 速率串比卡片内容区宽：左右内边距 14→10 各列共省 72px，表头不再溢出卡片 */
+#tunnels thead th,#tunnels tbody td{padding-left:10px;padding-right:10px}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
