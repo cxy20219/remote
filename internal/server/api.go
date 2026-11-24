@@ -1752,3 +1752,14 @@ func applySettingsUpdate(settings *ServerSettings, req *settingsUpdateRequest, v
 		settings.GlobalWhitelist = deduplicateIPs(req.GlobalWhitelist)
 	}
 }
+
+// @Summary 备份状态
+// @Description 最近一次成功备份（以及最近一次恢复）的时间与产物标识。数据来自 data/backup-ledger.json，备份本身由 goremote-server backup 子命令执行。从未备份过时各字段为空字符串、last_size 为 0。
+// @Tags backup
+// @Produce json
+// @Success 200 {object} server.BackupStatusResponse
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/backup/status [get]
+func (s *Server) handleAPIBackupStatus(c *gin.Context) {
+	c.JSON(http.StatusOK, BackupStatus(s.config.DataDir()))
+}

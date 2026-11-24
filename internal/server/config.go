@@ -219,6 +219,13 @@ func (c *Config) DataDir() string {
 	return c.dataDir
 }
 
+// SetDataDir 给包外调用方（cmd、备份恢复的端到端测试）指定数据目录。
+// dataDir 不导出是为了让 ParseConfig 成为唯一的默认值来源，避免出现
+// 「结构体字面量忘了填 dataDir，state 悄悄写到当前目录」的部署事故。
+func (c *Config) SetDataDir(dir string) {
+	c.dataDir = dir
+}
+
 func (c *Config) Addr() string {
 	return net.JoinHostPort(c.Server.Host, strconv.Itoa(c.Server.Port))
 }

@@ -218,6 +218,33 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/backup/status": {
+            "get": {
+                "description": "最近一次成功备份（以及最近一次恢复）的时间与产物标识。数据来自 data/backup-ledger.json，备份本身由 goremote-server backup 子命令执行。从未备份过时各字段为空字符串、last_size 为 0。",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "backup"
+                ],
+                "summary": "备份状态",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.BackupStatusResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/check-auth": {
             "get": {
                 "description": "返回当前请求是否携带有效管理员会话。",
@@ -1657,6 +1684,29 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "server.BackupStatusResponse": {
+            "type": "object",
+            "properties": {
+                "last_archive": {
+                    "type": "string"
+                },
+                "last_mode": {
+                    "type": "string"
+                },
+                "last_restore_at": {
+                    "type": "string"
+                },
+                "last_sha256": {
+                    "type": "string"
+                },
+                "last_size": {
+                    "type": "integer"
+                },
+                "last_success_at": {
+                    "type": "string"
+                }
+            }
+        },
         "server.ClientInfo": {
             "type": "object",
             "properties": {

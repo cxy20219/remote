@@ -83,6 +83,12 @@ type Server struct {
 	lifecycleMu sync.Mutex
 	stopped     bool
 
+	// dataLock 是 data/.lock 上的排它锁：服务运行期间一直持有，备份恢复子命令
+	// 靠它判断「现在不能动这份数据」。放在 Start/Stop 而不是 NewServer，是因为
+	// 大量测试只构造对象、不起监听；用内核锁而不是「文件存在即上锁」，则是为了
+	// 崩溃后不会留下假阳性。
+	dataLock *common.FileLock
+
 	maxBodyBytes atomic.Int64
 }
 
@@ -229,6 +235,7 @@ func (s *Server) registerRoutes() {
 		protected.DELETE("/api/devices/:id", s.handleAPIDeleteDevice)
 		protected.PUT("/api/devices/:id/config", s.handleAPIUpdateDeviceConfig)
 		protected.PUT("/api/devices/:id/regen-key", s.handleAPIRegenKey)
+		protected.GET("/api/backup/status", s.handleAPIBackupStatus)
 		protected.GET("/api/settings", s.handleAPIGetSettings)
 		protected.PUT("/api/settings", s.handleAPIUpdateSettings)
 
@@ -294,6 +301,17 @@ func (s *Server) Start() error {
 		s.lifecycleMu.Unlock()
 		return nil
 	}
+	if s.dataLock == nil {
+		lock, lockErr := common.TryLockFile(filepath.Join(s.config.DataDir(), ".lock"))
+		if lockErr != nil {
+			s.lifecycleMu.Unlock()
+			if errors.Is(lockErr, common.ErrLockBusy) {
+				return fmt.Errorf("another goremote-server is already using the data dir %s (data/.lock is held); stop it before starting a second instance or restoring a backup", s.config.DataDir())
+			}
+			return lockErr
+		}
+		s.dataLock = lock
+	}
 	slog.Info("server starting", "addr", s.Addr)
 	auditSystem(auditEventServerStart, "server", "start", "ok", "",
 		slog.String("addr", s.Addr), slog.String("version", common.BuildVersion()))
@@ -306,6 +324,7 @@ func (s *Server) Start() error {
 	effectiveProxies, perr := configureTrustedProxies(s.engine, s.config.Security.TrustedProxies)
 	if perr != nil {
 		s.lifecycleMu.Unlock()
+		s.releaseDataLock()
 		return perr
 	}
 	if len(effectiveProxies) > 0 {
@@ -369,7 +388,21 @@ func (s *Server) Start() error {
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
+	s.releaseDataLock()
 	return err
+}
+
+// releaseDataLock 幂等释放 data/.lock。任何一条启动失败路径都必须走到这里，
+// 否则同一进程内重试启动会撞上自己留下的锁。
+func (s *Server) releaseDataLock() {
+	if s.dataLock == nil {
+		return
+	}
+	lock := s.dataLock
+	s.dataLock = nil
+	if err := lock.Release(); err != nil {
+		slog.Warn("failed to release the data directory lock", "error", err)
+	}
 }
 
 // configureTrustedProxies 校验并应用 --trusted-proxies；空列表等于不信任任何代理。
@@ -505,6 +538,8 @@ func (s *Server) Stop() error {
 			s.stopErr = s.httpSrv.Shutdown(ctx)
 			cancel()
 		}
+		// 最后才放锁：进程退出的那一刻之前，恢复命令都不该认为数据目录空闲。
+		s.releaseDataLock()
 		s.lifecycleMu.Unlock()
 	})
 	return s.stopErr

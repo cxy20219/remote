@@ -9,9 +9,21 @@ import "runtime/debug"
 // 加 -X 会改变发布产物的构建方式，而 build info 里的 vcs.revision 本来就能唯一定位
 // 源码。构建时拿不到 VCS 信息（例如在无 .git 的目录里 go build）就退回 "dev"。
 func BuildVersion() string {
+	version, _ := buildInfo()
+	return version
+}
+
+// BuildCommit 返回短 commit 哈希（拿不到 VCS 信息时为空）。备份 manifest 需要
+// 「可读版本」和「可定位的 commit」两个独立字段：前者给人看，后者给 git 用。
+func BuildCommit() string {
+	_, commit := buildInfo()
+	return commit
+}
+
+func buildInfo() (version, commit string) {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return "dev"
+		return "dev", ""
 	}
 
 	revision := ""
@@ -29,12 +41,12 @@ func BuildVersion() string {
 	}
 	if revision != "" {
 		if dirty {
-			return "vcs:" + revision + ".dirty"
+			return "vcs:" + revision + ".dirty", revision
 		}
-		return "vcs:" + revision
+		return "vcs:" + revision, revision
 	}
 	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
+		return info.Main.Version, ""
 	}
-	return "dev"
+	return "dev", ""
 }
