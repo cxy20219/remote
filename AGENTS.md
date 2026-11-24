@@ -28,7 +28,7 @@
 - [客户端测试方案](harness/references/agent-test.md)：Agent 单元、集成和端到端测试方案
 - [SSH 隧道直通测试用例](harness/references/ssh-tunnel-test-cases.md)：SSH 隧道直通测试用例
 - [配置参考](harness/references/config-reference.md)：服务端、Agent、隧道、安全、运行时限流和心跳
-- [Swagger API 规范](harness/references/swagger-api.yaml)：HTTP 管理 API 的 OpenAPI/Swagger 规范
+- [Swagger API 规范](docs/swagger.yaml)：HTTP 管理 API 的 OpenAPI 规范，由 handler 注解生成，是唯一来源（改路由后跑 scripts/gen-swagger.sh，CI 会校验生成后无 diff）
 - [TLS 设置指南](harness/references/tls-setup.md)：自签名证书生成、TLS 配置
 - [服务端部署脚本](harness/scripts/deploy-server.ps1)：Windows PowerShell 部署 Linux 服务端脚本
 - [Agent 部署脚本](harness/scripts/deploy-agent.sh)：Linux Agent 部署脚本

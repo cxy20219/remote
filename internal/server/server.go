@@ -707,6 +707,12 @@ func readWSMessage(conn *websocket.Conn) (*common.Message, error) {
 	}
 }
 
+// @Summary 健康检查
+// @Description 进程存活即返回 200 与 {"status":"ok"}；不反映状态落盘或隧道健康状况。
+// @Tags health
+// @Produce json
+// @Success 200 {object} map[string]string
+// @Router /health [get]
 func (s *Server) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }

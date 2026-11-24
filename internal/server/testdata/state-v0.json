@@ -1,0 +1,44 @@
+{
+  "server_sign_privkey": "11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+  "server_sign_pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+  "admin_password_hash": "$2a$10$0000000000000000000000000000000000000000000000000000",
+  "settings": {
+    "port_range_start": 12000,
+    "port_range_end": 13000,
+    "max_tunnels_per_client": 5,
+    "default_local_addr": "127.0.0.1",
+    "public_host": "",
+    "max_conn_per_min": 10,
+    "login_rate_limit": 5,
+    "blacklist_threshold": 10,
+    "global_whitelist": [],
+    "max_body_size_mb": 1,
+    "heartbeat_interval": 30,
+    "heartbeat_timeout": 90
+  },
+  "devices": [
+    {
+      "id": "dev-v0",
+      "name": "v0-device",
+      "hostname": "host-v0",
+      "os": "linux",
+      "status": "authorized",
+      "enc_enabled": false,
+      "ip_whitelist": [],
+      "first_seen": "2026-01-02T03:04:05Z",
+      "approved_at": "2026-01-02T04:00:00Z"
+    }
+  ],
+  "tunnels": [
+    {
+      "tunnel_id": "tun-v0",
+      "client_id": "dev-v0",
+      "protocol": "tcp",
+      "local_addr": "127.0.0.1",
+      "local_port": 22,
+      "public_port": 12022,
+      "exposure": "server_local",
+      "created_at": "2026-01-02T05:00:00Z"
+    }
+  ]
+}

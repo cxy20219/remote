@@ -1,0 +1,148 @@
+name: ci
+
+# 质量基线：每次 push / PR 都跑，不再等发版才验证。
+#
+# 与 release.yml 共用同一个 Go 版本钉（1.27.4）：版本一变，二进制与测试行为都会变，
+# 两边漂移就会出现「CI 绿、发布产物和别人编的不一样」。
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOLANG_VERSION: '1.27.4'
+  # 钉死：govulncheck 的数据库与判定逻辑都会随版本变化，报告要可复现。
+  GOVULNCHECK_VERSION: 'v1.10.0'
+
+jobs:
+  vet-test:
+    name: vet + test -race
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache: true
+
+      - name: Show toolchain
+        run: |
+          go version
+          git rev-parse HEAD
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l cmd internal docs web)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt required for:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Build (windows/amd64)
+        run: GOOS=windows GOARCH=amd64 go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # 服务器测试单轮 -race 约 3 分钟；这是唯一的墙钟大头，但 TSan 抓到过真实竞争，
+      # 不能为了快砍掉。
+      - name: Test (-race)
+        run: go test -race -count=1 ./...
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+
+      # 只看可被本仓库代码触达的漏洞：依赖里带进来的不可达 CVE 不该长期占着红灯。
+      - name: Run govulncheck
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          govulncheck ./...
+
+  fuzz:
+    name: fuzz ${{ matrix.target }} (30s)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: ./internal/common
+            target: FuzzDecodeBinaryTunnelDataFrame
+          - pkg: ./internal/common
+            target: FuzzDecodeStrictJSON
+          - pkg: ./internal/server
+            target: FuzzVerifyTOTP
+          - pkg: ./internal/server
+            target: FuzzIPMatcher
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache: true
+
+      # -run='^$' 只跑 fuzz target，不顺手再跑一遍整个包的用例（vet-test 已经跑过）。
+      - name: Fuzz
+        run: go test '${{ matrix.pkg }}' -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=30s
+
+  swagger:
+    name: swagger 与代码同步
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache: true
+
+      - name: Regenerate docs
+        run: ./scripts/gen-swagger.sh
+
+      # 生成物是提交进仓库的（会被 go:embed 打进二进制给 /swagger 用），
+      # 所以「重新生成后工作区没有改动」就等价于「文档与实现同步」。
+      - name: Check for drift
+        run: |
+          if ! git diff --exit-code -- docs/; then
+            echo "::error::docs/ 与代码不同步：运行 ./scripts/gen-swagger.sh 并提交生成结果"
+            exit 1
+          fi
+          untracked="$(git status --porcelain -- docs/)"
+          if [ -n "$untracked" ]; then
+            echo "::error::docs/ 里有未提交的生成物："
+            echo "$untracked"
+            exit 1
+          fi

@@ -303,6 +303,12 @@ func (s *Server) writeSetupError(c *gin.Context, err error) {
 	}
 }
 
+// @Summary 查询初始化状态
+// @Description 尚未设置管理密码时，除 /health 与 /api/setup/* 外的接口一律返回 409。
+// @Tags setup
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router /api/setup/status [get]
 // handleSetupStatus 公开状态：前端据此决定是否显示令牌输入框、是否还需要初始化。
 func (s *Server) handleSetupStatus(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
@@ -312,6 +318,14 @@ func (s *Server) handleSetupStatus(c *gin.Context) {
 	})
 }
 
+// @Summary 首次设置管理密码
+// @Description 仅在未初始化时可用。请求体字段：password。成功后下发会话 Cookie。
+// @Tags setup
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 409 {object} map[string]interface{}
+// @Router /api/setup/password [post]
 // handleSetupPassword 设置首个管理员密码；成功后自动登录并进入向导第 2 步。
 func (s *Server) handleSetupPassword(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
@@ -381,6 +395,14 @@ func (s *Server) requireSetupWizard(c *gin.Context) bool {
 	return true
 }
 
+// @Summary 开始两步验证设置
+// @Description 返回待激活的 TOTP 密钥与二维码。请求体字段：password。
+// @Tags setup
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 409 {object} map[string]interface{}
+// @Router /api/setup/totp/start [post]
 // handleSetupTOTPStart 在向导里生成 TOTP 密钥与二维码（不需要再输密码）。
 func (s *Server) handleSetupTOTPStart(c *gin.Context) {
 	if !s.requireSetupWizard(c) {
@@ -406,6 +428,14 @@ func (s *Server) handleSetupTOTPStart(c *gin.Context) {
 	}
 }
 
+// @Summary 确认两步验证
+// @Description 用动态码确认待激活密钥，恢复码只在这次响应里出现一次。请求体字段：code。
+// @Tags setup
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 409 {object} map[string]interface{}
+// @Router /api/setup/totp/enable [post]
 // handleSetupTOTPEnable 确认动态码并返回仅此一次的恢复码；成功后向导窗口关闭。
 func (s *Server) handleSetupTOTPEnable(c *gin.Context) {
 	if !s.requireSetupWizard(c) {
@@ -443,6 +473,13 @@ func (s *Server) handleSetupTOTPEnable(c *gin.Context) {
 	}
 }
 
+// @Summary 跳过两步验证
+// @Description 初始化阶段不启用两步验证，直接进入面板。
+// @Tags setup
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 409 {object} map[string]interface{}
+// @Router /api/setup/totp/skip [post]
 // handleSetupTOTPSkip 用户选择暂不启用 TOTP：立即关闭向导窗口，
 // 之后这两个 setup TOTP 端点永久 409（需要时登录管理面板再启用）。
 func (s *Server) handleSetupTOTPSkip(c *gin.Context) {

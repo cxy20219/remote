@@ -20,6 +20,19 @@ import (
 
 const stateSyncInterval = 3 * time.Second
 
+// stateSchemaVersion 是 ServerState 业务结构的 schema 版本：字段改名、删除或
+// 语义变化时 +1，并补一步迁移。它与 encrypted.version（加密信封格式）是两套
+// 独立的版本空间，不要合并成一个数字。
+//
+// 0 表示「未版本化的历史格式」，不是第 0 版格式：本轮之前写出的文件都没有
+// schema_version 字段。把它与 1 分开，将来才能区分「v1 有 bug」和「没有标记」。
+const stateSchemaVersion = 1
+
+// ErrStateTooNew 表示状态文件的 schema 比当前二进制新。必须在解密、迁移、
+// 写盘之前就拒绝：老二进制读到新文件时，不认识的字段在反序列化阶段就已经丢了，
+// 再 Save 一次会把它们永久删掉——这是最典型的静默数据丢失。
+var ErrStateTooNew = errors.New("state file schema is newer than this binary")
+
 // errDevicePersist 标记「设备内存状态已经改好，但落盘失败」。API 层据此
 // 返回 500：磁盘故障不是客户端错误。
 var errDevicePersist = errors.New("device state could not be persisted")
@@ -68,6 +81,9 @@ type TunnelState struct {
 }
 
 type ServerState struct {
+	// SchemaVersion 在明文区：版本必须在解密之前可读（否则「文件太新」要等
+	// 密钥配对才知道），而且它是兼容标记，不是秘密。JSON 里排最前便于人工查看。
+	SchemaVersion     int             `json:"schema_version"`
 	ServerSignPrivkey string          `json:"server_sign_privkey"`
 	ServerSignPubkey  string          `json:"server_sign_pubkey"`
 	AdminPasswordHash string          `json:"admin_password_hash"`
@@ -244,6 +260,52 @@ func NewStateStore(path string) *StateStore {
 	}
 }
 
+// checkStateSchemaVersion 在反序列化之后、解码与写盘之前拦下「文件比二进制新」。
+func checkStateSchemaVersion(version int) error {
+	if version < 0 {
+		return fmt.Errorf("state file has invalid schema_version %d", version)
+	}
+	if version > stateSchemaVersion {
+		return fmt.Errorf("%w: file has schema %d, this binary supports up to %d; upgrade the binary (or restore a backup) instead of starting an older build",
+			ErrStateTooNew, version, stateSchemaVersion)
+	}
+	return nil
+}
+
+// migrateStateLocked 把内存里的状态逐级升到当前版本。调用者持有 s.mu，并负责
+// 在成功后落盘一次。
+//
+// 约束（新增迁移时照做）：
+//   - 纯内存变换：不写盘、不读配置、不看 time.Now，重试必须得到同一结果；
+//   - 逐级前进，禁止跳版；已发布的步骤永不修改，只能追加下一步；
+//   - 每步只搬它要搬的字段，不顺手「修值」（修值归 normalizeSettings，且迁移
+//     先于 normalize，不得依赖 normalize 的结果）。
+func migrateStateLocked(state *ServerState) error {
+	for version := state.SchemaVersion; version < stateSchemaVersion; version++ {
+		if err := migrateStateStep(state, version); err != nil {
+			return fmt.Errorf("migrate state schema %d -> %d: %w", version, version+1, err)
+		}
+		state.SchemaVersion = version + 1
+	}
+	if state.SchemaVersion != stateSchemaVersion {
+		return fmt.Errorf("state schema migration ended at %d, want %d", state.SchemaVersion, stateSchemaVersion)
+	}
+	return nil
+}
+
+// migrateStateStep 执行 version -> version+1 的一步迁移。
+func migrateStateStep(state *ServerState, version int) error {
+	switch version {
+	case 0:
+		// v0 -> v1 是 identity 迁移：v0 就是本轮之前的全部字段，语义与 v1 相同，
+		// 这一版没有字段改名，只是补上版本号本身。下一次不兼容改动按
+		// case 1: … 追加，不要修改这一段。
+		return nil
+	default:
+		return fmt.Errorf("no migration registered for state schema %d", version)
+	}
+}
+
 func (s *StateStore) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -263,6 +325,12 @@ func (s *StateStore) Load() error {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return fmt.Errorf("parse state file: %w", err)
 	}
+	// 版本检查必须在解密、迁移、写盘之前：老二进制读到新文件还继续跑，未知字段
+	// 在反序列化阶段已经丢了，下一次 Save 会把它们永久删掉。
+	if err := checkStateSchemaVersion(state.SchemaVersion); err != nil {
+		return err
+	}
+	loadedSchemaVersion := state.SchemaVersion
 	if state.Devices == nil {
 		state.Devices = []DeviceState{}
 	}
@@ -274,10 +342,15 @@ func (s *StateStore) Load() error {
 	if err := s.decryptSensitiveState(&state); err != nil {
 		return err
 	}
+	// 迁移在解密之后（将来触及敏感区的迁移才能看到明文）、normalize 之前。
+	if err := migrateStateLocked(&state); err != nil {
+		return err
+	}
 	state.Settings = normalizeSettings(state.Settings)
 
 	s.state = &state
 	s.rebuildDeviceIndexLocked()
+	migrated := loadedSchemaVersion != state.SchemaVersion
 	switch {
 	case s.pendingEnvelope != nil:
 		// 旧格式迁移（v1→v2，或 --state-kdf=legacy 下的 v2→v1）：解密已经
@@ -287,10 +360,19 @@ func (s *StateStore) Load() error {
 			slog.Error("state encryption envelope migration failed; keeping the previous format on disk and retrying on next save",
 				"path", s.path, "error", err)
 		}
+	case migrated:
+		// schema 迁移只改内存，落盘成功才算完成。失败 fail closed（返回错误，
+		// 由 NewServer panic）：文件经 tmp+rename 保持原样，下次启动重跑同一步。
+		if err := s.writeState(cloneServerState(&state)); err != nil {
+			return fmt.Errorf("persist state schema migration: %w", err)
+		}
 	case (len(s.rawStateKey) > 0 && wasPlaintext) || legacy.AdminPasswordPlain != "":
 		if err := s.writeState(cloneServerState(&state)); err != nil {
 			return err
 		}
+	}
+	if migrated {
+		slog.Info("state schema migrated", "path", s.path, "from", loadedSchemaVersion, "to", state.SchemaVersion)
 	}
 	slog.Info("server state loaded", "path", s.path, "devices", len(state.Devices))
 	return nil
@@ -305,6 +387,7 @@ func (s *StateStore) initNew() error {
 	// 首次启动不生成管理员密码：AdminPasswordHash 留空即「未初始化」，
 	// 由初始化向导通过 POST /api/setup/password 设置。绝不在日志里打印任何凭据。
 	s.state = &ServerState{
+		SchemaVersion:     stateSchemaVersion,
 		ServerSignPrivkey: hex.EncodeToString(privKey),
 		ServerSignPubkey:  hex.EncodeToString(pubKey),
 		Settings:          defaultSettings(),

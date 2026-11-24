@@ -18,6 +18,7 @@ func newTestStateStore(settings ServerSettings) *StateStore {
 	return &StateStore{
 		stopCh: make(chan struct{}),
 		state: &ServerState{
+			SchemaVersion:     stateSchemaVersion,
 			ServerSignPrivkey: hex.EncodeToString(priv),
 			ServerSignPubkey:  hex.EncodeToString(pub),
 			Settings:          settings,

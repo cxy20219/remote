@@ -18,6 +18,15 @@ import (
 	"goremote/internal/common"
 )
 
+// @Summary 管理员登录
+// @Description 第一步：校验密码。启用两步验证时返回 challenge，进入 /api/login/totp；否则直接下发会话 Cookie。请求体字段：password。
+// @Tags auth
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 429 {object} map[string]interface{}
+// @Router /api/login [post]
 func (s *Server) handleLogin(c *gin.Context) {
 	var req struct {
 		Password string `json:"password"`
@@ -64,6 +73,15 @@ func (s *Server) handleLogin(c *gin.Context) {
 	s.issueAdminSession(c)
 }
 
+// @Summary 两步验证登录
+// @Description 第二步：用 challenge 与动态码换取正式会话。请求体字段：challenge、code。
+// @Tags auth
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 429 {object} map[string]interface{}
+// @Router /api/login/totp [post]
 // handleLoginTOTP 是两步登录的第二步：用挑战换正式会话。
 func (s *Server) handleLoginTOTP(c *gin.Context) {
 	var req struct {
@@ -116,6 +134,13 @@ func (s *Server) issueAdminSession(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// @Summary 查询两步验证状态
+// @Description 只返回是否启用与剩余恢复码数量，永不返回密钥。
+// @Tags admin
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/admin/totp [get]
 // handleAPIGetTOTPStatus 返回两步验证状态（永不返回密钥）。
 func (s *Server) handleAPIGetTOTPStatus(c *gin.Context) {
 	cfg := s.stateStore.TOTPConfig()
@@ -127,6 +152,14 @@ func (s *Server) handleAPIGetTOTPStatus(c *gin.Context) {
 	})
 }
 
+// @Summary 生成两步验证密钥
+// @Description 生成待激活密钥与二维码，要求重新输入当前密码。请求体字段：password。
+// @Tags admin
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/admin/totp/setup [post]
 // handleAPITOTPSetup 生成待激活密钥与二维码；要求重新输入当前密码。
 func (s *Server) handleAPITOTPSetup(c *gin.Context) {
 	var req struct {
@@ -173,6 +206,14 @@ func (s *Server) handleAPITOTPSetup(c *gin.Context) {
 	})
 }
 
+// @Summary 启用两步验证
+// @Description 用动态码确认待激活密钥；恢复码只返回一次。请求体字段：code。
+// @Tags admin
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/admin/totp/enable [post]
 // handleAPITOTPEnable 用动态码确认待激活密钥，恢复码只在这次响应里出现一次。
 func (s *Server) handleAPITOTPEnable(c *gin.Context) {
 	var req struct {
@@ -205,6 +246,14 @@ func (s *Server) handleAPITOTPEnable(c *gin.Context) {
 	}
 }
 
+// @Summary 用恢复码关闭两步验证
+// @Description 手机丢失时的自助出口：密码 + 一枚未使用过的恢复码。请求体字段：password、recovery_code。
+// @Tags admin
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/admin/totp/recover [post]
 // handleAPITOTPRecover 用恢复码关闭两步验证（手机丢失时的自助出口）。
 func (s *Server) handleAPITOTPRecover(c *gin.Context) {
 	var req struct {
@@ -239,6 +288,14 @@ func (s *Server) handleAPITOTPRecover(c *gin.Context) {
 	}
 }
 
+// @Summary 关闭两步验证
+// @Description 必须同时提供密码与当前动态码。请求体字段：password、code。
+// @Tags admin
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/admin/totp/disable [post]
 // handleAPITOTPDisable 关闭两步验证，必须同时提供密码与当前动态码。
 func (s *Server) handleAPITOTPDisable(c *gin.Context) {
 	var req struct {
@@ -275,6 +332,14 @@ func (s *Server) handleAPITOTPDisable(c *gin.Context) {
 	}
 }
 
+// @Summary 修改管理密码
+// @Description 需要当前密码。请求体字段：current_password、new_password。
+// @Tags admin
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/admin/password [put]
 func (s *Server) handleAPIChangeAdminPassword(c *gin.Context) {
 	var req struct {
 		CurrentPassword string `json:"current_password"`
@@ -303,6 +368,12 @@ func (s *Server) handleAPIChangeAdminPassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// @Summary 退出登录
+// @Description 清空会话 Cookie。
+// @Tags auth
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router /api/logout [post]
 func (s *Server) handleLogout(c *gin.Context) {
 	token, _ := c.Cookie("go_remote_token")
 	if token != "" && s.adminAuth.Validate(token) {
@@ -319,6 +390,12 @@ func (s *Server) setAdminCookie(c *gin.Context, token string, maxAge int) {
 	c.SetCookie("go_remote_token", token, maxAge, "/", "", secure, true)
 }
 
+// @Summary 检查会话
+// @Description 返回当前请求是否携带有效管理员会话。
+// @Tags auth
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router /api/check-auth [get]
 func (s *Server) handleCheckAuth(c *gin.Context) {
 	token, _ := c.Cookie("go_remote_token")
 	if s.adminAuth.Validate(token) {
@@ -357,6 +434,14 @@ type TunnelRequest struct {
 	LocalPort int    `json:"local_port"`
 	Protocol  string `json:"protocol"`
 	Exposure  string `json:"exposure"`
+}
+
+// TunnelListResponse 是隧道列表接口的响应体。写成具名类型是为了让 swagger 把
+// TunnelView 展开成真实字段（含 rx_bytes/rx_rate），而不是一个空对象；JSON 形状
+// 与原来的 gin.H 完全一致。
+type TunnelListResponse struct {
+	Tunnels []TunnelView `json:"tunnels"`
+	Total   int          `json:"total"`
 }
 
 type settingsUpdateRequest struct {
@@ -448,6 +533,13 @@ func decodeStrictJSON(c *gin.Context, dst interface{}) bool {
 	return true
 }
 
+// @Summary 列出在线客户端
+// @Description 只包含当前 WebSocket 连接在线的 agent。
+// @Tags clients
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/clients [get]
 func (s *Server) handleAPIClients(c *gin.Context) {
 	clients := s.clients.Snapshot()
 	c.JSON(http.StatusOK, gin.H{
@@ -456,6 +548,15 @@ func (s *Server) handleAPIClients(c *gin.Context) {
 	})
 }
 
+// @Summary 客户端详情
+// @Description 按客户端 ID 查询在线 agent。
+// @Tags clients
+// @Produce json
+// @Param id path string true "客户端 ID"
+// @Success 200 {object} server.ClientInfo
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Router /api/clients/{id} [get]
 func (s *Server) handleAPIClientDetail(c *gin.Context) {
 	client, ok := s.clients.SnapshotByID(c.Param("id"))
 	if !ok {
@@ -465,6 +566,14 @@ func (s *Server) handleAPIClientDetail(c *gin.Context) {
 	c.JSON(http.StatusOK, client)
 }
 
+// @Summary 列出指定客户端的隧道
+// @Description 返回该设备名下的全部隧道定义及其运行时速率。
+// @Tags tunnel
+// @Produce json
+// @Param client_id path string true "客户端 ID"
+// @Success 200 {object} server.TunnelListResponse
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/client-tunnels/{client_id} [get]
 func (s *Server) handleAPIListClientTunnels(c *gin.Context) {
 	if !s.requireTunnel(c) {
 		return
@@ -476,10 +585,7 @@ func (s *Server) handleAPIListClientTunnels(c *gin.Context) {
 	for i := range tunnels {
 		views[i] = newTunnelView(tunnels[i])
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"tunnels": views,
-		"total":   len(views),
-	})
+	c.JSON(http.StatusOK, TunnelListResponse{Tunnels: views, Total: len(views)})
 }
 
 func (s *Server) requireTunnel(c *gin.Context) bool {
@@ -490,6 +596,18 @@ func (s *Server) requireTunnel(c *gin.Context) bool {
 	return true
 }
 
+// @Summary 创建隧道
+// @Description 为指定在线设备创建端口映射。local_addr/local_port 是设备侧目标，exposure 决定监听 0.0.0.0 还是 127.0.0.1。
+// @Tags tunnel
+// @Produce json
+// @Param request body server.TunnelRequest true "隧道创建请求"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Failure 503 {object} map[string]interface{}
+// @Router /api/tunnels [post]
 func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	if !s.requireTunnel(c) {
 		return
@@ -607,6 +725,13 @@ func tunnelAccessAddr(host string, port int, exposure string) string {
 	return tunnelPublicAddr(host, port)
 }
 
+// @Summary 列出所有隧道
+// @Description 返回全部隧道定义、状态与运行时速率（rx_bytes/tx_bytes 为累计值，rx_rate/tx_rate 为最近 1 秒字节数，单位 B/s）。
+// @Tags tunnel
+// @Produce json
+// @Success 200 {object} server.TunnelListResponse
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/tunnels [get]
 func (s *Server) handleAPIListTunnels(c *gin.Context) {
 	if !s.requireTunnel(c) {
 		return
@@ -617,12 +742,18 @@ func (s *Server) handleAPIListTunnels(c *gin.Context) {
 	for i := range tunnels {
 		views[i] = newTunnelView(tunnels[i])
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"tunnels": views,
-		"total":   len(views),
-	})
+	c.JSON(http.StatusOK, TunnelListResponse{Tunnels: views, Total: len(views)})
 }
 
+// @Summary 获取隧道详情
+// @Description 单条隧道的定义、状态与运行时速率。
+// @Tags tunnel
+// @Produce json
+// @Param tunnel_id path string true "隧道 ID"
+// @Success 200 {object} server.TunnelView
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Router /api/tunnels/{tunnel_id} [get]
 func (s *Server) handleAPIGetTunnel(c *gin.Context) {
 	if !s.requireTunnel(c) {
 		return
@@ -638,6 +769,16 @@ func (s *Server) handleAPIGetTunnel(c *gin.Context) {
 	c.JSON(http.StatusOK, newTunnelView(tunnel))
 }
 
+// @Summary 删除隧道
+// @Description 删除定义并释放监听端口。
+// @Tags tunnel
+// @Produce json
+// @Param tunnel_id path string true "隧道 ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/tunnels/{tunnel_id} [delete]
 func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
 	if !s.requireTunnel(c) {
 		return
@@ -655,6 +796,17 @@ func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
+// @Summary 修改隧道
+// @Description 更新目标地址、内网端口或入口类型；定义落盘后重新绑定。请求体字段：local_addr、local_port、public_port、protocol、exposure。
+// @Tags tunnel
+// @Produce json
+// @Param tunnel_id path string true "隧道 ID"
+// @Success 200 {object} server.Tunnel
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/tunnels/{tunnel_id} [put]
 func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 	if !s.requireTunnel(c) {
 		return
@@ -699,6 +851,17 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 	c.JSON(http.StatusOK, tunnel)
 }
 
+// @Summary 重试隧道绑定
+// @Description 手动重试一次端口绑定。已 active 时幂等返回；设备离线返回 409。
+// @Tags tunnel
+// @Produce json
+// @Param tunnel_id path string true "隧道 ID"
+// @Success 200 {object} server.Tunnel
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 409 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/tunnels/{tunnel_id}/retry [post]
 // handleAPIRetryTunnel 手动重试一次绑定：已 active 幂等返回，设备离线 409。
 func (s *Server) handleAPIRetryTunnel(c *gin.Context) {
 	if !s.requireTunnel(c) {
@@ -721,6 +884,15 @@ func (s *Server) handleAPIRetryTunnel(c *gin.Context) {
 	c.JSON(http.StatusOK, tunnel)
 }
 
+// @Summary 读取设备 IP 白名单
+// @Description 空列表表示不限制来源 IP。
+// @Tags security
+// @Produce json
+// @Param id path string true "设备 ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Router /api/clients/{id}/whitelist [get]
 func (s *Server) handleAPIGetWhitelist(c *gin.Context) {
 	clientID := c.Param("id")
 	device := s.stateStore.GetDeviceByID(clientID)
@@ -735,6 +907,16 @@ func (s *Server) handleAPIGetWhitelist(c *gin.Context) {
 	})
 }
 
+// @Summary 更新设备 IP 白名单
+// @Description 请求体字段：ips（IP 或 CIDR 列表，空列表表示不限制）。
+// @Tags security
+// @Produce json
+// @Param id path string true "设备 ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Router /api/clients/{id}/whitelist [put]
 func (s *Server) handleAPIUpdateWhitelist(c *gin.Context) {
 	clientID := c.Param("id")
 	device := s.stateStore.GetDeviceByID(clientID)
@@ -766,12 +948,27 @@ func (s *Server) handleAPIUpdateWhitelist(c *gin.Context) {
 	})
 }
 
+// @Summary 读取全局 IP 白名单
+// @Description 对全部设备生效的来源 IP 白名单。
+// @Tags security
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/security/global-whitelist [get]
 func (s *Server) handleAPIGetGlobalWhitelist(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"global_whitelist": s.GetGlobalWhitelist(),
 	})
 }
 
+// @Summary 更新全局 IP 白名单
+// @Description 请求体字段：ips（IP 或 CIDR 列表）。
+// @Tags security
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/security/global-whitelist [put]
 func (s *Server) handleAPIUpdateGlobalWhitelist(c *gin.Context) {
 	var req struct {
 		IPs []string `json:"ips"`
@@ -791,6 +988,13 @@ func (s *Server) handleAPIUpdateGlobalWhitelist(c *gin.Context) {
 	})
 }
 
+// @Summary 读取黑名单
+// @Description 含手动封禁与触发阈值的自动封禁（自动条目按 IPv6 /64 聚合），以及各来源的违规计数。
+// @Tags security
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/security/blacklist [get]
 func (s *Server) handleAPIGetBlacklist(c *gin.Context) {
 	entries := s.blacklist.List()
 	violations := s.blacklist.AllViolations()
@@ -805,6 +1009,15 @@ func (s *Server) handleAPIGetBlacklist(c *gin.Context) {
 // 0 表示永久。上限的意义是防溢出，见 handleAPIAddBlacklist。
 const blacklistMaxDurationMinutes = 525600
 
+// @Summary 手动封禁 IP
+// @Description 请求体字段：ip、reason、duration_minutes（0 表示永久，最长 525600）。表满且全是手动条目时拒绝新增。
+// @Tags security
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/security/blacklist [post]
 func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 	var req struct {
 		IP       string `json:"ip"`
@@ -861,6 +1074,16 @@ func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 	})
 }
 
+// @Summary 解除封禁
+// @Description IP 可带 IPv6 /64 聚合键（形如 2001:db8::/64），路径里的斜杠按通配符保留。
+// @Tags security
+// @Produce json
+// @Param ip path string true "IP 或 IPv6 /64 聚合键"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/security/blacklist/{ip} [delete]
 func (s *Server) handleAPIRemoveBlacklist(c *gin.Context) {
 	// 通配符参数带前导 "/"，先剥掉。自动拉黑的条目键是 IPv6 /64，
 	// 里面本来就含 "/"，所以这里不能再按路径切分。
@@ -880,12 +1103,27 @@ func (s *Server) handleAPIRemoveBlacklist(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "IP removed from blacklist"})
 }
 
+// @Summary 读取自动封禁阈值
+// @Description 同一来源在统计窗口内触发多少次探测即自动封禁；0 表示关闭自动封禁。
+// @Tags security
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/security/blacklist-threshold [get]
 func (s *Server) handleAPIGetBlacklistThreshold(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"threshold": s.blacklist.GetThreshold(),
 	})
 }
 
+// @Summary 更新自动封禁阈值
+// @Description 请求体字段：threshold（>= 0）。
+// @Tags security
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/security/blacklist-threshold [put]
 func (s *Server) handleAPIUpdateBlacklistThreshold(c *gin.Context) {
 	var req struct {
 		Threshold int `json:"threshold"`
@@ -909,6 +1147,13 @@ func (s *Server) handleAPIUpdateBlacklistThreshold(c *gin.Context) {
 	})
 }
 
+// @Summary 查询端口占用
+// @Description 返回端口范围内的占用情况，供面板提示。
+// @Tags tunnel
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/port-status [get]
 func (s *Server) handleAPIPortStatus(c *gin.Context) {
 	if !s.requireTunnel(c) {
 		return
@@ -918,6 +1163,13 @@ func (s *Server) handleAPIPortStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 
+// @Summary 列出已审批设备
+// @Description 含别名、系统、加密开关与在线状态；在线状态来自当前 WebSocket 连接。
+// @Tags device
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/devices [get]
 func (s *Server) handleAPIListDevices(c *gin.Context) {
 	devices := s.stateStore.GetAllDevices()
 	type deviceInfo struct {
@@ -956,6 +1208,13 @@ func (s *Server) handleAPIListDevices(c *gin.Context) {
 	})
 }
 
+// @Summary 列出待审批设备
+// @Description 等待管理员审批的设备，超过 24 小时自动过期。
+// @Tags device
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/devices/pending [get]
 func (s *Server) handleAPIListPendingDevices(c *gin.Context) {
 	pending := s.stateStore.GetDevicesByStatus("pending")
 	type pendingInfo struct {
@@ -989,6 +1248,15 @@ func (s *Server) handleAPIListPendingDevices(c *gin.Context) {
 	})
 }
 
+// @Summary 审批设备
+// @Description 把待审批设备转为已审批并下发设备密钥。
+// @Tags device
+// @Produce json
+// @Param id path string true "待审批设备 ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/devices/pending/{id}/approve [post]
 func (s *Server) handleAPIApproveDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 
@@ -1023,6 +1291,17 @@ func (s *Server) handleAPIApproveDevice(c *gin.Context) {
 	})
 }
 
+// @Summary 拒绝设备
+// @Description 移除待审批设备并关闭其连接。
+// @Tags device
+// @Produce json
+// @Param id path string true "待审批设备 ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/devices/pending/{id}/deny [post]
 func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 	device := s.stateStore.GetDeviceByID(deviceID)
@@ -1063,6 +1342,16 @@ func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 	})
 }
 
+// @Summary 删除设备
+// @Description 连带删除该设备的隧道定义；设备需要重新审批才能接入。
+// @Tags device
+// @Produce json
+// @Param id path string true "设备 ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/devices/{id} [delete]
 func (s *Server) handleAPIDeleteDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 
@@ -1097,6 +1386,16 @@ func (s *Server) handleAPIDeleteDevice(c *gin.Context) {
 	})
 }
 
+// @Summary 修改设备配置
+// @Description 更新别名、加密开关与设备级 IP 白名单。请求体字段：name、enc_enabled、ip_whitelist。
+// @Tags device
+// @Produce json
+// @Param id path string true "设备 ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/devices/{id}/config [put]
 func (s *Server) handleAPIUpdateDeviceConfig(c *gin.Context) {
 	deviceID := c.Param("id")
 
@@ -1149,6 +1448,16 @@ func (s *Server) handleAPIUpdateDeviceConfig(c *gin.Context) {
 	})
 }
 
+// @Summary 重发设备密钥
+// @Description 重新生成隧道加密密钥并通过设备签名通道下发；旧密钥立即失效。
+// @Tags device
+// @Produce json
+// @Param id path string true "设备 ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/devices/{id}/regen-key [put]
 func (s *Server) handleAPIRegenKey(c *gin.Context) {
 	deviceID := c.Param("id")
 
@@ -1182,11 +1491,26 @@ func (s *Server) handleAPIRegenKey(c *gin.Context) {
 	})
 }
 
+// @Summary 读取服务端设置
+// @Description 端口范围、限流、心跳、白名单等运行时设置。
+// @Tags settings
+// @Produce json
+// @Success 200 {object} server.ServerSettings
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/settings [get]
 func (s *Server) handleAPIGetSettings(c *gin.Context) {
 	settings := s.stateStore.GetSettings()
 	c.JSON(http.StatusOK, settings)
 }
 
+// @Summary 更新服务端设置
+// @Description 只更新请求体里出现的字段（未出现的保持原值）；请求体形状与 GET 响应一致。
+// @Tags settings
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /api/settings [put]
 func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 	var req settingsUpdateRequest
 	if !decodeStrictJSON(c, &req) {

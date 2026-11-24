@@ -5,7 +5,10 @@ go 1.26.2
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3
+	// 钉在未打 tag 的修复提交上：v1.5.3 的 mask key 用 math/rand（GO-2026-6278，
+	// govulncheck 可达），修复只存在于这个提交，上游还没发正式 tag。
+	// 不要「顺手升回」v1.5.3：那会让 govulncheck 重新变红。
+	github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/swaggo/files v1.0.1
 	github.com/swaggo/gin-swagger v1.6.1

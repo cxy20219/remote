@@ -19,6 +19,16 @@ func init() {
 	gin.DisableConsoleColor()
 }
 
+// GoRemote 管理 API。
+//
+// swagger 只描述 HTTP 管理接口：/ws 是 agent 的 WebSocket 隧道入口，不走本规范。
+// 文档由 scripts/gen-swagger.sh 从 internal/server 的 handler 注解生成，CI 会校验
+// 「重新生成后工作区无改动」，所以改路由或字段必须同步改注解。
+//
+// @title GoRemote 管理 API
+// @version 2.8.0
+// @description 面板使用的 HTTP 管理接口。除 /health、/api/setup/*、/api/login* 外都需要管理员会话 Cookie。
+// @BasePath /
 func main() {
 	config := server.ParseConfig()
 
