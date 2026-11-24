@@ -43,28 +43,31 @@ func TestSetPortRange_UpdatesPortStatus(t *testing.T) {
 }
 
 func TestSetPortRange_PortAllocationInNewRange(t *testing.T) {
-	tm := NewTunnelManager(nil, 100, 200)
+	// 端口段必须整体 >= 1024：CI 的 runner 是普通用户，绑定特权端口会失败。
+	// 分配器会跳过 bind 失败的端口，所以段里有几个特权端口不至于挂，但整段
+	// 都在 1024 以下时一次分配都拿不到（本地 macOS 能绑，CI 才暴露）。
+	tm := NewTunnelManager(nil, 11000, 11100)
 
 	p1, ln1, err := tm.AllocatePortForExposure(TunnelExposurePublic)
 	if err != nil {
 		t.Fatalf("first allocate: %v", err)
 	}
-	if p1 < 100 || p1 > 200 {
-		t.Fatalf("port %d outside initial range", p1)
+	if p1 < 11000 || p1 > 11100 {
+		t.Fatalf("port %d outside initial range 11000-11100", p1)
 	}
 	if ln1 != nil {
 		ln1.Close()
 	}
 	tm.ReleasePort(p1)
 
-	tm.SetPortRange(5000, 6000)
+	tm.SetPortRange(12000, 12100)
 
 	p2, ln2, err := tm.AllocatePortForExposure(TunnelExposurePublic)
 	if err != nil {
 		t.Fatalf("allocate after range change: %v", err)
 	}
-	if p2 < 5000 || p2 > 6000 {
-		t.Fatalf("port %d outside new range 5000-6000", p2)
+	if p2 < 12000 || p2 > 12100 {
+		t.Fatalf("port %d outside new range 12000-12100", p2)
 	}
 	if ln2 != nil {
 		ln2.Close()
@@ -72,7 +75,9 @@ func TestSetPortRange_PortAllocationInNewRange(t *testing.T) {
 }
 
 func TestSetPortRange_TracksAllocatedCount(t *testing.T) {
-	tm := NewTunnelManager(nil, 1000, 2000)
+	// 同上：段起点也要 >= 1024。1000-2000 会让分配器先去 bind 1000-1023，
+	// 在 Linux 上逐个失败后跳过——测试仍绿，但每次 CI 都刷一屏 WARN。
+	tm := NewTunnelManager(nil, 21000, 21100)
 
 	p1, ln1, _ := tm.AllocatePortForExposure(TunnelExposurePublic)
 	p2, ln2, _ := tm.AllocatePortForExposure(TunnelExposurePublic)
