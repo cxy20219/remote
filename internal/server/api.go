@@ -472,9 +472,13 @@ func (s *Server) handleAPIListClientTunnels(c *gin.Context) {
 
 	clientID := c.Param("client_id")
 	tunnels := s.tunnelManager.ListTunnelsByClient(clientID)
+	views := make([]TunnelView, len(tunnels))
+	for i := range tunnels {
+		views[i] = newTunnelView(tunnels[i])
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"tunnels": tunnels,
-		"total":   len(tunnels),
+		"tunnels": views,
+		"total":   len(views),
 	})
 }
 
@@ -609,9 +613,13 @@ func (s *Server) handleAPIListTunnels(c *gin.Context) {
 	}
 
 	tunnels := s.tunnelManager.ListTunnels()
+	views := make([]TunnelView, len(tunnels))
+	for i := range tunnels {
+		views[i] = newTunnelView(tunnels[i])
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"tunnels": tunnels,
-		"total":   len(tunnels),
+		"tunnels": views,
+		"total":   len(views),
 	})
 }
 
@@ -627,7 +635,7 @@ func (s *Server) handleAPIGetTunnel(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, tunnel)
+	c.JSON(http.StatusOK, newTunnelView(tunnel))
 }
 
 func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {

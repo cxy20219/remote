@@ -35,7 +35,11 @@ const (
 
 	externalConnQueueSize  = 32
 	externalQueueWaitLimit = 15 * time.Second
-	externalWriteTimeout   = 30 * time.Second
+
+	// tunnelRateSampleInterval 是速率采样周期。API 的 rx_rate/tx_rate 是最近
+	// 一个周期内的字节数，与 B/s 数值等价。
+	tunnelRateSampleInterval = time.Second
+	externalWriteTimeout     = 30 * time.Second
 
 	// 公网侧并发连接硬上限：超限直接关闭新连接，不排队——扫描器不该拿到
 	// 「等一会儿就能连上」的保证，也不该让每个试探连接都占住一份读缓冲。
@@ -106,6 +110,85 @@ type Tunnel struct {
 	applying bool
 	retrying bool
 	applySeq uint64
+
+	// stats 是运行时统计（不落盘、不进 state schema）：累计字节与每秒速率。
+	// 存指针是为了让 Tunnel 仍可按值快照；数据面只碰 atomic，不取 tm.mu。
+	stats *tunnelStats
+}
+
+// tunnelStats 是隧道的运行时统计。rx = 外部连接 -> 目标，tx = 目标 -> 外部。
+// 字节数由数据面 atomic 累加；lastRX/lastTX 只由速率采样协程读写。
+type tunnelStats struct {
+	rxBytes atomic.Uint64
+	txBytes atomic.Uint64
+	rxRate  atomic.Uint64
+	txRate  atomic.Uint64
+
+	lastRX uint64
+	lastTX uint64
+}
+
+func newTunnelStats() *tunnelStats { return &tunnelStats{} }
+
+func (s *tunnelStats) addRX(n uint64) {
+	if s != nil {
+		s.rxBytes.Add(n)
+	}
+}
+
+func (s *tunnelStats) addTX(n uint64) {
+	if s != nil {
+		s.txBytes.Add(n)
+	}
+}
+
+// sample 用累计差算本周期速率；无流量时自然归零。
+func (s *tunnelStats) sample() {
+	if s == nil {
+		return
+	}
+	rx := s.rxBytes.Load()
+	tx := s.txBytes.Load()
+	s.rxRate.Store(rx - s.lastRX)
+	s.txRate.Store(tx - s.lastTX)
+	s.lastRX = rx
+	s.lastTX = tx
+}
+
+func (s *tunnelStats) snapshot() (rxBytes, txBytes, rxRate, txRate uint64) {
+	if s == nil {
+		return 0, 0, 0, 0
+	}
+	return s.rxBytes.Load(), s.txBytes.Load(), s.rxRate.Load(), s.txRate.Load()
+}
+
+// statsSnapshot 返回统计快照；测试里直接构造的 Tunnel 没有 stats，返回 0。
+func (t *Tunnel) statsSnapshot() (rxBytes, txBytes, rxRate, txRate uint64) {
+	if t == nil {
+		return 0, 0, 0, 0
+	}
+	return t.stats.snapshot()
+}
+
+// TunnelView 是隧道的 API 视图：在定义字段上附加运行时统计。Tunnel 里存的是
+// 统计指针，按值复制不会复制 atomic。
+type TunnelView struct {
+	Tunnel
+	RXBytes uint64 `json:"rx_bytes"`
+	TXBytes uint64 `json:"tx_bytes"`
+	RXRate  uint64 `json:"rx_rate"`
+	TXRate  uint64 `json:"tx_rate"`
+}
+
+func newTunnelView(tunnel Tunnel) TunnelView {
+	rxBytes, txBytes, rxRate, txRate := tunnel.statsSnapshot()
+	return TunnelView{
+		Tunnel:  tunnel,
+		RXBytes: rxBytes,
+		TXBytes: txBytes,
+		RXRate:  rxRate,
+		TXRate:  txRate,
+	}
 }
 
 // lessTunnelOrder 定义重放/落盘的稳定顺序：创建时间优先，相同时间用
@@ -147,6 +230,7 @@ func tunnelFromDefinition(def TunnelState) *Tunnel {
 		LocalPort:  def.LocalPort,
 		CreatedAt:  def.CreatedAt,
 		Status:     TunnelStatusWaitingDevice,
+		stats:      newTunnelStats(),
 	}
 }
 
@@ -166,6 +250,8 @@ type ExternalConn struct {
 	queue     chan extChunk
 	done      chan struct{}
 	closeOnce sync.Once
+	// stats 指向所属隧道的运行时统计：写外部连接时累加 tx。
+	stats *tunnelStats
 }
 
 func newExternalConn(connID, tunnelID string, conn net.Conn) *ExternalConn {
@@ -242,6 +328,11 @@ type TunnelManager struct {
 	retryDelays   []time.Duration
 	retryWindow   time.Duration
 	retryExitHook func(tunnelID, reason string) // 只给测试用，生产为 nil
+
+	// 速率采样：每秒把累计字节差算成 B/s。Server.Start 启动，CloseAll 停止。
+	rateStopCh chan struct{}
+	rateOnce   sync.Once
+	rateWG     sync.WaitGroup
 }
 
 // NewTunnelManager creates a new TunnelManager
@@ -257,6 +348,7 @@ func NewTunnelManager(server *Server, portStart, portEnd int) *TunnelManager {
 		server:           server,
 		retryDelays:      append([]time.Duration(nil), defaultPortConflictRetryDelays...),
 		retryWindow:      defaultPortConflictRetryWindow,
+		rateStopCh:       make(chan struct{}),
 	}
 	tm.rebuildTunnelOwnerLocked()
 	return tm
@@ -380,6 +472,7 @@ func (tm *TunnelManager) CreateTunnel(tunnelID, clientID string, client *Client,
 		LocalPort:  localPort,
 		CreatedAt:  time.Now(),
 		Status:     TunnelStatusWaitingDevice,
+		stats:      newTunnelStats(),
 	}
 	if publicPort < tm.portStart || publicPort > tm.portEnd {
 		tunnel.Status = TunnelStatusOutOfRange
@@ -593,6 +686,9 @@ func (tm *TunnelManager) RemoveClientTunnels(clientID string) error {
 }
 
 func (tm *TunnelManager) CloseAll() {
+	// 先停采样协程再取 tm.mu：采样协程会拿 tm.mu.RLock，反过来等它会死锁。
+	tm.StopRateTracker()
+
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.closed = true
@@ -619,6 +715,57 @@ func (tm *TunnelManager) CloseAll() {
 	tm.rebuildTunnelOwnerLocked()
 
 	slog.Info("all tunnels closed")
+}
+
+// StartRateTracker 启动每秒一次的速率采样。幂等；Server.Start 调用。
+func (tm *TunnelManager) StartRateTracker() {
+	if tm.rateStopCh == nil {
+		return
+	}
+	tm.rateOnce.Do(func() {
+		tm.rateWG.Add(1)
+		go func() {
+			defer tm.rateWG.Done()
+			ticker := time.NewTicker(tunnelRateSampleInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					tm.sampleRates()
+				case <-tm.rateStopCh:
+					return
+				}
+			}
+		}()
+	})
+}
+
+// StopRateTracker 停止采样并等待协程退出。幂等。
+func (tm *TunnelManager) StopRateTracker() {
+	if tm.rateStopCh == nil {
+		return
+	}
+	select {
+	case <-tm.rateStopCh:
+	default:
+		close(tm.rateStopCh)
+	}
+	tm.rateWG.Wait()
+}
+
+// sampleRates 算一个采样周期的速率。取隧道列表只持 tm.mu 一小会儿；统计
+// 更新全走 atomic，不与数据面或 fsync 抢锁。
+func (tm *TunnelManager) sampleRates() {
+	tm.mu.RLock()
+	tunnels := make([]*Tunnel, 0, len(tm.tunnels))
+	for _, tunnel := range tm.tunnels {
+		tunnels = append(tunnels, tunnel)
+	}
+	tm.mu.RUnlock()
+
+	for _, tunnel := range tunnels {
+		tunnel.stats.sample()
+	}
 }
 
 // UpdateTunnel 修改定义并同步落盘；落盘成功后，若设备在线则重绑并重放
@@ -769,7 +916,8 @@ func (tm *TunnelManager) closeTunnelConnectionsLocked(tunnelID string) {
 func (tm *TunnelManager) AddExternalConn(connID, tunnelID string, conn net.Conn) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	if _, ok := tm.tunnels[tunnelID]; !ok {
+	tunnel, ok := tm.tunnels[tunnelID]
+	if !ok {
 		return fmt.Errorf("tunnel not found: %s", tunnelID)
 	}
 
@@ -791,6 +939,7 @@ func (tm *TunnelManager) AddExternalConn(connID, tunnelID string, conn net.Conn)
 		return fmt.Errorf("%w: %d active", errExternalConnGlobalLimit, len(tm.extConns))
 	}
 	ec := newExternalConn(connID, tunnelID, conn)
+	ec.stats = tunnel.stats
 	tm.extConns[connID] = ec
 	tm.extMu.Unlock()
 
@@ -881,6 +1030,7 @@ func (tm *TunnelManager) runExternalWriter(connID string, ec *ExternalConn) {
 					tm.sendTunnelEOFToTunnel(ec.TunnelID, connID)
 					return
 				}
+				ec.stats.addTX(uint64(len(chunk.data)))
 			}
 			if chunk.eof {
 				ec.stop()
@@ -977,6 +1127,7 @@ func (tm *TunnelManager) handleExternalConn(connID string, tunnel *Tunnel, clien
 		extConn.SetReadDeadline(time.Now().Add(idleTimeout))
 		n, err := extConn.Read(buf)
 		if n > 0 {
+			tunnel.stats.addRX(uint64(n))
 			frame, frameErr := tm.server.encodeTunnelFrame(client, tunnelID, connID, buf[:n], false)
 			if frameErr != nil {
 				slog.Error("failed to encode tunnel data frame", "conn_id", connID, "error", frameErr)

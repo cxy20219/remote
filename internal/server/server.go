@@ -341,6 +341,9 @@ func (s *Server) Start() error {
 	}
 
 	s.stateStore.StartSyncLoop()
+	if s.tunnelManager != nil {
+		s.tunnelManager.StartRateTracker()
+	}
 
 	// 待审批记录不会自行过期，启动时先清一遍超过 TTL 的申请：否则一次
 	// 占用会一直挡住 256 条的准入表，直到管理员手工逐条拒绝。
