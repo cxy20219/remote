@@ -115,6 +115,9 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 				"client_id", payload.ClientID,
 				"skew_seconds", seconds,
 				"proto", client.Proto())
+			auditAgent(payload.ClientID, client.RemoteIP, auditEventDeviceReauthReject,
+				"device:"+payload.ClientID, "reauth", "denied", "clock_skew",
+				slog.Int64("skew_seconds", seconds), slog.Int("proto", client.Proto()))
 			if client.Proto() >= 2 {
 				return h.sendRegisterFail(client, fmt.Sprintf("%s%+ds", common.ClockSkewReasonPrefix, seconds))
 			}
@@ -127,22 +130,31 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 		if errors.Is(err, errDeviceDHKeyMismatch) {
 			slog.Warn("reauth rejected: device dh pubkey does not match the approved key",
 				"client_id", payload.ClientID)
+			auditAgent(payload.ClientID, client.RemoteIP, auditEventDeviceReauthReject,
+				"device:"+payload.ClientID, "reauth", "denied", "dh_mismatch")
 			return h.sendRegisterFail(client, registerFailDHKeyMismatch)
 		}
 		if errors.Is(err, errDeviceDHKeyCorrupt) {
 			slog.Error("reauth rejected: stored device dh pubkey is corrupt",
 				"client_id", payload.ClientID)
+			auditAgent(payload.ClientID, client.RemoteIP, auditEventDeviceReauthReject,
+				"device:"+payload.ClientID, "reauth", "denied", "dh_corrupt")
 			return h.sendRegisterFail(client, registerFailDHKeyCorrupt)
 		}
 		slog.Warn("reauth failed, treating as new registration",
 			"client_id", payload.ClientID,
 			"error", err)
+		auditAgent(payload.ClientID, client.RemoteIP, auditEventDeviceReauthReject,
+			"device:"+payload.ClientID, "reauth", "denied", "signature_or_replay",
+			slog.String("error", err.Error()))
 		return h.handleNewRegistration(client, payload)
 	}
 
 	if !ok {
 		slog.Warn("reauth device not authorized, treating as new registration",
 			"client_id", payload.ClientID)
+		auditAgent(payload.ClientID, client.RemoteIP, auditEventDeviceReauthReject,
+			"device:"+payload.ClientID, "reauth", "denied", "not_authorized")
 		return h.handleNewRegistration(client, payload)
 	}
 
@@ -279,6 +291,11 @@ func (s *Server) sendRegisterOK(client *Client, payload common.RegisterOKPayload
 
 func (h *Handler) handlePing(client *Client) error {
 	h.server.clients.TouchIfMatch(client.ClientID, client)
+	// last_seen 就靠心跳推进：设备掉线后它就停在这个时刻，面板据此显示
+	// 「2 分钟前活跃」。这里顺带标脏，同步循环会把最近的心跳时间落盘。
+	if client.ClientID != "" && h.server.stateStore != nil {
+		h.server.stateStore.TouchDeviceSeen(client.ClientID, time.Now())
+	}
 	return client.WriteJSON(common.Message{Type: "pong"})
 }
 

@@ -56,6 +56,11 @@ definitions:
         type: string
       exposure:
         type: string
+      last_disconnect_at:
+        description: |-
+          LastDisconnectAt 来自持久化定义（见 TunnelState），随 TunnelView 直接透出
+          给面板。隧道从没断开过时为空，面板就不显示「上次」。
+        type: string
       last_error:
         type: string
       local_addr:
@@ -103,6 +108,11 @@ definitions:
       created_at:
         type: string
       exposure:
+        type: string
+      last_disconnect_at:
+        description: |-
+          LastDisconnectAt 来自持久化定义（见 TunnelState），随 TunnelView 直接透出
+          给面板。隧道从没断开过时为空，面板就不显示「上次」。
         type: string
       last_error:
         type: string
@@ -1253,8 +1263,7 @@ paths:
         "200":
           description: OK
           schema:
-            additionalProperties:
-              type: string
+            additionalProperties: true
             type: object
       summary: 健康检查
       tags:

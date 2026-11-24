@@ -38,9 +38,11 @@ func (s *Server) handleLogin(c *gin.Context) {
 	if err := s.adminAuth.Login(c.ClientIP(), req.Password); err != nil {
 		if errors.Is(err, ErrAdminLoginLocked) {
 			s.setAuthRetryAfter(c)
+			auditRequest(c, auditEventAdminLoginFailed, "admin", "login", "denied", "locked")
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
 			return
 		}
+		auditRequest(c, auditEventAdminLoginFailed, "admin", "login", "denied", "bad_password")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid password"})
 		return
 	}
@@ -70,7 +72,13 @@ func (s *Server) handleLogin(c *gin.Context) {
 
 	// 未启用 TOTP 时密码就是完整认证，此时才清零失败池。
 	s.adminAuth.ClearFullAuthFailures(c.ClientIP())
-	s.issueAdminSession(c)
+	token := s.issueAdminSession(c)
+	if token == "" {
+		auditRequestSession(c, "", auditEventAdminLogin, "admin", "login", "failed", "session_issue_failed")
+		return
+	}
+	auditRequestSession(c, auditFingerprint(token), auditEventAdminLogin, "admin", "login", "ok", "",
+		slog.String("factors", "password"))
 }
 
 // @Summary 两步验证登录
@@ -99,20 +107,32 @@ func (s *Server) handleLoginTOTP(c *gin.Context) {
 	err := s.adminAuth.VerifyTOTPChallenge(c.ClientIP(), req.Challenge, req.Code)
 	switch {
 	case err == nil:
-		s.issueAdminSession(c)
+		token := s.issueAdminSession(c)
+		if token == "" {
+			auditRequestSession(c, "", auditEventAdminLogin, "admin", "login", "failed", "session_issue_failed")
+			break
+		}
+		auditRequestSession(c, auditFingerprint(token), auditEventAdminLogin, "admin", "login", "ok", "",
+			slog.String("factors", "password+totp"))
 	case errors.Is(err, ErrAdminLoginLocked):
 		s.setAuthRetryAfter(c)
+		auditRequest(c, auditEventAdminLoginFailed, "admin", "login", "denied", "locked")
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
 	case errors.Is(err, ErrTOTPChallengeInvalid):
+		auditRequest(c, auditEventAdminLoginFailed, "admin", "login", "denied", "invalid_challenge")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired challenge"})
 	case errors.Is(err, ErrTOTPInvalidCode):
+		auditRequest(c, auditEventAdminLoginFailed, "admin", "login", "denied", "bad_totp")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid totp code"})
 	case errors.Is(err, ErrTOTPCorrupt):
+		auditRequest(c, auditEventAdminLoginFailed, "admin", "login", "denied", "totp_corrupt")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "two-factor authentication is misconfigured; check server logs"})
 	case errors.Is(err, ErrTOTPNotConfigured):
+		auditRequest(c, auditEventAdminLoginFailed, "admin", "login", "denied", "totp_not_enabled")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "totp is not enabled"})
 	default:
 		slog.Error("totp verification failed", "error", err)
+		auditRequest(c, auditEventAdminLoginFailed, "admin", "login", "failed", "internal_error")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify two-factor authentication"})
 	}
 }
@@ -124,14 +144,17 @@ func (s *Server) setAuthRetryAfter(c *gin.Context) {
 	}
 }
 
-func (s *Server) issueAdminSession(c *gin.Context) {
+// issueAdminSession 下发会话 Cookie，并返回 token 供调用方写审计指纹
+// （gin 的 SetCookie 只写响应头，审计读不到刚下发的 Cookie）。
+func (s *Server) issueAdminSession(c *gin.Context) string {
 	token, err := s.adminAuth.GenerateToken()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
-		return
+		return ""
 	}
 	s.setAdminCookie(c, token, int(adminSessionTTL.Seconds()))
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	return token
 }
 
 // @Summary 查询两步验证状态
@@ -231,6 +254,8 @@ func (s *Server) handleAPITOTPEnable(c *gin.Context) {
 	codes, err := s.adminAuth.EnableTOTP(session, req.Code)
 	switch {
 	case err == nil:
+		auditRequest(c, auditEventAdminTOTPEnable, "admin", "enable_totp", "ok", "",
+			slog.Int("recovery_codes", len(codes)))
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "recovery_codes": codes})
 	case errors.Is(err, ErrTOTPInvalidCode):
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid totp code"})
@@ -239,9 +264,11 @@ func (s *Server) handleAPITOTPEnable(c *gin.Context) {
 	case errors.Is(err, ErrTOTPAlreadyEnabled):
 		c.JSON(http.StatusConflict, gin.H{"error": "totp is already enabled"})
 	case errors.Is(err, ErrStateEncryptionKeyRequired):
+		auditRequest(c, auditEventAdminTOTPEnable, "admin", "enable_totp", "denied", "state_encryption_required")
 		c.JSON(http.StatusConflict, gin.H{"error": "state encryption is required to enable TOTP; set GOREMOTE_STATE_KEY or --state-key first"})
 	default:
 		slog.Error("failed to enable totp", "error", err)
+		auditRequest(c, auditEventAdminTOTPEnable, "admin", "enable_totp", "failed", "invalid_state")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enable two-factor authentication"})
 	}
 }
@@ -272,6 +299,7 @@ func (s *Server) handleAPITOTPRecover(c *gin.Context) {
 	err := s.adminAuth.RecoverTOTP(c.ClientIP(), session, req.Password, req.RecoveryCode)
 	switch {
 	case err == nil:
+		auditRequest(c, auditEventAdminTOTPRecover, "admin", "recover_totp", "ok", "")
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	case errors.Is(err, ErrAdminLoginLocked):
 		s.setAuthRetryAfter(c)
@@ -284,6 +312,7 @@ func (s *Server) handleAPITOTPRecover(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "totp is not enabled"})
 	default:
 		slog.Error("failed to recover totp", "error", err)
+		auditRequest(c, auditEventAdminTOTPRecover, "admin", "recover_totp", "failed", "invalid_state")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable two-factor authentication"})
 	}
 }
@@ -314,6 +343,7 @@ func (s *Server) handleAPITOTPDisable(c *gin.Context) {
 	err := s.adminAuth.DisableTOTP(c.ClientIP(), session, req.Password, req.Code)
 	switch {
 	case err == nil:
+		auditRequest(c, auditEventAdminTOTPDisable, "admin", "disable_totp", "ok", "")
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	case errors.Is(err, ErrAdminLoginLocked):
 		s.setAuthRetryAfter(c)
@@ -328,6 +358,7 @@ func (s *Server) handleAPITOTPDisable(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "totp is not enabled"})
 	default:
 		slog.Error("failed to disable totp", "error", err)
+		auditRequest(c, auditEventAdminTOTPDisable, "admin", "disable_totp", "failed", "invalid_state")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable two-factor authentication"})
 	}
 }
@@ -350,21 +381,27 @@ func (s *Server) handleAPIChangeAdminPassword(c *gin.Context) {
 	}
 
 	if err := s.adminAuth.ChangePassword(c.ClientIP(), req.CurrentPassword, req.NewPassword); err != nil {
+		reason := "internal_error"
 		switch {
 		case errors.Is(err, ErrAdminInvalidPassword):
+			reason = "bad_password"
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "current password is invalid"})
 		case errors.Is(err, ErrAdminLoginLocked):
+			reason = "locked"
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "admin login temporarily locked"})
 		case errors.Is(err, ErrAdminWeakPassword):
+			reason = "weak_password"
 			c.JSON(http.StatusBadRequest, gin.H{"error": "new password must be at least 12 characters and use at least 3 character types"})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to change password"})
 		}
+		auditRequest(c, auditEventAdminPasswordChange, "admin", "change_password", "failed", reason)
 		return
 	}
 
 	s.setAdminCookie(c, "", -1)
 	s.setupMgr.EndWizard()
+	auditRequest(c, auditEventAdminPasswordChange, "admin", "change_password", "ok", "")
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -634,6 +671,8 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 
 	client, ok := s.clients.Get(req.ClientID)
 	if !ok {
+		auditRequest(c, auditEventTunnelCreate, "tunnel:-", "create", "denied", "device_offline",
+			slog.String("client_id", req.ClientID))
 		c.JSON(http.StatusNotFound, gin.H{"error": "client not found or offline"})
 		return
 	}
@@ -648,6 +687,8 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	// 之后由 applyTunnel 做（定义是真相，绑定是投影）。
 	publicPort, ln, err := s.tunnelManager.AllocatePortForExposure(exposure)
 	if err != nil {
+		auditRequest(c, auditEventTunnelCreate, "tunnel:-", "create", "failed", "no_available_port",
+			slog.String("client_id", req.ClientID), slog.String("exposure", exposure))
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available ports"})
 		return
 	}
@@ -690,6 +731,12 @@ func (s *Server) handleAPICreateTunnel(c *gin.Context) {
 	if tunnel.LastError != "" {
 		response["last_error"] = tunnel.LastError
 	}
+	auditRequest(c, auditEventTunnelCreate, "tunnel:"+tunnelID, "create", "ok", "",
+		slog.String("client_id", req.ClientID),
+		slog.Int("public_port", publicPort),
+		slog.String("exposure", exposure),
+		slog.String("protocol", req.Protocol),
+		slog.String("local", net.JoinHostPort(req.LocalAddr, strconv.Itoa(req.LocalPort))))
 	c.JSON(http.StatusOK, response)
 }
 
@@ -784,15 +831,19 @@ func (s *Server) handleAPIDeleteTunnel(c *gin.Context) {
 		return
 	}
 
-	if _, err := s.tunnelManager.DeleteTunnel(c.Param("tunnel_id")); err != nil {
+	tunnelID := c.Param("tunnel_id")
+	if _, err := s.tunnelManager.DeleteTunnel(tunnelID); err != nil {
 		if errors.Is(err, errTunnelNotFound) {
+			auditRequest(c, auditEventTunnelDelete, "tunnel:"+tunnelID, "delete", "failed", "tunnel_not_found")
 			c.JSON(http.StatusNotFound, gin.H{"error": "tunnel not found"})
 			return
 		}
+		auditRequest(c, auditEventTunnelDelete, "tunnel:"+tunnelID, "delete", "failed", "persist_failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
+	auditRequest(c, auditEventTunnelDelete, "tunnel:"+tunnelID, "delete", "ok", "")
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
@@ -839,15 +890,22 @@ func (s *Server) handleAPIUpdateTunnel(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, errTunnelNotFound):
+			auditRequest(c, auditEventTunnelUpdate, "tunnel:"+tunnelID, "update", "failed", "tunnel_not_found")
 			c.JSON(http.StatusNotFound, gin.H{"error": "tunnel not found"})
 		case errors.Is(err, errTunnelPersist):
+			auditRequest(c, auditEventTunnelUpdate, "tunnel:"+tunnelID, "update", "failed", "persist_failed")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		default:
+			auditRequest(c, auditEventTunnelUpdate, "tunnel:"+tunnelID, "update", "failed", "invalid_request")
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
 		return
 	}
 
+	auditRequest(c, auditEventTunnelUpdate, "tunnel:"+tunnelID, "update", "ok", "",
+		slog.String("local", net.JoinHostPort(req.LocalAddr, strconv.Itoa(req.LocalPort))),
+		slog.Int("public_port", tunnel.PublicPort),
+		slog.String("exposure", tunnel.Exposure))
 	c.JSON(http.StatusOK, tunnel)
 }
 
@@ -874,13 +932,17 @@ func (s *Server) handleAPIRetryTunnel(c *gin.Context) {
 		case errors.Is(err, errTunnelNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "tunnel not found"})
 		case errors.Is(err, errTunnelOffline):
+			auditRequest(c, auditEventTunnelRetry, "tunnel:"+c.Param("tunnel_id"), "retry", "denied", "device_offline")
 			c.JSON(http.StatusConflict, gin.H{"error": "device is offline", "code": "DEVICE_OFFLINE"})
 		default:
+			auditRequest(c, auditEventTunnelRetry, "tunnel:"+c.Param("tunnel_id"), "retry", "failed", "apply_failed")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
 		return
 	}
 
+	auditRequest(c, auditEventTunnelRetry, "tunnel:"+tunnel.TunnelID, "retry", "ok", "",
+		slog.String("status", tunnel.Status))
 	c.JSON(http.StatusOK, tunnel)
 }
 
@@ -1029,12 +1091,14 @@ func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 	}
 
 	if req.IP == "" {
+		auditRequest(c, auditEventBlacklistAdd, "blacklist:-", "add", "failed", "missing_ip")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ip is required"})
 		return
 	}
 
 	parsedIP := net.ParseIP(req.IP)
 	if parsedIP == nil {
+		auditRequest(c, auditEventBlacklistAdd, "blacklist:-", "add", "failed", "invalid_ip")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid IP address"})
 		return
 	}
@@ -1067,6 +1131,8 @@ func (s *Server) handleAPIAddBlacklist(c *gin.Context) {
 		return
 	}
 
+	auditRequest(c, auditEventBlacklistAdd, "blacklist:"+req.IP, "add", "ok", "",
+		slog.String("source", blacklistSourceManual), slog.Int("duration_minutes", req.Duration))
 	c.JSON(http.StatusOK, gin.H{
 		"ip":      req.IP,
 		"reason":  reason,
@@ -1097,9 +1163,11 @@ func (s *Server) handleAPIRemoveBlacklist(c *gin.Context) {
 	}
 
 	if err := s.blacklist.Remove(ip); err != nil {
+		auditRequest(c, auditEventBlacklistRemove, "blacklist:"+ip, "remove", "failed", "persist_failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist the blacklist removal; the IP is still blocked"})
 		return
 	}
+	auditRequest(c, auditEventBlacklistRemove, "blacklist:"+ip, "remove", "ok", "")
 	c.JSON(http.StatusOK, gin.H{"message": "IP removed from blacklist"})
 }
 
@@ -1172,33 +1240,53 @@ func (s *Server) handleAPIPortStatus(c *gin.Context) {
 // @Router /api/devices [get]
 func (s *Server) handleAPIListDevices(c *gin.Context) {
 	devices := s.stateStore.GetAllDevices()
+	// 断线留痕字段名是与前端定死的契约：last_seen / disconnects_24h /
+	// last_disconnect_at / last_disconnect_reason。disconnects_24h 每次现算，
+	// 不落盘，避免计数与历史记录对不上。
 	type deviceInfo struct {
-		ID          string     `json:"id"`
-		Name        string     `json:"name"`
-		Hostname    string     `json:"hostname"`
-		OS          string     `json:"os"`
-		Status      string     `json:"status"`
-		EncEnabled  bool       `json:"enc_enabled"`
-		IPWhitelist []string   `json:"ip_whitelist"`
-		FirstSeen   time.Time  `json:"first_seen"`
-		ApprovedAt  *time.Time `json:"approved_at,omitempty"`
-		Online      bool       `json:"online"`
+		ID                   string     `json:"id"`
+		Name                 string     `json:"name"`
+		Hostname             string     `json:"hostname"`
+		OS                   string     `json:"os"`
+		Status               string     `json:"status"`
+		EncEnabled           bool       `json:"enc_enabled"`
+		IPWhitelist          []string   `json:"ip_whitelist"`
+		FirstSeen            time.Time  `json:"first_seen"`
+		ApprovedAt           *time.Time `json:"approved_at,omitempty"`
+		Online               bool       `json:"online"`
+		LastSeen             string     `json:"last_seen,omitempty"`
+		Disconnects24h       int        `json:"disconnects_24h"`
+		LastDisconnectAt     string     `json:"last_disconnect_at,omitempty"`
+		LastDisconnectReason string     `json:"last_disconnect_reason,omitempty"`
 	}
 
+	now := time.Now()
 	result := make([]deviceInfo, 0, len(devices))
 	for _, d := range devices {
 		_, online := s.clients.Get(d.ID)
+		lastSeen := ""
+		if d.LastSeen != nil {
+			lastSeen = d.LastSeen.Format(time.RFC3339)
+		}
+		lastDisconnectAt := ""
+		if d.LastDisconnectAt != nil {
+			lastDisconnectAt = d.LastDisconnectAt.Format(time.RFC3339)
+		}
 		result = append(result, deviceInfo{
-			ID:          d.ID,
-			Name:        d.Name,
-			Hostname:    d.Hostname,
-			OS:          d.OS,
-			Status:      d.Status,
-			EncEnabled:  d.EncEnabled,
-			IPWhitelist: d.IPWhitelist,
-			FirstSeen:   d.FirstSeen,
-			ApprovedAt:  d.ApprovedAt,
-			Online:      online,
+			ID:                   d.ID,
+			Name:                 d.Name,
+			Hostname:             d.Hostname,
+			OS:                   d.OS,
+			Status:               d.Status,
+			EncEnabled:           d.EncEnabled,
+			IPWhitelist:          d.IPWhitelist,
+			FirstSeen:            d.FirstSeen,
+			ApprovedAt:           d.ApprovedAt,
+			Online:               online,
+			LastSeen:             lastSeen,
+			Disconnects24h:       countDisconnectsWithin(d.DisconnectHistory, now, deviceDisconnectWindow),
+			LastDisconnectAt:     lastDisconnectAt,
+			LastDisconnectReason: d.LastDisconnectReason,
 		})
 	}
 
@@ -1215,6 +1303,27 @@ func (s *Server) handleAPIListDevices(c *gin.Context) {
 // @Success 200 {object} map[string]interface{}
 // @Failure 401 {object} map[string]interface{}
 // @Router /api/devices/pending [get]
+// countDisconnectsWithin 数窗口内的断线次数。
+//
+// 排除 server_shutdown：发版重启是我们自己干的，不是故障；把它算进「24 小时
+// 断连次数」会让这个指标每次发版都涨，再也没法用来判断链路稳不稳。历史记录
+// 仍然保留 server_shutdown（面板的「上次断开原因」就靠它区分发版与故障）。
+//
+// 历史只保留最近 deviceDisconnectHistoryLimit 条，所以极端情况下这个数会封顶
+// 在该上限——对判断「是不是在反复掉线」足够，也把状态文件钉在小尺寸。
+func countDisconnectsWithin(history []DeviceDisconnect, now time.Time, window time.Duration) int {
+	count := 0
+	for _, record := range history {
+		if record.Reason == disconnectReasonServerShutdown {
+			continue
+		}
+		if now.Sub(record.At) <= window {
+			count++
+		}
+	}
+	return count
+}
+
 func (s *Server) handleAPIListPendingDevices(c *gin.Context) {
 	pending := s.stateStore.GetDevicesByStatus("pending")
 	type pendingInfo struct {
@@ -1262,6 +1371,7 @@ func (s *Server) handleAPIApproveDevice(c *gin.Context) {
 
 	device, encKeyEncrypted, serverDHPubkey, err := s.deviceMgr.ApproveDevice(deviceID)
 	if err != nil {
+		auditRequest(c, auditEventDeviceApprove, "device:"+deviceID, "approve", "failed", "not_pending")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -1285,6 +1395,8 @@ func (s *Server) handleAPIApproveDevice(c *gin.Context) {
 		}
 	}
 
+	auditRequest(c, auditEventDeviceApprove, "device:"+deviceID, "approve", "ok", "",
+		slog.String("hostname", device.Hostname), slog.String("os", device.OS))
 	c.JSON(http.StatusOK, gin.H{
 		"device_id": deviceID,
 		"status":    "approved",
@@ -1306,10 +1418,12 @@ func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 	device := s.stateStore.GetDeviceByID(deviceID)
 	if device == nil {
+		auditRequest(c, auditEventDeviceDeny, "device:"+deviceID, "deny", "failed", "device_not_found")
 		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 		return
 	}
 	if device.Status != deviceStatusPending {
+		auditRequest(c, auditEventDeviceDeny, "device:"+deviceID, "deny", "failed", "not_pending")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "device is not pending"})
 		return
 	}
@@ -1329,13 +1443,16 @@ func (s *Server) handleAPIDenyDevice(c *gin.Context) {
 	if err := s.deviceMgr.DenyDevice(deviceID); err != nil {
 		// 落盘失败是服务端故障（设备还在、拒绝没生效），不能报 400。
 		if errors.Is(err, errDevicePersist) {
+			auditRequest(c, auditEventDeviceDeny, "device:"+deviceID, "deny", "failed", "persist_failed")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		auditRequest(c, auditEventDeviceDeny, "device:"+deviceID, "deny", "failed", "invalid_state")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	auditRequest(c, auditEventDeviceDeny, "device:"+deviceID, "deny", "ok", "")
 	c.JSON(http.StatusOK, gin.H{
 		"device_id": deviceID,
 		"status":    "denied",
@@ -1356,6 +1473,7 @@ func (s *Server) handleAPIDeleteDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 
 	if s.stateStore.GetDeviceByID(deviceID) == nil {
+		auditRequest(c, auditEventDeviceDelete, "device:"+deviceID, "delete", "failed", "device_not_found")
 		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 		return
 	}
@@ -1380,6 +1498,7 @@ func (s *Server) handleAPIDeleteDevice(c *gin.Context) {
 		s.clients.Remove(deviceID)
 	}
 
+	auditRequest(c, auditEventDeviceDelete, "device:"+deviceID, "delete", "ok", "")
 	c.JSON(http.StatusOK, gin.H{
 		"device_id": deviceID,
 		"status":    "deleted",
@@ -1526,10 +1645,12 @@ func (s *Server) handleAPIUpdateSettings(c *gin.Context) {
 		}
 	})
 	if validationErr != nil {
+		auditRequest(c, auditEventSettingsUpdate, "settings", "update", "failed", "invalid_value")
 		c.JSON(http.StatusBadRequest, gin.H{"error": validationErr.Error()})
 		return
 	}
 
+	auditRequest(c, auditEventSettingsUpdate, "settings", "update", "ok", "")
 	c.JSON(http.StatusOK, s.stateStore.GetSettings())
 }
 

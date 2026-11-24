@@ -295,6 +295,8 @@ func (s *Server) Start() error {
 		return nil
 	}
 	slog.Info("server starting", "addr", s.Addr)
+	auditSystem(auditEventServerStart, "server", "start", "ok", "",
+		slog.String("addr", s.Addr), slog.String("version", common.BuildVersion()))
 
 	// 代理配置必须在启动时校验：解析失败还继续跑，会静默退化成「不信任任何代理」，
 	// 反代部署下所有请求塌成一个 IP——按 IP 的限流、失败池、自动拉黑全部打在代理上，
@@ -438,12 +440,39 @@ func (s *Server) Stop() error {
 		s.lifecycleMu.Lock()
 		s.stopped = true
 		slog.Info("server stopping")
+		auditSystem(auditEventServerStop, "server", "stop", "ok", "",
+			slog.String("version", common.BuildVersion()))
 		close(s.stopCh)
+
+		// 优雅关闭：先给每台在线设备记一条 server_shutdown、给每条隧道记断开时刻，
+		// 再落一次盘，最后才关连接。顺序不能反——CloseAll 会清空内存里的隧道，
+		// 落盘之后就没得记了。重启后的面板靠这条区分「发版断的」与「网络断的」。
+		shutdownAt := time.Now()
+		onlineClients := s.clients.List()
+		for _, client := range onlineClients {
+			client.markDisconnectReason(disconnectReasonServerShutdown)
+			if client.ClientID != "" {
+				if s.stateStore != nil {
+					s.stateStore.RecordDeviceDisconnect(client.ClientID, disconnectReasonServerShutdown, shutdownAt)
+				}
+				// 关闭连接后 readLoop 的 defer 还会跑一次，这里先打标让它跳过，
+				// 否则关机会被记成两条。
+				client.markShutdownRecorded()
+			}
+		}
+		if s.tunnelManager != nil {
+			s.tunnelManager.MarkAllDisconnected(shutdownAt)
+		}
+		if s.stateStore != nil {
+			if err := s.stateStore.Save(); err != nil {
+				slog.Error("failed to persist shutdown disconnect records", "error", err)
+			}
+		}
 
 		if s.tunnelManager != nil {
 			s.tunnelManager.CloseAll()
 		}
-		for _, client := range s.clients.List() {
+		for _, client := range onlineClients {
 			closeClientConn(client)
 		}
 		s.clients.RemoveAll()
@@ -507,6 +536,7 @@ func (s *Server) handleConn(c *gin.Context) {
 	client := &Client{
 		Conn:         conn,
 		RemoteAddr:   remoteAddr,
+		RemoteIP:     c.ClientIP(),
 		protoVersion: protoVersion,
 		aadEnabled:   aadEnabled,
 	}
@@ -629,6 +659,7 @@ func (s *Server) scheduleTunnelRestore(client *Client) {
 }
 
 func (s *Server) readLoop(client *Client) {
+	var readErr error
 	defer func() {
 		if client.ClientID != "" {
 			// 先摘连接再解绑：反过来会给并发的 restore 留一个“设备仍在线”
@@ -638,7 +669,8 @@ func (s *Server) readLoop(client *Client) {
 					// 断开只解绑：定义与端口保留，重连后按原端口恢复。
 					s.tunnelManager.DetachClient(client.ClientID, client)
 				}
-				slog.Info("client disconnected", "client_id", client.ClientID)
+				reason := s.recordDisconnect(client, readErr)
+				slog.Info("client disconnected", "client_id", client.ClientID, "reason", reason)
 			} else {
 				slog.Debug("stale client connection closed", "client_id", client.ClientID)
 			}
@@ -650,6 +682,7 @@ func (s *Server) readLoop(client *Client) {
 		client.Conn.SetReadDeadline(time.Now().Add(s.connectionReadTimeout()))
 		msg, err := readWSMessage(client.Conn)
 		if err != nil {
+			readErr = err
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				slog.Warn("connection error", "client_id", client.ClientID, "error", err)
 			}
@@ -711,10 +744,47 @@ func readWSMessage(conn *websocket.Conn) (*common.Message, error) {
 // @Description 进程存活即返回 200 与 {"status":"ok"}；不反映状态落盘或隧道健康状况。
 // @Tags health
 // @Produce json
-// @Success 200 {object} map[string]string
+// @Success 200 {object} map[string]interface{}
 // @Router /health [get]
+// handleHealth 返回真实摘要，而不是常量 200。
+//
+// 永远回 200：外部探测把非 2xx 当「实例挂了」，而 degraded 的实例仍然在服务
+// （比如某条隧道端口被占，其余隧道照常转发）。异常用 status 字段表达。
+//
+// degraded 的三个条件（任一命中）：
+//   - 落盘不健康：最近一次写盘失败还没被覆盖，或有未落盘的改动超过 30 秒；
+//   - 有「定义在但没绑上」的隧道（apply_failed / port_conflict / out_of_range）；
+//   - 配了设备但一台都不在线。
 func (s *Server) handleHealth(c *gin.Context) {
-	c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	lastPersistOK, persistHealthy := s.stateStore.PersistStatus()
+
+	counts := TunnelCounts{}
+	if s.tunnelManager != nil {
+		counts = s.tunnelManager.CountByStatus()
+	}
+	onlineDevices := len(s.clients.List())
+	// 只数「已授权」的设备，且不克隆全量快照：待审批设备还没接入，不该让一个
+	// 只有待审批设备的新实例显示 degraded；/health 又会被外部高频轮询。
+	authorizedDevices := s.stateStore.CountDevicesByStatus(deviceStatusAuthorized)
+
+	degraded := !persistHealthy || counts.Failed > 0 || (authorizedDevices > 0 && onlineDevices == 0)
+	status := "ok"
+	if degraded {
+		status = "degraded"
+	}
+
+	lastPersist := ""
+	if !lastPersistOK.IsZero() {
+		lastPersist = lastPersistOK.Format(time.RFC3339)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":                 status,
+		"last_persist_ok":        lastPersist,
+		"active_tunnels":         counts.Active,
+		"waiting_device_tunnels": counts.WaitingDevice,
+		"apply_failed_tunnels":   counts.Failed,
+		"online_devices":         onlineDevices,
+	})
 }
 
 func (s *Server) startHeartbeatChecker() {
@@ -759,6 +829,35 @@ func (s *Server) connectionReadTimeout() time.Duration {
 	return timeout
 }
 
+// recordDisconnect 记录一次设备断开并返回记下的原因。
+//
+// Stop 已经替这条连接记过 server_shutdown 时不再写第二条：关闭连接后读循环的
+// defer 仍会跑到这里，而 RemoveIfMatch 在 RemoveAll 之前可能还是成功的——不跳过
+// 的话每次发版断连次数都会翻倍。
+func (s *Server) recordDisconnect(client *Client, readErr error) string {
+	reason := client.disconnectReasonValue()
+	if reason == "" {
+		reason = classifyDisconnectError(readErr)
+	}
+	if client.shutdownAlreadyRecorded() {
+		return reason
+	}
+	if s.stateStore != nil {
+		s.stateStore.RecordDeviceDisconnect(client.ClientID, reason, time.Now())
+	}
+	return reason
+}
+
+// classifyDisconnectError 把读循环的退出错误映射成面板契约里的原因值。
+// 服务端主动关闭的两种情况（心跳超时 / 服务端关闭）由关闭方直接标注，不走这里。
+func classifyDisconnectError(err error) string {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return disconnectReasonReadTimeout
+	}
+	return disconnectReasonUnknown
+}
+
 func (s *Server) checkClientsTimeout(timeout time.Duration) {
 	now := time.Now()
 	s.clients.mu.Lock()
@@ -774,6 +873,7 @@ func (s *Server) checkClientsTimeout(timeout time.Duration) {
 	// 心跳 Touch 和其他连接操作。
 	for _, client := range toClose {
 		slog.Warn("client heartbeat timeout", "client_id", client.ClientID)
+		client.markDisconnectReason(disconnectReasonHeartbeatTimeout)
 		client.Conn.Close()
 	}
 }

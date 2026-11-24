@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -27,6 +28,34 @@ const stateSyncInterval = 3 * time.Second
 // 0 表示「未版本化的历史格式」，不是第 0 版格式：本轮之前写出的文件都没有
 // schema_version 字段。把它与 1 分开，将来才能区分「v1 有 bug」和「没有标记」。
 const stateSchemaVersion = 1
+
+// 断线留痕：每设备只保留最近 deviceDisconnectHistoryLimit 条记录，面板的
+// disconnects_24h 由这些记录现算，不另存计数（避免计数与记录对不上）。
+const (
+	deviceDisconnectHistoryLimit = 50
+	deviceDisconnectWindow       = 24 * time.Hour
+)
+
+// lastSeenPersistInterval 是 last_seen 落盘的最粗粒度。心跳本身只有 30 秒一次，
+// 但设备多起来后「每次心跳都标脏」会把全量写盘推到 3 秒一次的频率（同步循环的
+// 上限）。内存里始终是最新值，落盘最多丢 1 分钟精度，够面板显示。
+const lastSeenPersistInterval = time.Minute
+
+// persistStaleThreshold 是「有未落盘的改动、但超过这么久还没写成功」的判定线，
+// /health 据此把状态标成 degraded。
+const persistStaleThreshold = 30 * time.Second
+
+// 断线原因。取值是面板契约，不要改：server_shutdown 让「发版重启」与真正的
+// 网络故障（read_timeout / heartbeat_timeout）在面板上可区分。
+//
+// 没有 write_error：服务端写失败最终都表现为读循环超时退出，硬造一个永远不会
+// 出现的取值只会让契约说谎。
+const (
+	disconnectReasonReadTimeout      = "read_timeout"
+	disconnectReasonHeartbeatTimeout = "heartbeat_timeout"
+	disconnectReasonServerShutdown   = "server_shutdown"
+	disconnectReasonUnknown          = "unknown"
+)
 
 // ErrStateTooNew 表示状态文件的 schema 比当前二进制新。必须在解密、迁移、
 // 写盘之前就拒绝：老二进制读到新文件时，不认识的字段在反序列化阶段就已经丢了，
@@ -65,6 +94,20 @@ type DeviceState struct {
 	IPWhitelist      []string   `json:"ip_whitelist"`
 	FirstSeen        time.Time  `json:"first_seen"`
 	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
+
+	// 断线留痕。LastSeen 在心跳时更新（掉线后就停在这一刻），DisconnectHistory
+	// 只保留最近 deviceDisconnectHistoryLimit 条，Disconnects24h 不落盘、由 API
+	// 现算。这几项加进来时零值可用，所以不升 schema 版本。
+	LastSeen             *time.Time         `json:"last_seen,omitempty"`
+	LastDisconnectAt     *time.Time         `json:"last_disconnect_at,omitempty"`
+	LastDisconnectReason string             `json:"last_disconnect_reason,omitempty"`
+	DisconnectHistory    []DeviceDisconnect `json:"disconnect_history,omitempty"`
+}
+
+// DeviceDisconnect 是一次断线留痕。
+type DeviceDisconnect struct {
+	At     time.Time `json:"at"`
+	Reason string    `json:"reason"`
 }
 
 // TunnelState 是隧道的持久化定义。只含定义字段：运行时绑定（Client、
@@ -78,6 +121,11 @@ type TunnelState struct {
 	PublicPort int       `json:"public_port"`
 	Exposure   string    `json:"exposure"`
 	CreatedAt  time.Time `json:"created_at"`
+
+	// LastDisconnectAt 是这条隧道最近一次断开（设备掉线或服务端关闭）的时刻。
+	// 它落盘：重启后面板仍能看到「上次断开是什么时候」，否则每次发版都会把它
+	// 清空，正好丢掉我们想观察的那次断线。
+	LastDisconnectAt *time.Time `json:"last_disconnect_at,omitempty"`
 }
 
 type ServerState struct {
@@ -193,6 +241,17 @@ func cloneDevice(device DeviceState) DeviceState {
 		approvedAt := *device.ApprovedAt
 		cloned.ApprovedAt = &approvedAt
 	}
+	if device.LastSeen != nil {
+		lastSeen := *device.LastSeen
+		cloned.LastSeen = &lastSeen
+	}
+	if device.LastDisconnectAt != nil {
+		lastDisconnectAt := *device.LastDisconnectAt
+		cloned.LastDisconnectAt = &lastDisconnectAt
+	}
+	if device.DisconnectHistory != nil {
+		cloned.DisconnectHistory = append([]DeviceDisconnect(nil), device.DisconnectHistory...)
+	}
 	return cloned
 }
 
@@ -236,6 +295,17 @@ type StateStore struct {
 	kdfLegacy       bool
 	envelope        *stateEnvelope
 	pendingEnvelope *stateEnvelope
+
+	// 落盘健康度（/health 用）。lastPersistOK 是最近一次成功写盘的时刻，
+	// 或者启动时成功读到文件的时刻（此后还没写过盘时，这就是磁盘上的真相）；
+	// lastPersistFail 是最近一次写盘失败的时刻；dirtySince 是第一次出现未落盘
+	// 改动的时刻，由同步循环维护。
+	lastPersistOK   atomic.Int64
+	lastPersistFail atomic.Int64
+	dirtySince      atomic.Int64
+	// lastSeenPersist 是最近一次因 last_seen 标脏的时刻，用来把「每心跳一次写盘」
+	// 压到最粗 1 分钟一次。
+	lastSeenPersist atomic.Int64
 
 	dirty bool
 	// devicesVersion 在设备记录发生任何变化（增/删/改/回滚）时递增。
@@ -375,6 +445,11 @@ func (s *StateStore) Load() error {
 	if migrated {
 		slog.Info("state schema migrated", "path", s.path, "from", loadedSchemaVersion, "to", state.SchemaVersion)
 	}
+	// 读到文件、解密、迁移都成功 = 磁盘状态可用。此后还没写过盘时，这就是
+	// /health 里 last_persist_ok 的基线（否则空闲实例会一直显示「从未落盘」）。
+	if s.lastPersistOK.Load() == 0 {
+		s.lastPersistOK.Store(time.Now().UnixNano())
+	}
 	slog.Info("server state loaded", "path", s.path, "devices", len(state.Devices))
 	return nil
 }
@@ -451,6 +526,84 @@ func (s *StateStore) SetInitialAdminPassword(password string) (bool, error) {
 }
 
 // Save writes the current state synchronously.
+// PersistStatus 返回最近一次成功落盘的时间，以及落盘是否健康。
+//
+// 不健康有两种：最近一次写盘失败还没被后续成功写盘覆盖；或者有未落盘的改动
+// 且已经超过 persistStaleThreshold（同步循环每 3 秒跑一次，所以这个窗口足够
+// 区分「刚好在写」和「写不动了」）。
+func (s *StateStore) PersistStatus() (lastOK time.Time, healthy bool) {
+	okAt := s.lastPersistOK.Load()
+	if okAt > 0 {
+		lastOK = time.Unix(0, okAt)
+	}
+	if failAt := s.lastPersistFail.Load(); failAt > okAt {
+		return lastOK, false
+	}
+	if since := s.dirtySince.Load(); since != 0 && time.Since(time.Unix(0, since)) > persistStaleThreshold {
+		return lastOK, false
+	}
+	return lastOK, true
+}
+
+// RecordDeviceDisconnect 记一条断线留痕：更新 last_seen、上次断开时间与原因，
+// 追加进最近 deviceDisconnectHistoryLimit 条历史，并标脏等同步循环落盘。
+//
+// 调用方在设备已经离线之后调用，所以这里只改 state，不做任何网络操作。
+func (s *StateStore) RecordDeviceDisconnect(deviceID, reason string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	index, ok := s.deviceIndex[deviceID]
+	if !ok {
+		return
+	}
+	device := &s.state.Devices[index]
+	seen := at
+	device.LastSeen = &seen
+	disconnectedAt := at
+	device.LastDisconnectAt = &disconnectedAt
+	device.LastDisconnectReason = reason
+
+	device.DisconnectHistory = append(device.DisconnectHistory, DeviceDisconnect{At: at, Reason: reason})
+	if len(device.DisconnectHistory) > deviceDisconnectHistoryLimit {
+		device.DisconnectHistory = append([]DeviceDisconnect(nil),
+			device.DisconnectHistory[len(device.DisconnectHistory)-deviceDisconnectHistoryLimit:]...)
+	}
+	s.dirty = true
+}
+
+// TouchDeviceSeen 更新设备的 last_seen。内存里每次都更新，但只有距上次标脏超过
+// lastSeenPersistInterval 时才标脏——否则每台设备每 30 秒的心跳都会触发一次全量
+// 落盘，设备一多就把同步循环顶到 3 秒一次的上限。丢电最坏丢 1 分钟精度。
+func (s *StateStore) TouchDeviceSeen(deviceID string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	index, ok := s.deviceIndex[deviceID]
+	if !ok {
+		return
+	}
+	seen := at
+	s.state.Devices[index].LastSeen = &seen
+
+	if at.Sub(time.Unix(0, s.lastSeenPersist.Load())) < lastSeenPersistInterval {
+		return
+	}
+	s.lastSeenPersist.Store(at.UnixNano())
+	s.dirty = true
+}
+
+// SetTunnelDefinitions 只更新内存里的定义并标脏，不做同步落盘。断线路径用它：
+// 正在持着 tm.mu 时不能做全量 fsync，否则网络抖一下就会卡住所有隧道操作；
+// 落盘交给下一次同步循环，和同一轮的设备断线记录一起写。
+func (s *StateStore) SetTunnelDefinitions(tunnels []TunnelState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.state.Tunnels = append([]TunnelState(nil), tunnels...)
+	s.dirty = true
+}
+
 func (s *StateStore) Save() error {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
@@ -459,13 +612,13 @@ func (s *StateStore) Save() error {
 	snapshot := cloneServerState(s.state)
 	s.dirty = false
 	s.mu.Unlock()
-
 	if err := s.writeState(snapshot); err != nil {
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()
 		return err
 	}
+	s.dirtySince.Store(0)
 	return nil
 }
 
@@ -480,7 +633,14 @@ var syncDir = func(f *os.File) error { return f.Sync() }
 // 只记 WARN，不回滚内存、也不返回错误——否则会出现“接口报 500、磁盘却是
 // 新内容，重启后改动又生效”的自相矛盾。返回错误只可能是 rename 之前失败
 // （写 tmp / chmod / file.Sync / rename 本身），那时磁盘仍是旧内容。
-func (s *StateStore) writeState(state ServerState) error {
+func (s *StateStore) writeState(state ServerState) (err error) {
+	// 落盘健康度给 /health 用：任何一次失败都记下来，直到下一次成功写盘覆盖。
+	defer func() {
+		if err != nil {
+			s.lastPersistFail.Store(time.Now().UnixNano())
+		}
+	}()
+
 	if s.path == "" {
 		return nil
 	}
@@ -535,6 +695,9 @@ func (s *StateStore) writeState(state ServerState) error {
 		os.Remove(tmp)
 		return err
 	}
+	// rename 生效就是磁盘上的新内容：这里记成功。后面的目录 fsync 只影响
+	// 掉电语义，失败只记 WARN，不算落盘失败。
+	s.lastPersistOK.Store(time.Now().UnixNano())
 	// rename 已经生效：磁盘上就是新信封。现在才提交迁移目标，后续 Save
 	// 复用同一 salt/params（换 salt = 换密钥）。
 	if s.pendingEnvelope != nil {
@@ -593,8 +756,12 @@ func (s *StateStore) flushDirty() error {
 
 	s.mu.Lock()
 	if !s.dirty {
+		s.dirtySince.Store(0)
 		s.mu.Unlock()
 		return nil
+	}
+	if s.dirtySince.Load() == 0 {
+		s.dirtySince.Store(time.Now().UnixNano())
 	}
 	s.dirty = false
 	snapshot := cloneServerState(s.state)
@@ -606,6 +773,7 @@ func (s *StateStore) flushDirty() error {
 		s.mu.Unlock()
 		return err
 	}
+	s.dirtySince.Store(0)
 	return nil
 }
 

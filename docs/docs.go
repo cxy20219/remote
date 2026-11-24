@@ -1649,9 +1649,7 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -1744,6 +1742,10 @@ const docTemplate = `{
                 "exposure": {
                     "type": "string"
                 },
+                "last_disconnect_at": {
+                    "description": "LastDisconnectAt 来自持久化定义（见 TunnelState），随 TunnelView 直接透出\n给面板。隧道从没断开过时为空，面板就不显示「上次」。",
+                    "type": "string"
+                },
                 "last_error": {
                     "type": "string"
                 },
@@ -1815,6 +1817,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "exposure": {
+                    "type": "string"
+                },
+                "last_disconnect_at": {
+                    "description": "LastDisconnectAt 来自持久化定义（见 TunnelState），随 TunnelView 直接透出\n给面板。隧道从没断开过时为空，面板就不显示「上次」。",
                     "type": "string"
                 },
                 "last_error": {

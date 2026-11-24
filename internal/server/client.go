@@ -16,11 +16,15 @@ type DeviceQuerier interface {
 }
 
 type Client struct {
-	ClientID   string
-	Hostname   string
-	OS         string
-	Conn       *websocket.Conn
+	ClientID string
+	Hostname string
+	OS       string
+	Conn     *websocket.Conn
+	// RemoteAddr 是带端口的原始地址（日志与调试用）；RemoteIP 是升级时按
+	// trusted-proxies 规则解析出的裸 IP，审计必须用它——否则同一来源每次端口
+	// 不同，反代后面还会记成代理地址。
 	RemoteAddr string
+	RemoteIP   string
 	RegTime    time.Time
 	LastPing   time.Time
 
@@ -42,6 +46,37 @@ type Client struct {
 	// aadEnabled 表示升级时协商了 v2 帧 AAD（proto=2 且服务端开关打开）。
 	// 建连后不再变化。
 	aadEnabled bool
+
+	// disconnectReason 由主动关闭方先写（心跳超时 / 服务端关闭）；写不进去说明
+	// 是读循环自己先结束的，由 readLoop 按读错误分类。只有 disconnectReason()
+	// 的读取者会看到它。
+	disconnectReason atomic.Value // string
+	// shutdownRecorded 表示 Stop 已经为这条连接记过 server_shutdown：readLoop 的
+	// defer 随后会看到连接被关闭（RemoveIfMatch 仍可能成功），必须跳过第二次记录，
+	// 否则每次发版 24h 断连次数都会 +2。
+	shutdownRecorded atomic.Bool
+}
+
+// markShutdownRecorded 标记 Stop 已经记过 server_shutdown。
+func (c *Client) markShutdownRecorded() { c.shutdownRecorded.Store(true) }
+
+// shutdownAlreadyRecorded 返回 Stop 是否已经替这条连接记过断开。
+func (c *Client) shutdownAlreadyRecorded() bool { return c.shutdownRecorded.Load() }
+
+// markDisconnectReason 记录主动关闭本连接的原因；先写者优先。
+func (c *Client) markDisconnectReason(reason string) {
+	if c.disconnectReason.Load() != nil {
+		return
+	}
+	c.disconnectReason.CompareAndSwap(nil, reason)
+}
+
+// disconnectReasonValue 返回主动关闭原因；空表示由读循环自行结束。
+func (c *Client) disconnectReasonValue() string {
+	if reason, ok := c.disconnectReason.Load().(string); ok {
+		return reason
+	}
+	return ""
 }
 
 // Proto 返回本连接的协议版本；未声明时按 v1 处理。

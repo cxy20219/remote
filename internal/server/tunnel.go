@@ -104,6 +104,10 @@ type Tunnel struct {
 	Status    string `json:"status"`
 	LastError string `json:"last_error,omitempty"`
 
+	// LastDisconnectAt 来自持久化定义（见 TunnelState），随 TunnelView 直接透出
+	// 给面板。隧道从没断开过时为空，面板就不显示「上次」。
+	LastDisconnectAt *time.Time `json:"last_disconnect_at,omitempty"`
+
 	// applying/retrying 防同一条定义被并发 apply / 重复排重试链（tm.mu 保护）。
 	// applySeq 标识“当前这一次 apply”：旧连接迟到的失败分支只能清理自己
 	// 那一次，不能关掉新一次 apply 已经建好的 listener。
@@ -211,6 +215,8 @@ func (t *Tunnel) definition() TunnelState {
 		PublicPort: t.PublicPort,
 		Exposure:   t.Exposure,
 		CreatedAt:  t.CreatedAt,
+
+		LastDisconnectAt: t.LastDisconnectAt,
 	}
 }
 
@@ -231,6 +237,8 @@ func tunnelFromDefinition(def TunnelState) *Tunnel {
 		CreatedAt:  def.CreatedAt,
 		Status:     TunnelStatusWaitingDevice,
 		stats:      newTunnelStats(),
+
+		LastDisconnectAt: def.LastDisconnectAt,
 	}
 }
 
@@ -620,6 +628,7 @@ func (tm *TunnelManager) maxTunnelsPerClient() int {
 // client 是正在断开的那个连接，nil 表示不做身份校验（单测直接驱动）。设备
 // 已经有新连接时直接跳过：旧连接的收尾晚到时，不能拆掉新连接刚恢复的绑定。
 func (tm *TunnelManager) DetachClient(clientID string, client *Client) {
+	now := time.Now()
 	tm.mu.Lock()
 	// 身份校验放在锁内：检查与解绑之间不能有注册新连接的窗口。锁序是
 	// tm.mu → clients.mu，与 applyTunnel 的 isCurrentClient 一致。
@@ -636,6 +645,10 @@ func (tm *TunnelManager) DetachClient(clientID string, client *Client) {
 		if tunnel.ClientID != clientID {
 			continue
 		}
+		// wasBound 必须在清 Client 之前取：断开的时刻只对「这次真的断开的」
+		// 隧道有意义。waiting_device / apply_failed / out_of_range 本来就没绑上，
+		// 它们的时间戳是故障发生的时刻，不能被之后每一次设备掉线覆盖。
+		wasBound := tunnel.Client != nil
 		tm.closeListenerLocked(tunnel.PublicPort)
 		tm.closeTunnelConnectionsLocked(tunnelID)
 		tunnel.Client = nil
@@ -645,7 +658,16 @@ func (tm *TunnelManager) DetachClient(clientID string, client *Client) {
 			tunnel.Status = TunnelStatusWaitingDevice
 			tunnel.LastError = ""
 		}
+		if wasBound {
+			disconnectedAt := now
+			tunnel.LastDisconnectAt = &disconnectedAt
+		}
 		detached++
+	}
+	// 只标脏、不同步落盘：这里持着 tm.mu，全量 fsync 会卡住所有隧道操作。
+	// 紧接着 readLoop 记录设备断线时也会标脏，同步循环会把两者一次写下去。
+	if detached > 0 && tm.server != nil && tm.server.stateStore != nil {
+		tm.server.stateStore.SetTunnelDefinitions(tm.definitionsLocked())
 	}
 	tm.mu.Unlock()
 	if detached > 0 {
@@ -1250,6 +1272,61 @@ func (tm *TunnelManager) SetPortRange(start, end int) {
 }
 
 // GetPortStatus 返回端口范围使用状况
+// TunnelCounts 是 /health 摘要里的隧道分桶。
+type TunnelCounts struct {
+	Active        int
+	WaitingDevice int
+	// Failed 统计「定义在、但没绑上」：apply_failed / port_conflict / out_of_range。
+	// 它们都不会自己恢复，必须有人看见。
+	Failed int
+}
+
+// CountByStatus 统计当前隧道状态分布。管理面低频调用，直接取 tm.mu 即可。
+func (tm *TunnelManager) CountByStatus() TunnelCounts {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	var counts TunnelCounts
+	for _, tunnel := range tm.tunnels {
+		switch tunnel.Status {
+		case TunnelStatusActive:
+			counts.Active++
+		case TunnelStatusWaitingDevice:
+			counts.WaitingDevice++
+		case TunnelStatusApplyFailed, TunnelStatusPortConflict, TunnelStatusOutOfRange:
+			counts.Failed++
+		}
+	}
+	return counts
+}
+
+// MarkAllDisconnected 给所有隧道记一次断开时刻并落盘，供优雅关闭使用：重启后
+// 面板仍能显示「上次断开 = 发版时刻」，与真正的网络故障区分开。
+func (tm *TunnelManager) MarkAllDisconnected(at time.Time) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if len(tm.tunnels) == 0 {
+		return
+	}
+	bound := 0
+	for _, tunnel := range tm.tunnels {
+		if tunnel.Client == nil {
+			continue
+		}
+		disconnectedAt := at
+		tunnel.LastDisconnectAt = &disconnectedAt
+		bound++
+	}
+	if bound == 0 {
+		return
+	}
+	// 关服路径随后一定会 Save（Stop 里那一次），所以这里只标脏就够。
+	if tm.server != nil && tm.server.stateStore != nil {
+		tm.server.stateStore.SetTunnelDefinitions(tm.definitionsLocked())
+	}
+}
+
 func (tm *TunnelManager) GetPortStatus() PortStatus {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -1616,6 +1693,9 @@ func (tm *TunnelManager) applyTunnel(tunnelID string, client *Client) (Tunnel, e
 			tm.mu.Unlock()
 			slog.Warn("tunnel port is occupied; keeping the reserved port",
 				"tunnel_id", tunnelID, "public_port", out.PublicPort, "bind_addr", out.BindAddr, "error", err)
+			auditSystem(auditEventTunnelApplyFailed, "tunnel:"+tunnelID, "apply", "failed", TunnelStatusPortConflict,
+				slog.Int("public_port", out.PublicPort), slog.String("bind_addr", out.BindAddr),
+				slog.String("error", err.Error()))
 			if startRetry {
 				// 参数按值捕获：协程只认启动那一刻的配置，之后不再读管理器字段。
 				go tm.retryPortConflict(tunnelID, client,
@@ -1660,6 +1740,8 @@ func (tm *TunnelManager) applyTunnel(tunnelID string, client *Client) (Tunnel, e
 		tm.mu.Unlock()
 		slog.Warn("failed to send tunnel_open; the definition is kept and the listener is closed",
 			"tunnel_id", tunnelID, "error", err)
+		auditSystem(auditEventTunnelApplyFailed, "tunnel:"+tunnelID, "apply", "failed", TunnelStatusApplyFailed,
+			slog.Int("public_port", out.PublicPort), slog.String("error", err.Error()))
 		return out, nil
 	}
 
@@ -1745,6 +1827,8 @@ func (tm *TunnelManager) reportRetryExhausted(tunnelID string, window time.Durat
 		"tunnel_id", tunnelID,
 		"public_port", publicPort,
 		"retry_window", window)
+	auditSystem(auditEventTunnelApplyFailed, "tunnel:"+tunnelID, "apply", "failed", "retry_window_exhausted",
+		slog.Int("public_port", publicPort), slog.Duration("retry_window", window))
 }
 
 func (tm *TunnelManager) finishRetry(tunnelID string) {
