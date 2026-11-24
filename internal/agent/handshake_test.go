@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"goremote/internal/buildinfo"
+	"goremote/internal/common"
 )
 
 // captureHandshake 起一个假服务端：记录 agent 带来的整组 query，按 headers 回 101。
@@ -119,5 +121,78 @@ func TestHandshakeVersionIsSanitized(t *testing.T) {
 	}
 	if len(version) > buildinfo.MaxVersionLen {
 		t.Fatalf("ver = %q, longer than %d", version, buildinfo.MaxVersionLen)
+	}
+}
+
+// TestRegisterAgainstLegacyServerSucceeds 是兼容矩阵「新 agent × 老服务端」的
+// 完整一格：老服务端不理握手参数、不回任何响应头，注册往返照样成功，agent
+// 也确认自己按 v1 工作（不回退、不重试成 v2）。
+func TestRegisterAgainstLegacyServerSucceeds(t *testing.T) {
+	received := make(chan common.Message, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 老服务端：不读 query，也不回 X-Goremote-* 响应头。
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var message common.Message
+		if err := conn.ReadJSON(&message); err != nil {
+			return
+		}
+		received <- message
+		payload, _ := json.Marshal(common.RegisterOKPayload{ClientID: "client-legacy", EncEnabled: false})
+		_ = conn.WriteJSON(common.Message{Type: "register_ok", Payload: payload})
+		time.Sleep(50 * time.Millisecond)
+	}))
+	t.Cleanup(server.Close)
+	addr := strings.TrimPrefix(server.URL, "http://")
+
+	identity, err := CreateIdentity(t.TempDir(), addr)
+	if err != nil {
+		t.Fatalf("CreateIdentity: %v", err)
+	}
+	connector := NewConnector(addr, false, "", false, identity)
+	connector.legacyHandshake = true
+	if err := connector.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer connector.Close()
+
+	if err := connector.RegisterNew("host", "linux"); err != nil {
+		t.Fatalf("RegisterNew: %v", err)
+	}
+	sent := <-received
+	if sent.Type != "register" {
+		t.Fatalf("first message = %q, want register", sent.Type)
+	}
+	// 发出的注册报文必须是老服务端能严格解码的最小字段集（没有新字段）。
+	var payload common.RegisterPayload
+	if err := common.DecodeStrictJSON(sent.Payload, &payload); err != nil {
+		t.Fatalf("the register payload must decode strictly: %v", err)
+	}
+	if payload.DevicePubkey != identity.DeviceSignPubkey {
+		t.Fatalf("register carried the wrong pubkey")
+	}
+
+	reply, err := connector.Receive()
+	if err != nil {
+		t.Fatalf("Receive: %v", err)
+	}
+	if reply.Type != "register_ok" {
+		t.Fatalf("reply = %q, want register_ok", reply.Type)
+	}
+	var ok common.RegisterOKPayload
+	if err := common.DecodeStrictJSON(reply.Payload, &ok); err != nil {
+		t.Fatalf("decode register_ok: %v", err)
+	}
+	if ok.ClientID != "client-legacy" {
+		t.Fatalf("client_id = %q", ok.ClientID)
+	}
+	if got := connector.ServerProto(); got != 1 {
+		t.Fatalf("ServerProto = %d, want 1 against an old server", got)
+	}
+	if connector.AADEnabled() {
+		t.Fatal("AAD must not be negotiated against an old server")
 	}
 }
