@@ -130,9 +130,14 @@ type tunnelStats struct {
 
 	lastRX uint64
 	lastTX uint64
+
+	// history 是 1h/24h 流量历史（内存态，重启归零）。自带锁，读曲线不取 tm.mu。
+	history *trafficHistory
 }
 
-func newTunnelStats() *tunnelStats { return &tunnelStats{} }
+func newTunnelStats() *tunnelStats {
+	return &tunnelStats{history: newTrafficHistory()}
+}
 
 func (s *tunnelStats) addRX(n uint64) {
 	if s != nil {
@@ -146,17 +151,22 @@ func (s *tunnelStats) addTX(n uint64) {
 	}
 }
 
-// sample 用累计差算本周期速率；无流量时自然归零。
-func (s *tunnelStats) sample() {
+// sample 用累计差算本周期速率；无流量时自然归零。差值同时折进流量历史。
+func (s *tunnelStats) sample(now time.Time) {
 	if s == nil {
 		return
 	}
 	rx := s.rxBytes.Load()
 	tx := s.txBytes.Load()
-	s.rxRate.Store(rx - s.lastRX)
-	s.txRate.Store(tx - s.lastTX)
+	rxDelta := rx - s.lastRX
+	txDelta := tx - s.lastTX
+	s.rxRate.Store(rxDelta)
+	s.txRate.Store(txDelta)
 	s.lastRX = rx
 	s.lastTX = tx
+	if s.history != nil {
+		s.history.record(now, rxDelta, txDelta)
+	}
 }
 
 func (s *tunnelStats) snapshot() (rxBytes, txBytes, rxRate, txRate uint64) {
@@ -778,6 +788,12 @@ func (tm *TunnelManager) StopRateTracker() {
 // sampleRates 算一个采样周期的速率。取隧道列表只持 tm.mu 一小会儿；统计
 // 更新全走 atomic，不与数据面或 fsync 抢锁。
 func (tm *TunnelManager) sampleRates() {
+	tm.sampleRatesAt(time.Now())
+}
+
+// sampleRatesAt 是 sampleRates 的可注入时间版本：流量历史的桶边界要能被测试
+// 精确控制，真实路径永远走 time.Now()。
+func (tm *TunnelManager) sampleRatesAt(now time.Time) {
 	tm.mu.RLock()
 	tunnels := make([]*Tunnel, 0, len(tm.tunnels))
 	for _, tunnel := range tm.tunnels {
@@ -786,7 +802,7 @@ func (tm *TunnelManager) sampleRates() {
 	tm.mu.RUnlock()
 
 	for _, tunnel := range tunnels {
-		tunnel.stats.sample()
+		tunnel.stats.sample(now)
 	}
 }
 

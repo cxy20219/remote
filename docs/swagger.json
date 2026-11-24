@@ -1654,6 +1654,62 @@
                 }
             }
         },
+        "/api/tunnels/{tunnel_id}/traffic": {
+            "get": {
+                "description": "返回指定窗口内每个区间的平均速率（B/s，整数）。1h：30 秒一个点、120 个点；24h：10 分钟一个点、144 个点。数组时间升序，最后一个是当前区间（按已采样秒数折算，不是整段）。隧道存在但还没采过样（刚创建/刚重启）返回全 0 序列；历史是内存态，重启归零。",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tunnel"
+                ],
+                "summary": "获取隧道流量历史",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "隧道 ID",
+                        "name": "tunnel_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "窗口：1h（默认）或 24h",
+                        "name": "window",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.TunnelTrafficResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/health": {
             "get": {
                 "description": "进程存活即返回 200 与 {\"status\":\"ok\"}；不反映状态落盘或隧道健康状况。",
@@ -1843,6 +1899,32 @@
                     "type": "integer"
                 },
                 "protocol": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.TunnelTrafficResponse": {
+            "type": "object",
+            "properties": {
+                "interval_seconds": {
+                    "type": "integer"
+                },
+                "points": {
+                    "type": "integer"
+                },
+                "rx": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "tx": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "window": {
                     "type": "string"
                 }
             }

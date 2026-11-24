@@ -817,6 +817,41 @@ func (s *Server) handleAPIGetTunnel(c *gin.Context) {
 	c.JSON(http.StatusOK, newTunnelView(tunnel))
 }
 
+// @Summary 获取隧道流量历史
+// @Description 返回指定窗口内每个区间的平均速率（B/s，整数）。1h：30 秒一个点、120 个点；24h：10 分钟一个点、144 个点。数组时间升序，最后一个是当前区间（按已采样秒数折算，不是整段）。隧道存在但还没采过样（刚创建/刚重启）返回全 0 序列；历史是内存态，重启归零。
+// @Tags tunnel
+// @Produce json
+// @Param tunnel_id path string true "隧道 ID"
+// @Param window query string false "窗口：1h（默认）或 24h"
+// @Success 200 {object} server.TunnelTrafficResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Router /api/tunnels/{tunnel_id}/traffic [get]
+func (s *Server) handleAPITunnelTraffic(c *gin.Context) {
+	if !s.requireTunnel(c) {
+		return
+	}
+
+	// 先判隧道存在再判窗口：不存在的隧道无论窗口是否合法都是 404。
+	tunnel, ok := s.tunnelManager.GetTunnel(c.Param("tunnel_id"))
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tunnel not found"})
+		return
+	}
+
+	window := c.Query("window")
+	if window == "" {
+		window = trafficWindow1h
+	}
+	response, ok := tunnel.TunnelTraffic(window, time.Now())
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "window must be 1h or 24h"})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
 // @Summary 删除隧道
 // @Description 删除定义并释放监听端口。
 // @Tags tunnel

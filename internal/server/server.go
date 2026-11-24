@@ -251,6 +251,7 @@ func (s *Server) registerRoutes() {
 		protected.POST("/api/admin/totp/recover", adminWrite, s.handleAPITOTPRecover)
 		protected.GET("/api/tunnels", s.handleAPIListTunnels)
 		protected.GET("/api/tunnels/:tunnel_id", s.handleAPIGetTunnel)
+		protected.GET("/api/tunnels/:tunnel_id/traffic", s.handleAPITunnelTraffic)
 		protected.PUT("/api/tunnels/:tunnel_id", s.handleAPIUpdateTunnel)
 		protected.DELETE("/api/tunnels/:tunnel_id", s.handleAPIDeleteTunnel)
 		protected.POST("/api/tunnels/:tunnel_id/retry", s.handleAPIRetryTunnel)

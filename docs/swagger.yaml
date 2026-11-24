@@ -114,6 +114,23 @@ definitions:
       protocol:
         type: string
     type: object
+  server.TunnelTrafficResponse:
+    properties:
+      interval_seconds:
+        type: integer
+      points:
+        type: integer
+      rx:
+        items:
+          type: integer
+        type: array
+      tx:
+        items:
+          type: integer
+        type: array
+      window:
+        type: string
+    type: object
   server.TunnelView:
     properties:
       bind_addr:
@@ -1286,6 +1303,45 @@ paths:
             additionalProperties: true
             type: object
       summary: 重试隧道绑定
+      tags:
+      - tunnel
+  /api/tunnels/{tunnel_id}/traffic:
+    get:
+      description: 返回指定窗口内每个区间的平均速率（B/s，整数）。1h：30 秒一个点、120 个点；24h：10 分钟一个点、144 个点。数组时间升序，最后一个是当前区间（按已采样秒数折算，不是整段）。隧道存在但还没采过样（刚创建/刚重启）返回全
+        0 序列；历史是内存态，重启归零。
+      parameters:
+      - description: 隧道 ID
+        in: path
+        name: tunnel_id
+        required: true
+        type: string
+      - description: 窗口：1h（默认）或 24h
+        in: query
+        name: window
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.TunnelTrafficResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 获取隧道流量历史
       tags:
       - tunnel
   /health:
