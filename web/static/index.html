@@ -85,6 +85,28 @@ tbody tr:hover td{background:#f8fafc}
 #tunnels td.tunnel-status .badge{display:flex;width:max-content}
 /* 状态格内层统一 34px 并垂直居中：从没连过的隧道没有「上次」，也不占位、不变矮 */
 #tunnels .tunnel-state{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;min-height:34px}
+/* 速率文字是展开入口：常态下给可见的下划线提示，不靠悬停才发现 */
+#tunnels .tunnel-rate-btn{cursor:pointer;text-decoration:underline dotted rgba(22,163,74,.55);text-underline-offset:3px;border-radius:4px}
+#tunnels .tunnel-rate-btn:hover{background:#f0fdf4}
+#tunnels .tunnel-rate-btn:focus-visible{outline:2px solid #86efac;outline-offset:2px}
+#tunnels .tunnel-rate-btn.is-open{text-decoration-style:solid}
+
+/* 流量面板：独立展开行，不改变隧道行的 59px 高度 */
+#tunnels tr.traffic-row>td{background:#fafbfc;padding:0!important;border-bottom:1px solid #f1f5f9}
+.traffic-panel{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px}
+.traffic-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12px;color:#64748b}
+.traffic-title{font-weight:600;color:#334155}
+.traffic-tabs{display:flex;gap:6px}
+.traffic-tab{padding:3px 10px;border:1px solid #e2e8f0;background:#fff;border-radius:7px;font-size:12px;color:#64748b;cursor:pointer}
+.traffic-tab.active{background:#eff6ff;border-color:#bfdbfe;color:#2563eb;font-weight:600}
+.traffic-legend{display:flex;align-items:center;gap:6px;color:#94a3b8}
+.traffic-legend .lg{width:16px;height:0;border-top:2px solid #16a34a;display:inline-block}
+.traffic-legend .lg.tx{border-top-style:dashed;border-top-color:#166534}
+.traffic-time{margin-left:auto;color:#94a3b8;font-size:11px}
+.traffic-svg{width:100%;height:150px;display:block}
+.traffic-axis{font-size:10px;fill:#94a3b8;font-family:inherit}
+.traffic-empty{height:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:#94a3b8;font-size:13px}
+.traffic-empty small{font-size:11px;color:#cbd5e1}
 #tunnels td.tunnel-status .cell-sub{margin-top:0}
 #tunnels .tunnel-rate{color:#16a34a}
 #tunnels .tunnel-rate-line{display:block;line-height:17px;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -1036,7 +1058,15 @@ function fmtRate(bytesPerSec) {
 function tunnelStatusHtml(t) {
   const status = tunnelStatusValue(t);
   if (status === 'active') {
-    return '<span class="tunnel-state"><span class="mono tunnel-rate"><span class="tunnel-rate-line">↑ ' + esc(fmtRate(t.rx_rate)) +
+    const tid = (t && t.tunnel_id) || '';
+    const open = expandedTunnelId !== null && expandedTunnelId === tid;
+    const label = open ? '点击收起流量曲线' : '点击查看 1 小时 / 24 小时流量曲线';
+    const args = jsArg(tid);
+    return '<span class="tunnel-state"><span class="mono tunnel-rate tunnel-rate-btn' + (open ? ' is-open' : '') +
+      '" data-tid="' + esc(tid) + '" role="button" tabindex="0" aria-expanded="' + (open ? 'true' : 'false') +
+      '" title="' + esc(label) + '" onclick="toggleTraffic(' + args + ')"' +
+      ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();toggleTraffic(' + args + ')}">' +
+      '<span class="tunnel-rate-line">↑ ' + esc(fmtRate(t.rx_rate)) +
       '</span><span class="tunnel-rate-line">↓ ' + esc(fmtRate(t.tx_rate)) + '</span></span></span>';
   }
   const meta = TUNNEL_STATUS[status] || { label: status };
@@ -1065,6 +1095,7 @@ async function loadTunnels() {
     document.getElementById('stat-tunnels').textContent = tunnels.filter(t => tunnelStatusValue(t) === 'active').length;
     if (!tunnels.length) {
       document.getElementById('tunnels').innerHTML = '<div class="empty">暂无隧道</div>';
+      syncTrafficPanel();
       return;
     }
     const rows = tunnels.map(t => {
@@ -1089,6 +1120,9 @@ async function loadTunnels() {
     }).join('');
     document.getElementById('tunnels').innerHTML =
       '<table><thead><tr><th>隧道 ID</th><th>设备</th><th>入口类型</th><th>监听入口</th><th>内网地址</th><th>协议</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    // 整表重建后把展开行接回去（缓存先渲染，再拉新数据）
+    syncTrafficPanel();
+    if (expandedTunnelId) loadTraffic();
   } catch (e) {
     document.getElementById('tunnels').innerHTML = '<div class="empty">加载失败</div>';
   }
@@ -1240,6 +1274,147 @@ async function loadPortStatus() {
       }
     }
   } catch (e) { /* status bar is optional */ }
+}
+
+// --- Traffic history（行内展开，内联 SVG，不引第三方图表库） ---
+let expandedTunnelId = null;   // 当前展开的隧道，同一时间去重只开一条
+let trafficWindow = '1h';      // 1h | 24h
+let trafficCache = null;       // {tid, window, data, error, at}
+
+function trafficIsEmpty(data) {
+  const all = data.rx.concat(data.tx);
+  return all.length === 0 || all.every(v => !Number(v));
+}
+
+// 两条曲线同色系，靠实线/虚线区分：上行 rx 实线，下行 tx 虚线。
+function trafficSvgHtml(data) {
+  const W = 1000, H = 150, padL = 8, padR = 8, padT = 18, padB = 20;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+  const n = Math.max(data.rx.length, data.tx.length);
+  const peak = Math.max(1, ...data.rx, ...data.tx);
+  const line = arr => arr.map((v, i) => {
+    const x = padL + (n <= 1 ? chartW / 2 : (i / (n - 1)) * chartW);
+    const y = padT + (1 - Math.min(Math.max(Number(v) || 0, 0), peak) / peak) * chartH;
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  const baseY = padT + chartH;
+  const rangeLeft = data.window === '24h' ? '24 小时前' : '1 小时前';
+  return '<svg class="traffic-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="上行下行流量曲线">' +
+    '<line x1="' + padL + '" y1="' + baseY + '" x2="' + (W - padR) + '" y2="' + baseY + '" stroke="#e2e8f0" stroke-width="1" vector-effect="non-scaling-stroke"/>' +
+    '<polyline points="' + line(data.tx) + '" fill="none" stroke="#166534" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' +
+    '<polyline points="' + line(data.rx) + '" fill="none" stroke="#16a34a" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' +
+    '<text x="' + padL + '" y="' + (padT - 6) + '" class="traffic-axis">峰值 ' + esc(fmtRate(peak)) + '</text>' +
+    '<text x="' + padL + '" y="' + (H - 4) + '" class="traffic-axis">' + rangeLeft + '</text>' +
+    '<text x="' + (W - padR) + '" y="' + (H - 4) + '" text-anchor="end" class="traffic-axis">现在</text>' +
+    '</svg>';
+}
+
+function trafficPanelHtml(tid) {
+  const same = trafficCache && trafficCache.tid === tid && trafficCache.window === trafficWindow;
+  const data = same ? trafficCache.data : null;
+  const error = same && trafficCache.error;
+  const stamp = same && trafficCache.at ? '更新于 ' + fmtClock(trafficCache.at) : '';
+  const tabs = [['1h', '1 小时'], ['24h', '24 小时']].map(pair =>
+    '<button type="button" class="traffic-tab' + (pair[0] === trafficWindow ? ' active' : '') +
+    '" onclick="setTrafficWindow(\'' + pair[0] + '\')">' + pair[1] + '</button>').join('');
+  let body;
+  if (error) body = '<div class="traffic-empty">加载失败<small>10 秒后自动重试</small></div>';
+  else if (!data) body = '<div class="traffic-empty">加载中…</div>';
+  else if (trafficIsEmpty(data)) body = '<div class="traffic-empty">暂无流量<small>该时段内没有数据</small></div>';
+  else body = trafficSvgHtml(data);
+  return '<tr class="traffic-row" data-tid="' + esc(tid) + '"><td colspan="9"><div class="traffic-panel">' +
+    '<div class="traffic-head"><span class="traffic-title">流量曲线</span><span class="traffic-tabs">' + tabs + '</span>' +
+    '<span class="traffic-legend"><i class="lg"></i>上行 rx <i class="lg tx"></i>下行 tx</span>' +
+    '<span class="traffic-time">' + esc(stamp) + '</span></div>' +
+    '<div class="traffic-chart">' + body + '</div></div></td></tr>';
+}
+
+function updateTunnelRateAffordance() {
+  document.querySelectorAll('#tunnels .tunnel-rate-btn').forEach(btn => {
+    const open = btn.dataset.tid === expandedTunnelId;
+    btn.classList.toggle('is-open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.title = open ? '点击收起流量曲线' : '点击查看 1 小时 / 24 小时流量曲线';
+  });
+}
+
+// 让展开行始终紧跟在对应隧道行之后；隧道消失或已断开（没有速率文字）就自动收起。
+function syncTrafficPanel() {
+  const table = document.getElementById('tunnels');
+  if (!table) return;
+  const existing = table.querySelector('tr.traffic-row');
+  if (!expandedTunnelId) { if (existing) existing.remove(); return; }
+  let row = null;
+  table.querySelectorAll('td.tunnel-status').forEach(cell => {
+    if (cell.dataset.tid === expandedTunnelId) row = cell.closest('tr');
+  });
+  if (!row || !row.querySelector('.tunnel-rate-btn')) {
+    expandedTunnelId = null;
+    trafficCache = null;
+    if (existing) existing.remove();
+    updateTunnelRateAffordance();
+    return;
+  }
+  const html = trafficPanelHtml(expandedTunnelId);
+  if (existing) existing.outerHTML = html;
+  else row.insertAdjacentHTML('afterend', html);
+  updateTunnelRateAffordance();
+}
+
+async function loadTraffic() {
+  if (!expandedTunnelId || document.hidden) return;
+  const tid = expandedTunnelId;
+  const win = trafficWindow;
+  try {
+    const { response, data } = await apiJSON('/api/tunnels/' + encodeURIComponent(tid) + '/traffic?window=' + win);
+    if (tid !== expandedTunnelId || win !== trafficWindow) return; // 已切换或收起
+    if (!response.ok || !data) {
+      trafficCache = { tid: tid, window: win, data: null, error: true, at: Date.now() };
+    } else {
+      trafficCache = {
+        tid: tid, window: win, error: false, at: Date.now(),
+        data: {
+          window: data.window === '24h' ? '24h' : '1h',
+          rx: Array.isArray(data.rx) ? data.rx : [],
+          tx: Array.isArray(data.tx) ? data.tx : []
+        }
+      };
+    }
+    syncTrafficPanel();
+  } catch (e) {
+    if (tid === expandedTunnelId && win === trafficWindow) {
+      trafficCache = { tid: tid, window: win, data: null, error: true, at: Date.now() };
+      syncTrafficPanel();
+    }
+  }
+}
+
+function toggleTraffic(tid) {
+  if (!tid) return;
+  if (expandedTunnelId === tid) { closeTraffic(); return; }
+  expandedTunnelId = tid;
+  trafficWindow = '1h';
+  trafficCache = null;
+  syncTrafficPanel();
+  loadTraffic();
+}
+
+function closeTraffic() {
+  expandedTunnelId = null;
+  trafficCache = null;
+  const row = document.querySelector('#tunnels tr.traffic-row');
+  if (row) row.remove();
+  updateTunnelRateAffordance();
+}
+
+function setTrafficWindow(win) {
+  if (win !== '1h' && win !== '24h') return;
+  if (trafficWindow === win) return;
+  trafficWindow = win;
+  trafficCache = null;
+  syncTrafficPanel();
+  loadTraffic();
 }
 
 // --- Backup status ---
@@ -1480,7 +1655,7 @@ loadBackupStatus();
 setInterval(() => { checkHealth(); loadDevices(); loadPendingDevices(); loadTunnels(); loadPortStatus(); loadBackupStatus(); }, 10000);
 // 状态列 2 秒刷新速率；页面隐藏时暂停，可见时立即补一次。
 setInterval(refreshTunnelRates, 2000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshTunnelRates(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { refreshTunnelRates(); if (expandedTunnelId) loadTraffic(); } });
 </script>
 </body>
 </html>
