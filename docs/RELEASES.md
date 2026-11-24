@@ -52,8 +52,8 @@ gh workflow run release.yml --ref main -f source_ref=v2.6.0
 ## v2.7.0
 
 - **发布日期**：2026-11-24
-- **tag**：`v2.7.0`（附注 tag，说明「安全加固与稳定性优化：reauth DH 公钥绑定、依赖 CVE 清零、state 信封 v2、AAD 帧认证、gzip、连接上限、pending TTL、数据面拆锁」）
-- **commit**：`226d98c0059b4a8965b4ff43e2e6c431397a9189`（`226d98c`）
+- **tag**：`v2.7.0`（附注 tag，说明「安全加固与稳定性优化：reauth DH 公钥绑定、依赖 CVE 清零、state 信封 v2、AAD 帧认证、gzip、连接上限、pending TTL、数据面拆锁、隧道实时速率」）
+- **commit**：`cec848f852b212909344408c0a2c638b8d8d77c6`（`cec848f`）
 - **Go**：`go1.27.4`
 - **构建**：macOS arm64 交叉编译，`vcs.modified=false`、`-trimpath=true`
 - **包名**：`goremote-v2.7.0-<platform>.tar.gz`（linux/darwin）、`goremote-v2.7.0-<platform>.zip`（windows）
@@ -62,13 +62,13 @@ gh workflow run release.yml --ref main -f source_ref=v2.6.0
 
 | 平台 | `goremote-server` | `goremote-agent` |
 |---|---|---|
-| linux-amd64 | `fc71b722df7609dfd5cff6843ddceeeab2bec484fb9bebfe8e13a084c27716eb` | `9420af37c8f3fed479382b7b78478e77fd85060ee88e46dc2539681d148e01d9` |
-| linux-arm64 | `2dde0791fb550f4d7d3fc68cdc882bc914bed9efdf93c1e8abbdc81357a4a8f7` | `45e970631dca2904962e965f780f5081a8942aec0217c9dd7d509ea91c945316` |
-| linux-armv7 | `81ba42e93e79c6ac50e4b0efe8ee8f03c14e1f5642b76adfbe17a56afea772de` | `f1281e0d202c2820b6498ae9d30b315fd1378efafe89e29b031b78f100ba1ffa` |
-| darwin-amd64 | `817e6306963ff6961d3a2712e0260814a59fd12ecc1378df34926081aa4dcd65` | `5d14643ea4f6cddf39f33998e035b6b730acd9c68c82cf0e7959db879aab21ac` |
-| darwin-arm64 | `4d6fbbcefcdde3b6a4eb059b6739a294273809ad9918e06353f694d3cb95b998` | `58e98a590689f1710a2dab1c3fe3e25f9a7023717455ee3e1b308fcb8415dc5d` |
-| windows-amd64 | `b4b0d008162ffc37748e80f86b270f1a4d311b4066b1de566a1bdcd0b60c78ef` | `adac685d59f69f04028f41a7d85587d00db059a63ff5380cb8f264ae609cce5b` |
-| windows-arm64 | `2bbe1c8d6f89a0f30aae0978ad552718e2e2258e00158bfd1068792e61d07b52` | `1024a8e027af0f854087e163e5f4d0f549cb6bc7ee59d0ae62e0ee5a0994eafc` |
+| linux-amd64 | `878282cc487e74b04dc212656d034502d49fafb94143a33a985cfd6323622357` | `fd552ce6ff87f5c2a6c11919e38a239711005f4216533b7d24e0b1ed01db9fec` |
+| linux-arm64 | `4bd198421eb2c7b1e7f5df06340f6bb0681cdff564c61c6e337e32ca4f2c493b` | `509abd27456c77872b471f1a43dfe46191441ec65d7e1bdfb66c29efdf384ecf` |
+| linux-armv7 | `4745f5379c5adf8816934099049ce7f1c16ddeaa2f2fb2e2caaab19293732f7d` | `5a9b949acd7bc03618deb6553f03084f12109767f022504d8f897be2bad9d1b6` |
+| darwin-amd64 | `17ce56cb942337e9806f81cf1e4010a89128c0d4efb65c9a0f29261b5d5b2d59` | `4fc7125fe5f60adbaf08e2ddcdf273309cdc2325a5914343b3a00e86ed8b5c03` |
+| darwin-arm64 | `ff441fdb234fb02646b42f7280165f4fdcbef1d250fa91050cda923e62c78d3a` | `4c9cb174680e9ae8ecc670e0fedcd36b8c8959f638f65204531e51c256391d04` |
+| windows-amd64 | `78658b8f79db48f257a3a59a0e158c40e8ea49471436c1eb298fef53e48f3475` | `2f977911d4b753316ac3ae83eb344cd4e0202eb605b1c1959094380ab234e6ad` |
+| windows-arm64 | `88ba8b2f646b6656d62e2cabe76b3709270402cd27d29025c8fe93583e08f606` | `a91303cc5d8171835589bece722e7f350a9f9a4e461ce738913dff742bedb165` |
 
 Windows 两个文件名带 `.exe`（`goremote-server.exe` / `goremote-agent.exe`），哈希对应这两个文件。
 
