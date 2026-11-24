@@ -81,7 +81,7 @@ tbody tr:hover td{background:#f8fafc}
 /* 设备名可能很长（默认主机名），限定列宽并省略，完整值放在 title 里，避免把操作列挤出卡片 */
 #tunnels td.tunnel-device{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* 状态列：速率上下行分两行，正常连接用主题绿 #16a34a；数字 tabular-nums 等宽不跳 */
-#tunnels td.tunnel-status{min-width:114px}
+#tunnels td.tunnel-status{min-width:116px}
 #tunnels .tunnel-rate{color:#16a34a}
 #tunnels .tunnel-rate-line{display:block;font-variant-numeric:tabular-nums;white-space:nowrap}
 /* 9 列 + 速率串比卡片内容区宽：左右内边距 14→10 各列共省 72px，表头不再溢出卡片 */
@@ -931,14 +931,19 @@ function tunnelStatusLabel(status) {
   return (TUNNEL_STATUS[status] || { label: status }).label;
 }
 // 状态列只显示实时速率（B/s → KB/s → MB/s → GB/s，B/s 取整、其余 1 位小数）。
+// 先按整数四舍五入判档再格式化：1023.9 KB/s 进位成 1.0 MB/s，不会出现 1024.0 KB/s。
 function fmtRate(bytesPerSec) {
-  const n = Number(bytesPerSec);
-  if (!Number.isFinite(n) || n <= 0) return '0 B/s';
-  if (n < 1024) return Math.round(n) + ' B/s';
+  const raw = Number(bytesPerSec);
+  if (!Number.isFinite(raw) || raw <= 0) return '0 B/s';
+  const bytes = Math.round(raw);
+  if (bytes < 1024) return bytes + ' B/s';
   const units = ['KB/s', 'MB/s', 'GB/s'];
-  let value = n / 1024;
+  let value = bytes / 1024;
   let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  while (unit < units.length - 1 && Math.round(value) >= 1024) { value /= 1024; unit++; }
+  value = Math.round(value * 10) / 10;
+  // GB/s 封顶，不再进 TB/s：超过整数 1024 GB/s 用整数显示
+  if (unit === units.length - 1 && value >= 1024) return Math.round(value) + ' GB/s';
   return value.toFixed(1) + ' ' + units[unit];
 }
 
