@@ -31,7 +31,7 @@ func TestSwaggerRouteRespectsConfig(t *testing.T) {
 		t.Helper()
 		config, _ := newTestConfig(t)
 		config.Swagger.Enabled = enabled
-		srv := NewServer(config, web.StaticFS)
+		srv := mustNewServer(t, config, web.StaticFS)
 		srv.engine = gin.New()
 		srv.registerRoutes()
 		token, err := srv.adminAuth.GenerateToken()

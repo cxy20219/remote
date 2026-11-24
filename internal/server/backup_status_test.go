@@ -90,7 +90,7 @@ func TestBackupStatusEndpoint(t *testing.T) {
 func TestStartHoldsDataDirLock(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)
-	srv := NewServer(config, embed.FS{})
+	srv := mustNewServer(t, config, embed.FS{})
 	go func() { _ = srv.Start() }()
 
 	lockPath := filepath.Join(config.DataDir(), ".lock")
@@ -126,7 +126,7 @@ func TestStartHoldsDataDirLock(t *testing.T) {
 func TestSecondServerOnSameDataDirRefusesToStart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)
-	first := NewServer(config, embed.FS{})
+	first := mustNewServer(t, config, embed.FS{})
 	go func() { _ = first.Start() }()
 
 	lockPath := filepath.Join(config.DataDir(), ".lock")
@@ -148,7 +148,7 @@ func TestSecondServerOnSameDataDirRefusesToStart(t *testing.T) {
 	}
 
 	secondConfig := newTestConfigForDir(t, config.DataDir())
-	second := NewServer(secondConfig, embed.FS{})
+	second := mustNewServer(t, secondConfig, embed.FS{})
 	err := second.Start()
 	if err == nil {
 		_ = second.Stop()

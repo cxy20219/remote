@@ -1,16 +1,12 @@
 package backup
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"runtime"
-	"strings"
-)
 
-// StateKeyEnvName 是 systemd EnvironmentFile 里的变量名，也是归档里
-// meta/state.env 的格式锚点。
-const StateKeyEnvName = "GOREMOTE_STATE_KEY"
+	"goremote/internal/common"
+)
 
 // readStateEnvFile 读一份密钥文件，返回解析出的密钥和原始字节。
 //
@@ -21,20 +17,25 @@ func readStateEnvFile(path string) (key string, raw []byte, err error) {
 	if err != nil {
 		return "", nil, err
 	}
-	key, err = parseStateEnv(string(raw))
+	key, err = common.ParseStateKeyEnv(string(raw))
 	if err != nil {
 		return "", nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return key, raw, nil
 }
 
-// readKeyFileStrict 读「只放密钥本身」的文件（--key-file）。
+// readKeyFileStrict 读 --key-file；解析规则与 --state-key-file 完全一致，
+// 所以 backup --include-key 导出的 state.env 可以直接拿来启动服务。
 func readKeyFileStrict(path string) (string, error) {
 	raw, err := readSecretFile(path)
 	if err != nil {
 		return "", err
 	}
-	return parseStateEnv(string(raw))
+	key, err := common.ParseStateKeyEnv(string(raw))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	return key, nil
 }
 
 // readSecretFile 只接受 0600 的普通文件，symlink 一律拒绝。
@@ -66,40 +67,4 @@ func readSecretFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%s is empty", path)
 	}
 	return data, nil
-}
-
-// parseStateEnv 解析密钥文件，两种写法都接受：
-//
-//   - systemd EnvironmentFile：GOREMOTE_STATE_KEY=base64:...（生产用的就是这种）；
-//   - 只有一个密钥值的文件：整份内容就是密钥。
-//
-// 只按第一个 '=' 切分，因为 base64 密钥自带 '=' 填充。
-func parseStateEnv(content string) (string, error) {
-	trimmed := strings.TrimSpace(content)
-	if trimmed == "" {
-		return "", errors.New("state key file is empty")
-	}
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-		name, value, ok := strings.Cut(line, "=")
-		if !ok || strings.TrimSpace(name) != StateKeyEnvName {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
-		if value == "" {
-			return "", fmt.Errorf("%s is empty", StateKeyEnvName)
-		}
-		return value, nil
-	}
-	// 没有 NAME=value 行：整份文件就是密钥。多行内容几乎肯定是配置写错了，
-	// 与其猜哪一行是密钥，不如直接报错。
-	if strings.Contains(trimmed, "\n") {
-		return "", fmt.Errorf("no %s= line found and the file holds more than one line", StateKeyEnvName)
-	}
-	return trimmed, nil
 }

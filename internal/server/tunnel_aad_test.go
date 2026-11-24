@@ -26,7 +26,7 @@ func startTestServerWithConfig(t *testing.T, config *Config) *Server {
 	addr := listener.Addr().String()
 	listener.Close()
 
-	srv := NewServer(config, embed.FS{})
+	srv := mustNewServer(t, config, embed.FS{})
 	srv.Addr = addr
 	go func() { _ = srv.Start() }()
 	t.Cleanup(func() { _ = srv.Stop() })

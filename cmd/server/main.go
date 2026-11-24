@@ -49,7 +49,7 @@ func main() {
 			os.Exit(exitUsage)
 		}
 	}
-	runServer()
+	os.Exit(runServer())
 }
 
 func usageText() string {
@@ -64,12 +64,20 @@ func usageText() string {
 `
 }
 
-func runServer() {
+func runServer() int {
 	config := server.ParseConfig()
 
 	common.InitLogger(config.Log.Level, config.Log.File, config.Log.MaxSizeMB, config.Log.MaxBackups)
 
-	srv := server.NewServer(config, web.StaticFS)
+	srv, err := server.NewServer(config, web.StaticFS)
+	if err != nil {
+		// 两种读者：journalctl 里的结构化日志，和盯着终端的运维。后者那句话
+		// 必须能直接照着做，所以它走 stderr 的纯文本，不走 slog 的 JSON。
+		slog.Error("server state is not usable", "data_dir", config.DataDir(), "error", err)
+		fmt.Fprintf(os.Stderr, "\ngoremote-server cannot start:\n%v\n\nexit status %d — add RestartPreventExitStatus=%d to the systemd unit, otherwise Restart=always retries this failure every few seconds.\n",
+			err, server.ExitStateError, server.ExitStateError)
+		return server.ExitStateError
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -83,8 +91,9 @@ func runServer() {
 	case err := <-startErr:
 		if err != nil {
 			slog.Error("server error", "error", err)
-			os.Exit(1)
+			return exitError
 		}
+		return exitOK
 	case <-sigCh:
 		slog.Info("shutdown signal received")
 		if err := srv.Stop(); err != nil {
@@ -92,7 +101,8 @@ func runServer() {
 		}
 		if err := <-startErr; err != nil {
 			slog.Error("server error", "error", err)
-			os.Exit(1)
+			return exitError
 		}
+		return exitOK
 	}
 }

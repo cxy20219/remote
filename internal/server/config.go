@@ -175,6 +175,7 @@ func stateKeySources(flagKey, envKey, filePath string) []string {
 
 // readStateKeyFile 读取 --state-key-file。只接受普通文件，且不能被组/其他
 // 用户读到或写到；symlink 一律拒绝，避免部署时把密钥指向一个可被替换的路径。
+// 内容格式与 backup --state-env-file 完全相同（见 common.ParseStateKeyEnv）。
 // Windows 没有可用的 POSIX 权限位，跳过权限检查（该 flag 的隔离保证只在
 // POSIX 上成立）。
 func readStateKeyFile(path string) (string, error) {
@@ -197,9 +198,12 @@ func readStateKeyFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	key := strings.TrimSpace(string(data))
-	if key == "" {
-		return "", fmt.Errorf("%s is empty", path)
+	// 解析规则与 backup/restore 共用同一份实现：既接受 systemd EnvironmentFile
+	// （GOREMOTE_STATE_KEY=...），也接受只写密钥本身的文件。两个入口各写一套
+	// 解析，就会出现「备份导出的密钥喂不回启动参数」这种事。
+	key, err := common.ParseStateKeyEnv(string(data))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
 	}
 	return key, nil
 }

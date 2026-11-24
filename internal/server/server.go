@@ -92,7 +92,19 @@ type Server struct {
 	maxBodyBytes atomic.Int64
 }
 
-func NewServer(config *Config, staticFS embed.FS) *Server {
+// ExitStateError 是「数据目录不可用」的进程退出码：缺 state key、key 不对、
+// 状态文件比二进制新、文件损坏。运维单元必须配 RestartPreventExitStatus=2，
+// 否则 Restart=always 会把这个重试也不会好的失败每几秒重拉一次，把日志刷满、
+// 也让真正的原因更难被看见。
+const ExitStateError = 2
+
+// NewServer 构造服务对象。状态读不出来时返回错误而不是 panic：这是部署
+// 错误（缺 key、错 key、版本太新、文件损坏），运维需要一句话和一个退出码，
+// 而不是一屏 goroutine 栈。
+//
+// 绝不降级成「空状态启动」：那会在下一次落盘时把真实的管理员密码、设备与
+// 隧道定义覆盖成空，把一次可修复的部署错误变成一次数据丢失。
+func NewServer(config *Config, staticFS embed.FS) (*Server, error) {
 	if config.Security.StateKeyFromFlag {
 		slog.Warn("--state-key is visible in the process command line (ps, systemctl show ExecStart); use GOREMOTE_STATE_KEY or --state-key-file instead")
 	}
@@ -100,16 +112,13 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 	stateStore := NewStateStore(statePath)
 	stateStore.SetStateKDFLegacy(config.Security.StateKDFLegacy)
 	if err := stateStore.SetEncryptionKey(config.Security.StateKey); err != nil {
-		slog.Error("invalid state encryption key", "error", err)
-		panic(err)
+		return nil, fmt.Errorf("invalid state encryption key: %w", err)
 	}
 	if err := stateStore.Load(); err != nil {
-		slog.Error("failed to load server state", "error", err)
-		panic(err)
+		return nil, describeStateLoadFailure(config.DataDir(), statePath, err)
 	}
 	if len(stateStore.GetServerSignPrivkey()) != ed25519.PrivateKeySize || len(stateStore.GetServerSignPubkey()) != ed25519.PublicKeySize {
-		slog.Error("server signing keys are missing or corrupted")
-		panic("server signing keys are missing or corrupted")
+		return nil, fmt.Errorf("the state file %s has no usable server signing keys (the record is corrupt or was written by a broken build)\n  fix: restore a backup, or remove the file only if this is a fresh install: goremote-server restore --from <archive> --data %s", statePath, config.DataDir())
 	}
 
 	adminAuth := NewAdminAuth(stateStore)
@@ -157,7 +166,25 @@ func NewServer(config *Config, staticFS embed.FS) *Server {
 		WriteBufferSize: 32 * 1024,
 	}
 
-	return s
+	return s, nil
+}
+
+// describeStateLoadFailure 把底层加载错误翻译成「哪里坏了 + 下一步做什么」。
+//
+// 三类失败各自的修法完全不同，混成一句 "failed to load server state" 等于
+// 让运维去读 Go 栈：缺 key 要去拿 key，key 错要换 key，版本太新要升级二进制。
+func describeStateLoadFailure(dataDir, statePath string, err error) error {
+	restoreHint := fmt.Sprintf("restore a backup: goremote-server restore --from <archive> --data %s", dataDir)
+	switch {
+	case errors.Is(err, ErrStateEncryptionKeyRequired):
+		return fmt.Errorf("the state file %s is encrypted but no state key was provided\n  fix: set GOREMOTE_STATE_KEY, or point --state-key-file at the 0600 file holding the key\n  if the key is lost, %s", statePath, restoreHint)
+	case errors.Is(err, ErrStateDecryptionFailed):
+		return fmt.Errorf("the state key does not open %s (wrong key, or the encrypted blob was modified)\n  fix: start with the key this data directory was written with\n  if that key is lost, %s", statePath, restoreHint)
+	case errors.Is(err, ErrStateTooNew):
+		return fmt.Errorf("%w\n  fix: upgrade the goremote-server binary; do not start an older build, it would silently drop the fields it does not know", err)
+	default:
+		return fmt.Errorf("the state file %s could not be loaded: %w\n  fix: repair the file, or %s", statePath, err, restoreHint)
+	}
 }
 
 // registerRoutes 注册全部 HTTP 路由。独立成方法是为了让路由表能在不真正

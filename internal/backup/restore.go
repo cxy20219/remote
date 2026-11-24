@@ -314,7 +314,12 @@ func applyRestore(
 	}
 
 	// 账本随旧目录被换走了：把旧账本写回新目录，并记下这次恢复。
-	// 它失败不影响「数据已经恢复成功」这个事实，所以只告警。
+	//
+	// 只有「原地恢复」才有旧账本可带（dataDir 原本就存在）；恢复到全新目录时
+	// ledger 是零值，新目录里只会留下 last_restore_at——面板因此显示「从未备份」，
+	// 这正是事实：那个目录没备份过，提醒运维恢复后立刻重做一次备份。
+	//
+	// 账本写失败不影响「数据已经恢复成功」这个事实，所以只告警、不回滚。
 	if err := server.RecordRestore(dataDir, ledger, now); err != nil {
 		slog.Warn("the data was restored but the backup ledger could not be updated", "data_dir", dataDir, "error", err)
 	}
@@ -331,7 +336,7 @@ func resolveRestoreKey(opts RestoreOptions, manifest Manifest, extracted map[str
 		if err != nil {
 			return "", nil, err
 		}
-		archivedKey, err = parseStateEnv(string(archivedRaw))
+		archivedKey, err = common.ParseStateKeyEnv(string(archivedRaw))
 		if err != nil {
 			return "", nil, fmt.Errorf("meta/state.env in the archive: %w", err)
 		}
@@ -392,7 +397,7 @@ func checkInstallKey(opts RestoreOptions, manifest Manifest, key string) error {
 		}
 		return err
 	}
-	existingKey, parseErr := parseStateEnv(string(existing))
+	existingKey, parseErr := common.ParseStateKeyEnv(string(existing))
 	if parseErr != nil {
 		return fmt.Errorf("%s exists but does not hold a state key (%v); refusing to overwrite it", opts.StateEnvFile, parseErr)
 	}

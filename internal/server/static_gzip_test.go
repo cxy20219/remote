@@ -131,7 +131,7 @@ func TestStaticPagesServeGzipOverEngine(t *testing.T) {
 	sub := staticTestFS(t)
 
 	config, _ := newTestConfig(t)
-	srv := NewServer(config, web.StaticFS)
+	srv := mustNewServer(t, config, web.StaticFS)
 	// NewServer 只建对象，Start 才会起监听；这里手动装好路由表打真实路由。
 	srv.engine = gin.New()
 	srv.registerRoutes()

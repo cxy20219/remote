@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"goremote/internal/common"
 	"goremote/internal/server"
 )
 
@@ -120,7 +121,7 @@ func newFixture(t *testing.T, encrypted bool) *fixture {
 	if err := os.WriteFile(f.certKeyPth, []byte("-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n"), 0o600); err != nil {
 		t.Fatalf("write cert key: %v", err)
 	}
-	if err := os.WriteFile(f.keyFile, []byte(StateKeyEnvName+"="+f.key+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(f.keyFile, []byte(common.StateKeyEnvName+"="+f.key+"\n"), 0o600); err != nil {
 		t.Fatalf("write state.env: %v", err)
 	}
 	return f
@@ -392,7 +393,7 @@ func TestCreateIncludeKeyGuards(t *testing.T) {
 	// 2. 密钥打不开这份状态：宁可现在失败，也不产出一个「标着含密钥却打不开」的包。
 	wrongKeyFile := filepath.Join(f.root, "wrong.env")
 	wrongKey := "base64:" + base64.StdEncoding.EncodeToString(bytesRepeat(0x24, 32))
-	if err := os.WriteFile(wrongKeyFile, []byte(StateKeyEnvName+"="+wrongKey+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(wrongKeyFile, []byte(common.StateKeyEnvName+"="+wrongKey+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err = Create(CreateOptions{DataDir: f.dataDir, CertsDir: f.certsDir, OutDir: f.outDir, IncludeKey: true, StateEnvFile: wrongKeyFile, Now: testNow})
@@ -636,7 +637,7 @@ func TestVerifyArchiveChecksumDetectsTampering(t *testing.T) {
 	}
 }
 
-func TestParseStateEnvAcceptsBothFormats(t *testing.T) {
+func TestStateKeyFileFormats(t *testing.T) {
 	key := testStateKey()
 	cases := map[string]string{
 		"env file":    "GOREMOTE_STATE_KEY=" + key + "\n",
@@ -647,7 +648,7 @@ func TestParseStateEnvAcceptsBothFormats(t *testing.T) {
 		"other lines": "FOO=bar\nGOREMOTE_STATE_KEY=" + key + "\n",
 	}
 	for name, content := range cases {
-		got, err := parseStateEnv(content)
+		got, err := common.ParseStateKeyEnv(content)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -662,7 +663,7 @@ func TestParseStateEnvAcceptsBothFormats(t *testing.T) {
 		"multiline junk": "not-a-key\nanother-line\n",
 	}
 	for name, content := range bad {
-		if _, err := parseStateEnv(content); err == nil {
+		if _, err := common.ParseStateKeyEnv(content); err == nil {
 			t.Fatalf("%s: expected an error", name)
 		}
 	}

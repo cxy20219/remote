@@ -77,6 +77,17 @@ func newTestConfig(t *testing.T) (*Config, *StateStore) {
 	return config, stateStore
 }
 
+// mustNewServer 把构造失败直接判成测试失败：状态读不出来时继续跑只会得到
+// 更难懂的失败。生产路径里 NewServer 返回错误并由 main 以退出码 2 结束。
+func mustNewServer(t *testing.T, config *Config, staticFS embed.FS) *Server {
+	t.Helper()
+	srv, err := NewServer(config, staticFS)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return srv
+}
+
 // newTestConfigUninitialized 返回未初始化（AdminPasswordHash 为空）的配置。
 func newTestConfigUninitialized(t *testing.T) (*Config, *StateStore) {
 	t.Helper()
@@ -104,7 +115,7 @@ func TestNewServer_TLSEnabled(t *testing.T) {
 	config, _ := newTestConfig(t)
 	config.Server.TLS = TLSConfig{Enabled: true, Cert: certPath, Key: keyPath}
 
-	srv := NewServer(config, embed.FS{})
+	srv := mustNewServer(t, config, embed.FS{})
 
 	if !srv.tlsEnabled {
 		t.Fatal("tlsEnabled should be true")
@@ -120,7 +131,7 @@ func TestNewServer_TLSEnabled(t *testing.T) {
 func TestNewServer_TLSDisabled(t *testing.T) {
 	config, _ := newTestConfig(t)
 
-	srv := NewServer(config, embed.FS{})
+	srv := mustNewServer(t, config, embed.FS{})
 
 	if srv.tlsEnabled {
 		t.Fatal("tlsEnabled should be false")
@@ -129,7 +140,7 @@ func TestNewServer_TLSDisabled(t *testing.T) {
 
 func TestNewHTTPServerHardeningDefaults(t *testing.T) {
 	config, _ := newTestConfig(t)
-	srv := NewServer(config, embed.FS{})
+	srv := mustNewServer(t, config, embed.FS{})
 
 	httpSrv := srv.newHTTPServer()
 	if httpSrv.ReadHeaderTimeout != httpReadHeaderTimeout {
@@ -209,7 +220,7 @@ func TestServerTLS_WebSocketUpgradeAndRegister(t *testing.T) {
 	config, stateStore := newTestConfig(t)
 	config.Server.TLS = TLSConfig{Enabled: true, Cert: certPath, Key: keyPath}
 
-	srv := NewServer(config, embed.FS{})
+	srv := mustNewServer(t, config, embed.FS{})
 	srv.Addr = addr
 	srv.stateStore = stateStore
 
@@ -267,7 +278,7 @@ func TestServerTLS_RejectPlainWS(t *testing.T) {
 	config, stateStore := newTestConfig(t)
 	config.Server.TLS = TLSConfig{Enabled: true, Cert: certPath, Key: keyPath}
 
-	srv := NewServer(config, embed.FS{})
+	srv := mustNewServer(t, config, embed.FS{})
 	srv.Addr = addr
 	srv.stateStore = stateStore
 

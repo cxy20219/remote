@@ -235,7 +235,7 @@ func TestRestoreNeedsTheStateKey(t *testing.T) {
 
 	wrongKeyFile := filepath.Join(f.root, "wrong.env")
 	wrongKey := "base64:" + base64.StdEncoding.EncodeToString(bytesRepeat(0x24, 32))
-	if err := os.WriteFile(wrongKeyFile, []byte(StateKeyEnvName+"="+wrongKey+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(wrongKeyFile, []byte(common.StateKeyEnvName+"="+wrongKey+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err = restoreInto(t, RestoreOptions{
@@ -354,7 +354,7 @@ func TestRestoreInstallKey(t *testing.T) {
 	// 4. 目标已有另一把钥匙：拒绝，且数据不动。
 	otherKeyTarget := filepath.Join(targetRoot, "other.env")
 	otherKey := "base64:" + base64.StdEncoding.EncodeToString(bytesRepeat(0x11, 32))
-	if err := os.WriteFile(otherKeyTarget, []byte(StateKeyEnvName+"="+otherKey+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(otherKeyTarget, []byte(common.StateKeyEnvName+"="+otherKey+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	before := snapshotTree(t, targetData)
@@ -600,8 +600,11 @@ func TestRestoredDataStartsServer(t *testing.T) {
 		Tunnel:   server.TunnelConfig{Enabled: true},
 	}
 	config.SetDataDir(targetData)
-	// NewServer 读不出状态就会 panic，所以这一行本身就是「能启动」的证据。
-	srv := server.NewServer(config, embed.FS{})
+	// NewServer 读不出状态会直接返回错误，所以这一行本身就是「能启动」的证据。
+	srv, err := server.NewServer(config, embed.FS{})
+	if err != nil {
+		t.Fatalf("the restored data dir cannot be loaded: %v", err)
+	}
 	go func() { _ = srv.Start() }()
 
 	deadline := time.Now().Add(10 * time.Second)

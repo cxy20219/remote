@@ -21,7 +21,7 @@ func newObserveTestServer(t *testing.T) *Server {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)
-	srv := NewServer(config, embed.FS{})
+	srv := mustNewServer(t, config, embed.FS{})
 	srv.engine = gin.New()
 	srv.registerRoutes()
 	// 注意：NewServer 会按同一路径再建一个 StateStore，所以测试必须用

@@ -86,6 +86,41 @@ chmod +x agent-linux-amd64
 nohup ./agent-linux-amd64 --server YOUR_SERVER:8080 --log-file agent.log --log-max-size-mb 50 --log-max-backups 5 > /dev/null 2>&1 < /dev/null &
 ```
 
+## 备份与恢复
+
+```bash
+# 备份：默认不含 state 密钥，但含 TLS 私钥，归档本身就是机密文件（0600）
+./server backup --data ./data --certs ./certs --out ./backups
+
+# 显式把 state 密钥一起打包（文件名带 .with-key，manifest 标 contains_state_key）
+./server backup --data ./data --certs ./certs --out ./backups \
+    --include-key --state-env-file /etc/goremote/state.env
+
+# 先预演，再执行：预演不创建任何目录、不取锁、不改一个字节
+./server restore --from ./backups/goremote-backup-<ts>.tar.gz --data ./data --dry-run
+./server restore --from ./backups/goremote-backup-<ts>.tar.gz --data ./data --yes
+```
+
+恢复要求确认：不给 `--yes` 只打印计划并退出 1。加密状态需要 `--key-file` 或
+`GOREMOTE_STATE_KEY`（`--install-key` 时可用包内密钥）；密钥不对、包被改过、
+缺 `.sha256`、`data/.lock` 被占用（服务还在跑）都会明确报错并以非零码退出，
+**不会 panic，也不会降级成空状态启动**。
+
+**账本语义**：`data/backup-ledger.json` 记录上次备份。原地恢复会保留
+`last_success_at`（旧账本随 `data.bak-<ts>` 读回来写回新目录）；**恢复到全新
+目录时只有 `last_restore_at`**，新面板显示「从未备份」是预期行为——那个目录
+确实没备份过，提示你恢复后立刻重做一次。
+
+**进程退出码**：`0` 正常；`1` 运行期错误；`2` 数据目录不可用（缺 key / key 不对 /
+状态文件比二进制新 / 文件损坏）。systemd 单元必须加
+
+```ini
+RestartPreventExitStatus=2
+```
+
+否则 `Restart=always` 会把重试也不会好的失败每几秒重拉一次。`2` 的日志里会直接
+写明是哪一类问题、怎么修，以及 `restore --from` 的用法。
+
 ## 编译
 
 ### 发布构建（可复现）

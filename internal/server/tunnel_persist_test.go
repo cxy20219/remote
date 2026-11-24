@@ -652,7 +652,7 @@ func TestLoadDropsOrphanAndInvalidDefinitions(t *testing.T) {
 		t.Fatalf("persist definitions: %v", err)
 	}
 
-	srv := NewServer(config, embed.FS{})
+	srv := mustNewServer(t, config, embed.FS{})
 	tunnels := srv.tunnelManager.ListTunnels()
 	if len(tunnels) != 1 || tunnels[0].TunnelID != "valid" {
 		t.Fatalf("loaded tunnels = %+v, want only the valid one", tunnels)

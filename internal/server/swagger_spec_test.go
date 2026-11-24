@@ -62,7 +62,7 @@ func readSwaggerSpec(t *testing.T) map[string]map[string]json.RawMessage {
 func TestSwaggerCoversEveryAPIRoute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)
-	srv := NewServer(config, web.StaticFS)
+	srv := mustNewServer(t, config, web.StaticFS)
 	srv.engine = gin.New()
 	srv.registerRoutes()
 

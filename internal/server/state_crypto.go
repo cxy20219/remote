@@ -47,6 +47,11 @@ const (
 
 var ErrStateEncryptionKeyRequired = errors.New("state encryption key is required")
 
+// ErrStateDecryptionFailed 表示「有密钥，但打不开」：密钥不对，或密文被改过。
+// 单独一个哨兵，是为了让启动失败能直接告诉运维「是 key 错了」而不是一句
+// cipher: message authentication failed。
+var ErrStateDecryptionFailed = errors.New("state decryption failed (wrong state key or corrupted ciphertext)")
+
 type EncryptedState struct {
 	Version    int             `json:"version"`
 	Algorithm  string          `json:"algorithm"`
@@ -297,7 +302,7 @@ func (s *StateStore) decryptSensitiveState(state *ServerState) error {
 		}
 		s.envelope = &stateEnvelope{version: stateEncryptionVersionLegacy, key: legacyKey}
 		if err := openEncryptedPayload(state, legacyKey, enc); err != nil {
-			return err
+			return fmt.Errorf("%w: %v", ErrStateDecryptionFailed, err)
 		}
 		if s.kdfLegacy {
 			return nil
@@ -321,7 +326,7 @@ func (s *StateStore) decryptSensitiveState(state *ServerState) error {
 		}
 		s.envelope = envelope
 		if err := openEncryptedPayload(state, envelope.key, enc); err != nil {
-			return err
+			return fmt.Errorf("%w: %v", ErrStateDecryptionFailed, err)
 		}
 		if s.kdfLegacy {
 			// 显式回滚：把 v2 降级回 v1，旧二进制才能读。这是一次安全性
