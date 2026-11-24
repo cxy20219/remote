@@ -95,6 +95,12 @@ tbody tr:hover td{background:#f8fafc}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
 .mono{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px}
 .empty{text-align:center;padding:40px 0;color:#94a3b8;font-size:13px}
+/* 备份状态：页脚一行只读信息。文件名放得下就整条显示，放不下省略，完整信息在 title */
+.backup-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:10px 4px;font-size:12px;color:#94a3b8}
+.backup-bar .backup-file{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:12px;max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.backup-bar .backup-sep{color:inherit}
+.backup-bar.warn{color:#d97706}
+.backup-bar.warn .backup-label{font-weight:600}
 
 .toast{position:fixed;top:20px;right:20px;z-index:300;display:flex;flex-direction:column;gap:8px}
 .toast-item{padding:12px 20px;border-radius:12px;font-size:13px;font-weight:500;animation:slideIn .3s;max-width:380px;box-shadow:0 4px 12px rgba(0,0,0,.15)}
@@ -262,6 +268,9 @@ th,td{padding:8px 8px}
     </div>
     <div id="tunnels" style="margin-top:4px"><div class="empty">加载中...</div></div>
   </div>
+
+  <!-- 备份状态：只读，放在页脚，不打断表格 -->
+  <div class="backup-bar" id="backup-bar"><span class="backup-label">上次备份：</span>检查中…</div>
 
 </div>
 
@@ -1217,6 +1226,60 @@ async function loadPortStatus() {
   } catch (e) { /* status bar is optional */ }
 }
 
+// --- Backup status ---
+const BACKUP_MODE_LABELS = {
+  encrypted: '加密（需密钥）',
+  encrypted_with_key: '加密 · 含密钥（等同明文机密）',
+  plaintext: '明文（未加密）'
+};
+
+function fmtBytes(n) {
+  const raw = Number(n);
+  if (!Number.isFinite(raw) || raw <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = raw;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return (unit === 0 ? Math.round(value) : value.toFixed(1)) + ' ' + units[unit];
+}
+
+// 页脚「上次备份」：跟着 10 秒轮询刷新；接口失败就整行隐藏，不显示过期或臆测的状态。
+async function loadBackupStatus() {
+  const bar = document.getElementById('backup-bar');
+  if (!bar) return;
+  try {
+    const { response, data } = await apiJSON('/api/backup/status');
+    if (!response.ok || !data) { bar.style.display = 'none'; return; }
+    bar.style.display = '';
+    const lastAt = data.last_success_at || '';
+    if (!lastAt) {
+      bar.className = 'backup-bar warn';
+      bar.title = '尚未生成过备份包，灾难恢复无从谈起；在服务器上运行 backup 子命令生成。' +
+        (data.last_restore_at ? '\n上次恢复：' + fmtDate(data.last_restore_at) : '');
+      bar.innerHTML = '<span class="backup-label">&#9888; 从未备份</span>';
+      return;
+    }
+    const relative = fmtRelativeTime(lastAt) || fmtDate(lastAt);
+    const name = data.last_archive || '';
+    const mode = BACKUP_MODE_LABELS[data.last_mode] || data.last_mode || '';
+    const detail = [
+      '完整时间：' + fmtDate(lastAt),
+      name ? '文件：' + name : '',
+      Number(data.last_size) > 0 ? '大小：' + fmtBytes(data.last_size) : '',
+      data.last_sha256 ? 'SHA-256：' + data.last_sha256 : '',
+      mode ? '模式：' + mode : '',
+      data.last_restore_at ? '上次恢复：' + fmtDate(data.last_restore_at) : ''
+    ].filter(Boolean);
+    bar.className = 'backup-bar';
+    bar.title = detail.join('\n');
+    bar.innerHTML = '<span class="backup-label">上次备份：</span>' +
+      '<span class="backup-time">' + esc(relative) + '</span>' +
+      (name ? '<span class="backup-sep">·</span><span class="backup-file">' + esc(name) + '</span>' : '');
+  } catch (e) {
+    bar.style.display = 'none';
+  }
+}
+
 // --- Security: Global Whitelist ---
 async function loadGlobalWhitelist() {
   try {
@@ -1397,7 +1460,8 @@ loadDevices();
 loadPendingDevices();
 loadTunnels();
 loadPortStatus();
-setInterval(() => { checkHealth(); loadDevices(); loadPendingDevices(); loadTunnels(); loadPortStatus(); }, 10000);
+loadBackupStatus();
+setInterval(() => { checkHealth(); loadDevices(); loadPendingDevices(); loadTunnels(); loadPortStatus(); loadBackupStatus(); }, 10000);
 // 状态列 2 秒刷新速率；页面隐藏时暂停，可见时立即补一次。
 setInterval(refreshTunnelRates, 2000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshTunnelRates(); });
