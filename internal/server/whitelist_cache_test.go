@@ -20,6 +20,7 @@ func newWhitelistCacheFixture(t *testing.T) (*DeviceManager, *StateStore) {
 
 // 缓存命中时不得重建 matcher：命中/未命中计数直接反映在可观测计数上。
 func TestDeviceWhitelistMatcherIsCached(t *testing.T) {
+	t.Parallel()
 	dm, _ := newWhitelistCacheFixture(t)
 
 	first := dm.IPWhitelistMatcher("dev-1")
@@ -43,6 +44,7 @@ func TestDeviceWhitelistMatcherIsCached(t *testing.T) {
 
 // 白名单变更后的下一次查询必须立即使用新规则。
 func TestDeviceWhitelistMatcherInvalidatedOnChange(t *testing.T) {
+	t.Parallel()
 	dm, store := newWhitelistCacheFixture(t)
 
 	before := dm.IPWhitelistMatcher("dev-1")
@@ -68,6 +70,7 @@ func TestDeviceWhitelistMatcherInvalidatedOnChange(t *testing.T) {
 
 // 设备删除后缓存不能残留：再查必须返回 nil。
 func TestDeviceWhitelistMatcherInvalidatedOnDelete(t *testing.T) {
+	t.Parallel()
 	dm, _ := newWhitelistCacheFixture(t)
 
 	if matcher := dm.IPWhitelistMatcher("dev-1"); matcher == nil {
@@ -83,6 +86,7 @@ func TestDeviceWhitelistMatcherInvalidatedOnDelete(t *testing.T) {
 
 // 并发 accept 与设备变更：-race 下干净，且任何时刻拿到的 matcher 都是完整可用的。
 func TestDeviceWhitelistMatcherConcurrentWithUpdates(t *testing.T) {
+	t.Parallel()
 	dm, store := newWhitelistCacheFixture(t)
 
 	var wg sync.WaitGroup
@@ -114,6 +118,7 @@ func TestDeviceWhitelistMatcherConcurrentWithUpdates(t *testing.T) {
 
 // 空白名单与不存在的设备都返回 nil，不缓存错误结果。
 func TestDeviceWhitelistMatcherEmptyCases(t *testing.T) {
+	t.Parallel()
 	dm, store := newWhitelistCacheFixture(t)
 	store.AddDevice(&DeviceState{ID: "dev-empty", Status: deviceStatusAuthorized})
 

@@ -12,14 +12,19 @@
 |---|---|
 | commit | 本文件登记的 commit（等于 tag 指向的 commit，也等于二进制里的 `vcs.revision`） |
 | Go 版本 | 本文件登记的 `go version` |
-| 构建脚本 | 仓库里的 `scripts/release.sh`：参数固定 `CGO_ENABLED=0` + `-trimpath` + `-ldflags="-s -w"`，且从干净 worktree 构建（工作区 dirty 会让 `vcs.modified=true`，哈希就变） |
+| 构建脚本 | 仓库里的 `scripts/release.sh`：参数取自 `scripts/ldflags.sh`（`CGO_ENABLED=0` + `-trimpath` + `-ldflags="-s -w -X goremote/internal/buildinfo.Version=<tag>"`），且从干净 worktree 构建（工作区 dirty 会让 `vcs.modified=true`，哈希就变）。`v2.8.0` 之前的版本没有 `-X` 段 |
 
 脚本入库之后发布的版本，直接检出 tag 跑脚本即可：
 
 ```bash
-git checkout <tag>            # 例如 v2.7.0
-VERSION=<tag> ./scripts/release.sh
+git checkout <tag>            # 例如 v2.8.0
+./scripts/release.sh          # 版本号直接取 HEAD 上的 v* tag，不用手填
 ```
+
+> 版本号只认 tag：脚本在没有 `v*` tag 的 commit 上会拒绝构建（手填的版本号与源码
+> 之间没有任何约束，写错就会让发布物永久声称一个它并不对应的版本）。本地实验可
+> 用 `ALLOW_UNTAGGED=1 VERSION=vX.Y.Z ./scripts/release.sh` 显式跳过。
+> 三种构建（本地 / CI / release）的 ldflags 都来自 `scripts/ldflags.sh`，不允许各写一份。
 
 `v2.6.0` 是特例：该 tag 早于 `scripts/release.sh` 入库，检出它的树里没有脚本，得把脚本从当前分支补进去再跑（脚本只认构建树的 HEAD，所以产出的二进制仍属于 `v2.6.0`）：
 

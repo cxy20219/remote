@@ -26,6 +26,7 @@ func staticTestFS(t *testing.T) fs.FS {
 // 预压缩副本会被 go:embed 打进二进制。它和 .html 一旦不同步，编译、vet 都
 // 不会报错，线上却会一直发旧页面——所以这里按内容逐字节校验。
 func TestStaticGzipCopiesMatchSource(t *testing.T) {
+	t.Parallel()
 	sub := staticTestFS(t)
 	for _, name := range []string{"index.html", "login.html", "setup.html"} {
 		raw, err := fs.ReadFile(sub, name)
@@ -60,6 +61,7 @@ func TestStaticGzipCopiesMatchSource(t *testing.T) {
 // 协商边界：不带头、identity 发原文；gzip 及其参数发压缩；显式 q=0 必须
 // 回落原文（否则会给不收 gzip 的客户端发乱码）。
 func TestServeStaticHTMLNegotiatesGzip(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	sub := staticTestFS(t)
 
@@ -127,6 +129,7 @@ func TestServeStaticHTMLNegotiatesGzip(t *testing.T) {
 // 引擎级：三个页面在真实路由上都要按 Accept-Encoding 出压缩内容。/ 需要
 // 管理员会话，登录页公开，setup.html 在未初始化时公开。
 func TestStaticPagesServeGzipOverEngine(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	sub := staticTestFS(t)
 

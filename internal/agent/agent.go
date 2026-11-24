@@ -53,6 +53,7 @@ func NewAgent(config *Config, identity *AgentIdentity) *Agent {
 		config.Server.TLS.InsecureSkipVerify,
 		identity,
 	)
+	connector.legacyHandshake = config.Server.LegacyHandshake
 
 	agent := &Agent{
 		config:        config,

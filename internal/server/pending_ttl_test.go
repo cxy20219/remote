@@ -34,6 +34,7 @@ func agePendingDevice(store *StateStore, deviceID string, age time.Duration) {
 
 // 超过 24h 的待审批设备被清理，名额与记录一起释放。
 func TestPendingDeviceExpiresAfterTTL(t *testing.T) {
+	t.Parallel()
 	_, store := newTestConfig(t)
 	dm := NewDeviceManager(store, common.NewCryptoManager())
 	deviceID := registerPendingTestDevice(t, dm)
@@ -52,6 +53,7 @@ func TestPendingDeviceExpiresAfterTTL(t *testing.T) {
 
 // 未过期的申请不能被清掉：24h 是给「第二天才审批」留的窗口。
 func TestFreshPendingDeviceSurvivesSweep(t *testing.T) {
+	t.Parallel()
 	_, store := newTestConfig(t)
 	dm := NewDeviceManager(store, common.NewCryptoManager())
 	deviceID := registerPendingTestDevice(t, dm)
@@ -67,6 +69,7 @@ func TestFreshPendingDeviceSurvivesSweep(t *testing.T) {
 
 // FirstSeen 为零的老记录不自动删：不知道它多老，删掉等于凭空丢掉申请。
 func TestZeroFirstSeenPendingIsNotSwept(t *testing.T) {
+	t.Parallel()
 	_, store := newTestConfig(t)
 	dm := NewDeviceManager(store, common.NewCryptoManager())
 	deviceID := registerPendingTestDevice(t, dm)
@@ -82,6 +85,7 @@ func TestZeroFirstSeenPendingIsNotSwept(t *testing.T) {
 
 // 准入表被填满后，清理一条过期申请必须立刻让新设备能进来。
 func TestExpiredPendingFreesAdmissionSlot(t *testing.T) {
+	t.Parallel()
 	_, store := newTestConfig(t)
 	dm := NewDeviceManager(store, common.NewCryptoManager())
 
@@ -124,6 +128,7 @@ func TestExpiredPendingFreesAdmissionSlot(t *testing.T) {
 
 // 过期设备的 pending 连接必须一起关掉，不能留下「设备没了、连接还挂着」。
 func TestExpiredPendingClosesConnection(t *testing.T) {
+	t.Parallel()
 	_, store := newTestConfig(t)
 	dm := NewDeviceManager(store, common.NewCryptoManager())
 	deviceID := registerPendingTestDevice(t, dm)
@@ -152,6 +157,7 @@ func TestExpiredPendingClosesConnection(t *testing.T) {
 
 // 清理必须落盘：重启后过期记录不能复活。
 func TestExpiredPendingRemovalIsPersisted(t *testing.T) {
+	t.Parallel()
 	config, store := newTestConfig(t)
 	dm := NewDeviceManager(store, common.NewCryptoManager())
 	deviceID := registerPendingTestDevice(t, dm)

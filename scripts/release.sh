@@ -22,12 +22,41 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# 版本号必须来自 HEAD 上的 v* tag：手填的版本号与源码之间没有任何约束，
+# 一旦写错，发布物会永久声称一个它并不对应的版本。本地实验可以用
+# ALLOW_UNTAGGED=1 显式跳过这条（它不会出现在任何发布流程里）。
 VERSION="${VERSION:-${1:-}}"
+TAG=""
+if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  TAG="$(git -C "$ROOT" describe --tags --exact-match --match 'v*' HEAD 2>/dev/null || true)"
+fi
 if [[ -z "$VERSION" ]]; then
-  echo "error: VERSION is required, e.g. VERSION=v2.6.0 $0" >&2
+  if [[ -z "$TAG" ]]; then
+    echo "error: cannot derive VERSION: HEAD is not on a v* tag." >&2
+    echo "       tag the commit first (git tag -a v2.8.0 -m ...), or set ALLOW_UNTAGGED=1 for a local experiment." >&2
+    exit 2
+  fi
+  VERSION="$TAG"
+else
+  [[ "$VERSION" == v* ]] || VERSION="v$VERSION"
+  if [[ -n "$TAG" && "$TAG" != "$VERSION" ]]; then
+    echo "error: VERSION=$VERSION does not match the tag on HEAD ($TAG)." >&2
+    echo "       a release must not claim a version its source does not have." >&2
+    exit 2
+  fi
+  if [[ -z "$TAG" && "${ALLOW_UNTAGGED:-0}" != "1" ]]; then
+    echo "error: HEAD is not tagged, but VERSION=$VERSION was given." >&2
+    echo "       tag the commit, or set ALLOW_UNTAGGED=1 for a local experiment." >&2
+    exit 2
+  fi
+fi
+
+# 构建参数只有一处定义（scripts/ldflags.sh），release 不能自带一份。
+LDFLAGS="$(bash "$ROOT/scripts/ldflags.sh" "$VERSION")"
+if [[ -z "$LDFLAGS" ]]; then
+  echo "error: scripts/ldflags.sh returned no flags" >&2
   exit 2
 fi
-[[ "$VERSION" == v* ]] || VERSION="v$VERSION"
 
 OUT="${OUT_DIR:-$ROOT/dist}"
 mkdir -p "$OUT"
@@ -49,6 +78,7 @@ sha256_hex() {
 
 echo "==> $(go version)"
 echo "==> release $VERSION -> $OUT"
+echo "==> ldflags: $LDFLAGS"
 
 # 从 HEAD 的干净 worktree 构建（见文件头说明 2）。
 BUILD_ROOT="$ROOT"
@@ -125,7 +155,7 @@ for row in "${PLATFORMS[@]}"; do
 
   for cmd in server agent; do
     out="$stage/goremote-$cmd$exe"
-    env "${envs[@]}" go build -trimpath -ldflags="-s -w" -o "$out" "./cmd/$cmd"
+    env "${envs[@]}" go build -trimpath -ldflags="$LDFLAGS" -o "$out" "./cmd/$cmd"
     printf '    %-24s %s  %s bytes\n' "goremote-$cmd$exe" "$(sha256_hex < "$out")" "$(wc -c < "$out" | tr -d ' ')"
   done
 

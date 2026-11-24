@@ -19,6 +19,7 @@ func newTimeoutTestClient(t *testing.T, clientID string, lastPing time.Time) (*C
 
 // 只关超时的那一条，且日志/关闭都在锁外做（行为层面：干净地只影响 stale）。
 func TestCheckClientsTimeoutClosesOnlyStaleClients(t *testing.T) {
+	t.Parallel()
 	srv := &Server{clients: NewClientManager()}
 
 	stale, staleAgent := newTimeoutTestClient(t, "client-stale", time.Time{})
@@ -61,6 +62,7 @@ func TestCheckClientsTimeoutClosesOnlyStaleClients(t *testing.T) {
 
 // 心跳 Touch 与超时清理并发：-race 下不得有告警。
 func TestCheckClientsTimeoutConcurrentWithHeartbeat(t *testing.T) {
+	t.Parallel()
 	srv := &Server{clients: NewClientManager()}
 	client, _ := newTimeoutTestClient(t, "client-race", time.Now())
 	srv.clients.Add(client)
@@ -113,6 +115,7 @@ func (h *blockingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *blockingHandler) WithGroup(string) slog.Handler      { return h }
 
 func TestHeartbeatTimeoutLoggingHappensOutsideClientsLock(t *testing.T) {
+	t.Parallel()
 	original := slog.Default()
 	handler := &blockingHandler{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	slog.SetDefault(slog.New(handler))

@@ -71,6 +71,7 @@ func readStateSchemaVersion(t *testing.T, path string) int {
 }
 
 func TestLoadMigratesLegacyStateToCurrentSchema(t *testing.T) {
+	t.Parallel()
 	path := writeLegacySchemaStateFile(t)
 
 	store := NewStateStore(path)
@@ -100,6 +101,7 @@ func TestLoadMigratesLegacyStateToCurrentSchema(t *testing.T) {
 }
 
 func TestLoadPersistsSchemaVersion(t *testing.T) {
+	t.Parallel()
 	path := writeLegacySchemaStateFile(t)
 
 	if err := NewStateStore(path).Load(); err != nil {
@@ -121,6 +123,7 @@ func TestLoadPersistsSchemaVersion(t *testing.T) {
 }
 
 func TestRepeatedLoadDoesNotMigrateAgain(t *testing.T) {
+	t.Parallel()
 	path := writeLegacySchemaStateFile(t)
 
 	if err := NewStateStore(path).Load(); err != nil {
@@ -152,6 +155,7 @@ func TestRepeatedLoadDoesNotMigrateAgain(t *testing.T) {
 }
 
 func TestLoadRejectsNewerSchemaVersion(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/state-v0.json")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
@@ -199,6 +203,7 @@ func TestLoadRejectsNewerSchemaVersion(t *testing.T) {
 // TestMigrationKeepsEncryptedStateDecryptable 覆盖迁移与加密的交叉：v0 的密文在
 // 迁移后必须仍然解得开，且重写出来的仍是加密文件。
 func TestMigrationKeepsEncryptedStateDecryptable(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	// 32 字节全熵密钥：现网 state.env 就是这种直通形态（kdf "none"）。
@@ -266,6 +271,7 @@ func TestMigrationKeepsEncryptedStateDecryptable(t *testing.T) {
 // 触发」时的写盘失败：信封分支曾排在前面，写失败只记日志就继续启动，内存已是
 // 新结构而磁盘还是旧文件，日志还会谎报 migrated。两者同时触发必须 fail closed。
 func TestSchemaAndEnvelopeMigrationFailsClosed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	key := strings.Repeat("k", 32)

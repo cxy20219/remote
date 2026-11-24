@@ -22,6 +22,7 @@ import (
 
 // RFC 6238 附录 B 的官方 SHA-1 向量（8 位），本实现是 6 位，取后 6 位。
 func TestTOTPRFC6238Vectors(t *testing.T) {
+	t.Parallel()
 	const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" // ASCII "12345678901234567890" 的 Base32
 	cases := []struct {
 		unix int64
@@ -49,6 +50,7 @@ func TestTOTPRFC6238Vectors(t *testing.T) {
 }
 
 func TestTOTPSecretFormat(t *testing.T) {
+	t.Parallel()
 	secret, err := GenerateTOTPSecret()
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +72,7 @@ func TestTOTPSecretFormat(t *testing.T) {
 }
 
 func TestTOTPVerifyWindowAndReplay(t *testing.T) {
+	t.Parallel()
 	secret, err := GenerateTOTPSecret()
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +141,7 @@ func wrongTOTPCode(t *testing.T, secret string, now time.Time) string {
 }
 
 func TestRecoveryCodesOnceOnly(t *testing.T) {
+	t.Parallel()
 	codes, hashes, err := generateRecoveryCodes(recoveryCodeCount)
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +217,7 @@ func enableTOTPForTest(t *testing.T, auth *AdminAuth, store *StateStore, session
 }
 
 func TestAdminAuthTOTPLoginFlow(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatal(err)
@@ -260,6 +265,7 @@ func TestAdminAuthTOTPLoginFlow(t *testing.T) {
 }
 
 func TestTOTPChallengeBoundToIP(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	session, _ := auth.GenerateToken()
@@ -279,6 +285,7 @@ func TestTOTPChallengeBoundToIP(t *testing.T) {
 }
 
 func TestTOTPChallengeExpiryAndAttempts(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	session, _ := auth.GenerateToken()
@@ -310,6 +317,7 @@ func TestTOTPChallengeExpiryAndAttempts(t *testing.T) {
 
 // 密码正确也不清池：10 次错码后，即使密码步骤还能走，动态码步骤必须被锁。
 func TestTOTPFailuresShareLoginLock(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatal(err)
@@ -345,6 +353,7 @@ func TestTOTPFailuresShareLoginLock(t *testing.T) {
 }
 
 func TestTOTPAccountLockBlocksOtherIPs(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatal(err)
@@ -392,6 +401,7 @@ func mustCode(t *testing.T, secret string, offset time.Duration) string {
 
 // 同一个 challenge 三并发，只能有一个成功。
 func TestTOTPConcurrentChallengeSingleSuccess(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	session, _ := auth.GenerateToken()
@@ -423,6 +433,7 @@ func TestTOTPConcurrentChallengeSingleSuccess(t *testing.T) {
 
 // 同一个码经两个 challenge 并发提交，只能有一个成功。
 func TestTOTPConcurrentReplaySingleSuccess(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	session, _ := auth.GenerateToken()
@@ -458,6 +469,7 @@ func TestTOTPConcurrentReplaySingleSuccess(t *testing.T) {
 
 // 恢复码并发消费只能成功一次。
 func TestTOTPConcurrentRecoveryCodeSingleUse(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	session, _ := auth.GenerateToken()
@@ -495,6 +507,7 @@ func TestTOTPConcurrentRecoveryCodeSingleUse(t *testing.T) {
 
 // 改密码必须走失败池：连续错密码后正确密码也会被锁。
 func TestChangePasswordUsesFailurePool(t *testing.T) {
+	t.Parallel()
 	store := newTestStateStore(defaultSettings())
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatal(err)
@@ -511,6 +524,7 @@ func TestChangePasswordUsesFailurePool(t *testing.T) {
 
 // 管理写接口独立限流：第 3 次请求必须 429（限流 2 次/分钟）。
 func TestAdminWriteRateLimitMiddleware(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
@@ -537,6 +551,7 @@ func TestAdminWriteRateLimitMiddleware(t *testing.T) {
 
 // 路由级状态码：401（密码错）、409（未启用/未加密）、429（账户锁定）。
 func TestTOTPWriteRouteStatusCodes(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
@@ -591,6 +606,7 @@ func TestTOTPWriteRouteStatusCodes(t *testing.T) {
 
 // 路由级并发：同一个 challenge 并发提交，只有 1 次 200。
 func TestTOTPLoginRouteConcurrentOnlyOneSession(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
@@ -635,6 +651,7 @@ func TestTOTPLoginRouteConcurrentOnlyOneSession(t *testing.T) {
 
 // IPv6 限流键按 /64 聚合，IPv4 去掉端口。
 func TestClientIPKeyAggregatesIPv6Slash64(t *testing.T) {
+	t.Parallel()
 	a := clientIPKey("2001:db8:1:2::1")
 	b := clientIPKey("2001:db8:1:2::ffff")
 	if a != b {
@@ -650,6 +667,7 @@ func TestClientIPKeyAggregatesIPv6Slash64(t *testing.T) {
 
 // 关闭两步验证必须同时要密码 + 当前动态码。
 func TestTOTPDisableRequiresBothFactors(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatal(err)
@@ -681,6 +699,7 @@ func TestTOTPDisableRequiresBothFactors(t *testing.T) {
 
 // 恢复码可以关闭两步验证；关闭后恢复码表清空。
 func TestTOTPRecoveryCodeCanDisable(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatal(err)
@@ -719,6 +738,7 @@ func TestTOTPRecoveryCodeCanDisable(t *testing.T) {
 
 // 启用 TOTP 会吊销其它会话、保留当前会话。
 func TestTOTPEnableRevokesOtherSessions(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	current, _ := auth.GenerateToken()
@@ -741,6 +761,7 @@ func TestTOTPEnableRevokesOtherSessions(t *testing.T) {
 
 // 恢复码可以完成两步登录；同一个恢复码不能用两次。
 func TestTOTPRecoveryCodeLogin(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	session, _ := auth.GenerateToken()
@@ -768,6 +789,7 @@ func TestTOTPRecoveryCodeLogin(t *testing.T) {
 
 // 加密 state 里的 TOTP 配置能完整往返，且明文层不出现密钥。
 func TestStateStoreTOTPRoundTripEncrypted(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	const key = "0123456789abcdef0123456789abcdef"
@@ -817,6 +839,7 @@ func TestStateStoreTOTPRoundTripEncrypted(t *testing.T) {
 
 // 旧 state 没有 TOTP 字段时按「未启用」加载，不影响升级。
 func TestStateStoreLegacyStateWithoutTOTP(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "server-state.json")
 	legacy := `{"server_sign_privkey":"","server_sign_pubkey":"","admin_password_hash":"","settings":{},"devices":[]}`
 	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
@@ -834,6 +857,7 @@ func TestStateStoreLegacyStateWithoutTOTP(t *testing.T) {
 
 // 没配加密 key 时（升级前的状态）TOTP 明文落盘仍能加载——这就是启动 WARN 的降级路径。
 func TestStateStoreTOTPPlaintextDowngrade(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "server-state.json")
 	store := NewStateStore(path)
 	if err := store.Load(); err != nil {
@@ -873,6 +897,7 @@ func TestStateStoreTOTPPlaintextDowngrade(t *testing.T) {
 
 // provisioning URI/二维码：URI 参数齐全，PNG data URL 可解码且是 PNG。
 func TestProvisioningQRIsPNG(t *testing.T) {
+	t.Parallel()
 	secret, err := GenerateTOTPSecret()
 	if err != nil {
 		t.Fatal(err)
@@ -903,6 +928,7 @@ func TestProvisioningQRIsPNG(t *testing.T) {
 
 // 完整两步登录路由：第一步只发挑战（不下发会话），第二步才发 cookie。
 func TestHandleLoginTwoStep(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
@@ -973,6 +999,7 @@ func TestHandleLoginTwoStep(t *testing.T) {
 
 // Retry-After 要给出窗口剩余秒数，前端才能提示「N 秒后再试」。
 func TestRateLimiterRetryAfter(t *testing.T) {
+	t.Parallel()
 	rl := NewRateLimiter(1, time.Minute)
 	defer rl.Stop()
 	if !rl.Allow("k") {
@@ -992,6 +1019,7 @@ func TestRateLimiterRetryAfter(t *testing.T) {
 
 // 账户级退避必须封顶 5 分钟（不是 1 小时），且静默 1 小时降级、24 小时清零。
 func TestTOTPAccountLockCapAndDecay(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	for i := 0; i < maxFailedAdminLogins*8; i++ {
@@ -1037,6 +1065,7 @@ func TestTOTPAccountLockCapAndDecay(t *testing.T) {
 
 // 账户锁只拦动态码，恢复码登录必须豁免（攻击者不能靠刷失败把管理员锁死）。
 func TestTOTPRecoveryCodeExemptFromAccountLock(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatal(err)
@@ -1083,6 +1112,7 @@ func TestTOTPRecoveryCodeExemptFromAccountLock(t *testing.T) {
 
 // 恢复码关闭（RecoverTOTP）同样豁免账户锁，是锁定期唯一的自助出口。
 func TestTOTPRecoverEndpointExemptFromAccountLock(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatal(err)
@@ -1103,6 +1133,7 @@ func TestTOTPRecoverEndpointExemptFromAccountLock(t *testing.T) {
 
 // 代理配置解析失败必须终止启动（静默降级会让所有请求塌成一个 IP）。
 func TestConfigureTrustedProxies(t *testing.T) {
+	t.Parallel()
 	if _, err := configureTrustedProxies(gin.New(), []string{"not-an-ip"}); err == nil {
 		t.Fatal("invalid trusted proxies must abort startup")
 	}
@@ -1126,6 +1157,7 @@ func TestConfigureTrustedProxies(t *testing.T) {
 
 // Server.Stop 必须停掉 adminWriteLimiter 的清理协程，否则每次启停都泄漏一个 goroutine。
 func TestServerStopStopsAdminWriteLimiter(t *testing.T) {
+	t.Parallel()
 	srv := &Server{
 		adminWriteLimiter: NewRateLimiter(1, time.Minute),
 		loginLimiter:      NewRateLimiter(1, time.Minute),
@@ -1148,6 +1180,7 @@ func TestServerStopStopsAdminWriteLimiter(t *testing.T) {
 
 // 认证类 429 必须带 Retry-After：IP 锁与账户级退避都能给出剩余秒数。
 func TestLockRetryAfter(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 
@@ -1171,6 +1204,7 @@ func TestLockRetryAfter(t *testing.T) {
 
 // 登录路由的锁定 429 带 Retry-After，前端才能显示秒数。
 func TestLoginRouteLockCarriesRetryAfter(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	store := newTestStateStore(defaultSettings())
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
@@ -1204,6 +1238,7 @@ func TestLoginRouteLockCarriesRetryAfter(t *testing.T) {
 
 // P2-1：密钥损坏必须是独立错误，不能被当成「未启用」或「动态码错误」。
 func TestTOTPCorruptSecretIsReported(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	if err := store.SetTOTPConfig(TOTPConfig{Secret: "NOT-BASE32-!!", RecoveryHashes: []string{"h1"}}); err != nil {
@@ -1241,6 +1276,7 @@ func TestTOTPCorruptSecretIsReported(t *testing.T) {
 // 密钥损坏时：第一步照常发挑战并标 recovery_only；动态码第二步 500，
 // 恢复码仍能完成登录（无会话 → 拿到会话的 break-glass 路径）。
 func TestTOTPCorruptSecretLoginRoute(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
@@ -1323,6 +1359,7 @@ func TestTOTPCorruptSecretLoginRoute(t *testing.T) {
 
 // 无 state 加密密钥时禁止启用 TOTP：密钥会明文落盘，2FA 等于归零。
 func TestTOTPSetupRequiresStateEncryption(t *testing.T) {
+	t.Parallel()
 	store := newTestStateStore(defaultSettings()) // 故意不配加密 key
 	auth := NewAdminAuth(store)
 	session, _ := auth.GenerateToken()
@@ -1336,6 +1373,7 @@ func TestTOTPSetupRequiresStateEncryption(t *testing.T) {
 
 // 密钥损坏时恢复码关闭必须仍然可用：这是唯一的自助出口。
 func TestTOTPRecoverWorksWhenSecretCorrupt(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatal(err)
@@ -1359,6 +1397,7 @@ func TestTOTPRecoverWorksWhenSecretCorrupt(t *testing.T) {
 
 // P2-2：启用那一刻不能把接下来的登录窗口一起烧掉——启用后立即可用当前码登录。
 func TestTOTPEnableKeepsNextWindowUsable(t *testing.T) {
+	t.Parallel()
 	store := newTOTPTestStore(t)
 	auth := NewAdminAuth(store)
 	session, _ := auth.GenerateToken()

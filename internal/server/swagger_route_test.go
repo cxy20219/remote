@@ -12,6 +12,7 @@ import (
 
 // Swagger UI 默认不注册路由；显式开启后才由认证保护的路由提供。
 func TestSwaggerRouteRespectsConfig(t *testing.T) {
+	t.Parallel()
 	if swaggerDefaultEnabled {
 		t.Fatal("swagger must default to disabled: the API docs are a debug-only surface")
 	}

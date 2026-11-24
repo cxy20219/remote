@@ -114,6 +114,7 @@ func newLegacyStateFixture(t *testing.T, path, key string) {
 
 // ① v1 + 口令：迁移成 v2（argon2id），业务字段不丢，二次 Load 一致。
 func TestStateKDFMigratesV1PassphraseToArgon2id(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	key := strings.Repeat("k", 32)
@@ -181,6 +182,7 @@ func TestStateKDFMigratesV1PassphraseToArgon2id(t *testing.T) {
 
 // ② v1 + 全熵密钥（现网 base64 形态）：迁移成 v2 但 kdf=none，不做无意义的 KDF。
 func TestStateKDFMigratesV1DirectKeyToNone(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	key := "base64:" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
@@ -222,6 +224,7 @@ func TestStateKDFMigratesV1DirectKeyToNone(t *testing.T) {
 
 // ③ v2 + 错误口令：认证失败，文件一个字节都不能变。
 func TestStateKDFWrongPassphraseLeavesFileUntouched(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	const key = "correct-passphrase-that-is-long-enough"
@@ -261,6 +264,7 @@ func TestStateKDFWrongPassphraseLeavesFileUntouched(t *testing.T) {
 
 // ④ 迁移写盘失败：Load 仍成功、文件保持 v1、内存可用；下次 Save 补迁到 v2。
 func TestStateKDFMigrationFailureKeepsLegacyFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	key := strings.Repeat("m", 32)
@@ -315,6 +319,7 @@ func TestStateKDFMigrationFailureKeepsLegacyFile(t *testing.T) {
 
 // ⑤ 连续 Save 复用同一 salt/params，只换 nonce（换 salt = 换密钥）。
 func TestStateKDFSaveReusesEnvelope(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	const key = "salt-reuse-passphrase-long-enough"
@@ -367,6 +372,7 @@ func TestStateKDFSaveReusesEnvelope(t *testing.T) {
 
 // ⑥ 篡改 kdf_params 到 1GiB：直接报错，不做派生（否则 1.6GB 小机器会被打爆）。
 func TestStateKDFRejectsOversizedParams(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	const key = "tamper-test-passphrase-long-enough"
@@ -429,6 +435,7 @@ func TestStateKDFRejectsOversizedParams(t *testing.T) {
 
 // ⑦ 无密钥 + 明文文件：行为与升级前一致（明文、不生成加密信封）。
 func TestStateKDFWithoutKeyStaysPlaintext(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 
@@ -454,6 +461,7 @@ func TestStateKDFWithoutKeyStaysPlaintext(t *testing.T) {
 
 // ⑧a --state-kdf=legacy：v1 保持 v1，不迁移；仍能读写。
 func TestStateKDFLegacyFlagKeepsV1(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	key := strings.Repeat("l", 32)
@@ -496,6 +504,7 @@ func TestStateKDFLegacyFlagKeepsV1(t *testing.T) {
 
 // ⑧b --state-kdf=legacy 对已迁移的 v2 文件：降级回 v1，旧二进制能读。
 func TestStateKDFLegacyFlagDowngradesV2(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	const key = "downgrade-passphrase-long-enough"
@@ -543,6 +552,7 @@ func TestStateKDFLegacyFlagDowngradesV2(t *testing.T) {
 
 // 延迟派生后，TOTP 门禁必须在 Load 之前就认为加密已启用。
 func TestEncryptionEnabledBeforeLoad(t *testing.T) {
+	t.Parallel()
 	store := NewStateStore(filepath.Join(t.TempDir(), "server-state.json"))
 	if store.EncryptionEnabled() {
 		t.Fatal("a store without a key must report encryption disabled")
@@ -556,6 +566,7 @@ func TestEncryptionEnabledBeforeLoad(t *testing.T) {
 }
 
 func TestReadStateKeyFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.key")
 	const key = "0123456789abcdef0123456789abcdef"
@@ -590,6 +601,7 @@ func TestReadStateKeyFile(t *testing.T) {
 }
 
 func TestReadStateKeyFileRejectsSymlink(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real.key")
 	if err := os.WriteFile(target, []byte(strings.Repeat("a", 32)), 0o600); err != nil {
@@ -605,6 +617,7 @@ func TestReadStateKeyFileRejectsSymlink(t *testing.T) {
 }
 
 func TestStateKeySourcesConflict(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		flagKey  string
@@ -631,6 +644,7 @@ func TestStateKeySourcesConflict(t *testing.T) {
 }
 
 func TestParseStateKDF(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		raw    string
 		legacy bool
@@ -662,6 +676,7 @@ func TestParseStateKDF(t *testing.T) {
 // 信封声明的 kdf 必须与配置的密钥形态匹配：配错时明确报错，不能拿
 // “解密失败”去猜是不是口令打错了。
 func TestStateKDFRejectsKeyModeMismatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	const passphrase = "mode-mismatch-passphrase-long-enough"

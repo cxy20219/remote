@@ -14,6 +14,7 @@ import (
 )
 
 func TestAdvertisedTunnelHost(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		settings ServerSettings
@@ -73,6 +74,7 @@ func TestAdvertisedTunnelHost(t *testing.T) {
 }
 
 func TestTunnelPublicAddr(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		host string
@@ -95,6 +97,7 @@ func TestTunnelPublicAddr(t *testing.T) {
 }
 
 func TestTunnelAccessAddr(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		host     string
@@ -118,6 +121,7 @@ func TestTunnelAccessAddr(t *testing.T) {
 }
 
 func TestNormalizeTunnelTarget(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		localAddr string
@@ -159,6 +163,7 @@ func TestNormalizeTunnelTarget(t *testing.T) {
 }
 
 func TestUpdateBlacklistThresholdPersistsSettings(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	store := newTestStateStore(defaultSettings())
@@ -186,6 +191,7 @@ func TestUpdateBlacklistThresholdPersistsSettings(t *testing.T) {
 }
 
 func TestDecodeStrictJSONRejectsUnknownFieldsAndWrongContentType(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	var req struct {
@@ -226,6 +232,7 @@ func TestDecodeStrictJSONRejectsUnknownFieldsAndWrongContentType(t *testing.T) {
 }
 
 func TestHandleAPIChangeAdminPassword(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	store := newTestStateStore(defaultSettings())
@@ -256,6 +263,7 @@ func TestHandleAPIChangeAdminPassword(t *testing.T) {
 // time.Duration(minutes)*time.Minute 会溢出成非正数，而 AddManual 只在
 // duration > 0 时设过期时间，于是「拉黑 1 分钟」的请求会变成永久封禁。
 func TestAddBlacklistAPIValidatesDurationRange(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	cases := []struct {

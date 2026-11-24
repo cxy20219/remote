@@ -18,6 +18,7 @@ func newRecoveryCodeStore(t *testing.T, hashes ...string) (*StateStore, string) 
 
 // 正常路径：命中一次后该码不可再用，剩余数量与磁盘一致。
 func TestConsumeRecoveryCodeNormalPath(t *testing.T) {
+	t.Parallel()
 	store, path := newRecoveryCodeStore(t, "hash-a", "hash-b")
 
 	remaining, consumed, err := store.ConsumeTOTPRecoveryCode("hash-a")
@@ -42,6 +43,7 @@ func TestConsumeRecoveryCodeNormalPath(t *testing.T) {
 // 写盘失败：返回错误且该码仍然可用；后续成功写盘也不能把「失败的那次消费」
 // 带进磁盘（否则接口报失败、重启后码却没了）。
 func TestConsumeRecoveryCodeSaveFailureKeepsCode(t *testing.T) {
+	t.Parallel()
 	store, goodPath := newRecoveryCodeStore(t, "hash-a", "hash-b")
 
 	// 让写盘失败：状态路径落在一个普通文件下面，MkdirAll 会失败。
@@ -83,6 +85,7 @@ func TestConsumeRecoveryCodeSaveFailureKeepsCode(t *testing.T) {
 
 // 并发消费同一个恢复码：只能有一个成功。
 func TestConsumeRecoveryCodeConcurrent(t *testing.T) {
+	t.Parallel()
 	store, _ := newRecoveryCodeStore(t, "hash-a")
 
 	var wg sync.WaitGroup

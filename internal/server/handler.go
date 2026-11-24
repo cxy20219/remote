@@ -198,6 +198,7 @@ func (h *Handler) handleReconnect(client *Client, payload *common.RegisterPayloa
 	client.OS = device.OS
 	client.SetEncryptionEnabled(h.server.deviceEncryptionActive(device))
 	h.server.clients.Add(client)
+	h.server.recordAgentBuild(client)
 	h.server.deviceMgr.RemovePendingConn(client.ClientID)
 	if h.server.tunnelManager != nil {
 		// 只解绑，不删定义：register_ok 之后要按原端口重放。必须在新连接

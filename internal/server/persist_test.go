@@ -28,6 +28,7 @@ func newTestStateStore(settings ServerSettings) *StateStore {
 }
 
 func TestStateStoreGettersReturnDefensiveCopies(t *testing.T) {
+	t.Parallel()
 	store := newTestStateStore(defaultSettings())
 	store.UpdateSettings(func(settings *ServerSettings) {
 		settings.GlobalWhitelist = []string{"10.0.0.0/8"}
@@ -66,12 +67,14 @@ func TestStateStoreGettersReturnDefensiveCopies(t *testing.T) {
 }
 
 func TestStateStoreStopIsIdempotent(t *testing.T) {
+	t.Parallel()
 	store := newTestStateStore(defaultSettings())
 	store.Stop()
 	store.Stop()
 }
 
 func TestStateStoreLoadBackfillsMissingSettingsDefaults(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	data := []byte(`{
@@ -110,6 +113,7 @@ func TestStateStoreLoadBackfillsMissingSettingsDefaults(t *testing.T) {
 }
 
 func TestStateStoreLoadMigratesPlaintextWithoutLosingRuntimeKeys(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	data := []byte(`{
@@ -146,6 +150,7 @@ func TestStateStoreLoadMigratesPlaintextWithoutLosingRuntimeKeys(t *testing.T) {
 }
 
 func TestStateStoreEncryptsSensitiveFields(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	store := NewStateStore(path)
@@ -189,6 +194,7 @@ func TestStateStoreEncryptsSensitiveFields(t *testing.T) {
 }
 
 func TestStateStoreRequiresKeyForEncryptedState(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server-state.json")
 	store := NewStateStore(path)
@@ -209,6 +215,7 @@ func TestStateStoreRequiresKeyForEncryptedState(t *testing.T) {
 }
 
 func TestDefaultBlacklistThresholdIsTen(t *testing.T) {
+	t.Parallel()
 	if got := defaultSettings().BlacklistThreshold; got != 10 {
 		t.Fatalf("default blacklist threshold = %d, want 10", got)
 	}

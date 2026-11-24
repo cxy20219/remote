@@ -126,7 +126,8 @@ RestartPreventExitStatus=2
 ### 发布构建（可复现）
 
 ```bash
-VERSION=v2.6.0 ./scripts/release.sh
+git tag -a v2.8.0 -m "v2.8.0"   # 版本号只从 tag 推导
+./scripts/release.sh            # 自动取 HEAD 上的 v* tag
 ```
 
 一条命令产出七平台 × 两端（server/agent）的发布物，输出到 `dist/`：
@@ -138,7 +139,7 @@ VERSION=v2.6.0 ./scripts/release.sh
 
 每个包内包含 `goremote-server`（windows 为 `.exe`）、`goremote-agent`（同上）、`README.md`、`LICENSE`。
 
-**可复现性**：构建参数固定为 `CGO_ENABLED=0` + `-trimpath` + `-ldflags="-s -w"`，且脚本从 HEAD 的干净 git worktree 构建（工作区有未提交/未跟踪文件时，Go 会嵌入 `vcs.modified=true`，同一 commit 也会产出不同哈希）。同一 Go 版本 + 同一 commit + 本脚本会得到相同二进制；发布记录请写明 `go version`。脚本只依赖 `tar`，打包 windows 时还需要 `zip`。
+**可复现性**：构建参数固定为 `CGO_ENABLED=0` + `-trimpath` + `-ldflags`（取自 `scripts/ldflags.sh`：`-s -w -X goremote/internal/buildinfo.Version=<tag>`）。这是**唯一**一份 ldflags 定义：本地构建、CI（`Build with release flags` 步骤会真注入一次并读回 `version` 子命令）、release 全都从这里取——任何一处写岔，同一份源码就会产出不同哈希的二进制，版本号也会悄悄退化成 `dev`。且脚本从 HEAD 的干净 git worktree 构建（工作区有未提交/未跟踪文件时，Go 会嵌入 `vcs.modified=true`，同一 commit 也会产出不同哈希）。同一 Go 版本 + 同一 commit + 本脚本会得到相同二进制；发布记录请写明 `go version`。脚本只依赖 `tar`，打包 windows 时还需要 `zip`。
 
 ### CI 发布（GitHub Actions）
 

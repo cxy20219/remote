@@ -28,6 +28,7 @@ func addTestTunnel(tm *TunnelManager, tunnelID string) {
 
 // 读缓冲固定 32KB：单连接常驻从 256KB 降下来，是本次内存项的主要收益。
 func TestBufPoolAllocates32KB(t *testing.T) {
+	t.Parallel()
 	if externalConnBufSize != 32*1024 {
 		t.Fatalf("externalConnBufSize = %d, want 32768", externalConnBufSize)
 	}
@@ -40,6 +41,7 @@ func TestBufPoolAllocates32KB(t *testing.T) {
 
 // 每条隧道 64 条公网连接，第 65 条立即失败（关闭由调用方做，不排队）。
 func TestExternalConnPerTunnelLimit(t *testing.T) {
+	t.Parallel()
 	tm := newLimitsTestManager(t, &Server{})
 	addTestTunnel(tm, "tunnel-1")
 
@@ -75,6 +77,7 @@ func TestExternalConnPerTunnelLimit(t *testing.T) {
 
 // 全局上限 1024：单隧道上限不先触发时，全局也必须挡住。
 func TestExternalConnGlobalLimit(t *testing.T) {
+	t.Parallel()
 	tm := newLimitsTestManager(t, &Server{})
 
 	tunnels := maxExternalConnsTotal/maxExternalConnsPerTunnel + 1
@@ -111,6 +114,7 @@ func TestExternalConnGlobalLimit(t *testing.T) {
 
 // 空闲读超时可配置，未配置时回落默认值（不能退化成 0 立刻超时）。
 func TestExternalIdleTimeoutConfigAndDefault(t *testing.T) {
+	t.Parallel()
 	configured := newLimitsTestManager(t, &Server{config: &Config{Tunnel: TunnelConfig{ExternalIdleTimeout: 90 * time.Second}}})
 	if got := configured.externalIdleTimeout(); got != 90*time.Second {
 		t.Fatalf("configured idle timeout = %v, want 90s", got)
@@ -132,6 +136,7 @@ func TestExternalIdleTimeoutConfigAndDefault(t *testing.T) {
 
 // 一条不发数据的公网连接必须按配置的空闲超时被关掉并摘除。
 func TestExternalConnClosedAfterIdleTimeout(t *testing.T) {
+	t.Parallel()
 	_, store := newTestConfig(t)
 	srv := &Server{
 		config:     &Config{Tunnel: TunnelConfig{ExternalIdleTimeout: 150 * time.Millisecond}},
@@ -170,6 +175,7 @@ func TestExternalConnClosedAfterIdleTimeout(t *testing.T) {
 
 // 32KB 读缓冲不能改变转发语义：大块写入要拆成多帧，字节总量一致。
 func TestExternalConnReadBufferKeepsDataIntact(t *testing.T) {
+	t.Parallel()
 	_, store := newTestConfig(t)
 	srv := &Server{
 		stateStore: store,

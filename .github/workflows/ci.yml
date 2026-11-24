@@ -69,6 +69,21 @@ jobs:
       - name: Build (windows/amd64)
         run: GOOS=windows GOARCH=amd64 go build ./...
 
+      # 版本注入守卫：本地、CI、release 三处构建共用 scripts/ldflags.sh，这里是
+      # 第三处的真实演练——真注入一次并读回 `version` 子命令。它抓的是「-X 的
+      # 包路径写错」这类问题：构建照样成功，发布物却悄悄退化成 dev。
+      - name: Build with release flags
+        run: |
+          ldflags="$(bash scripts/ldflags.sh v0.0.0-ci)"
+          echo "ldflags: ${ldflags}"
+          go build -trimpath -ldflags="${ldflags}" -o /tmp/goremote-server-ci ./cmd/server
+          out="$(/tmp/goremote-server-ci version)"
+          echo "${out}"
+          if ! printf '%s' "${out}" | grep -q 'v0.0.0-ci'; then
+            echo "::error::version injection failed, binary reports: ${out}"
+            exit 1
+          fi
+
       - name: Vet
         run: go vet ./...
 

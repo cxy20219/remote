@@ -82,18 +82,25 @@ type ServerSettings struct {
 }
 
 type DeviceState struct {
-	ID               string     `json:"id"`
-	Name             string     `json:"name"`
-	DeviceSignPubkey string     `json:"device_sign_pubkey"`
-	DeviceDHPubkey   string     `json:"device_dh_pubkey"`
-	Hostname         string     `json:"hostname"`
-	OS               string     `json:"os"`
-	Status           string     `json:"status"`
-	EncKey           string     `json:"enc_key"`
-	EncEnabled       bool       `json:"enc_enabled"`
-	IPWhitelist      []string   `json:"ip_whitelist"`
-	FirstSeen        time.Time  `json:"first_seen"`
-	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	DeviceSignPubkey string    `json:"device_sign_pubkey"`
+	DeviceDHPubkey   string    `json:"device_dh_pubkey"`
+	Hostname         string    `json:"hostname"`
+	OS               string    `json:"os"`
+	Status           string    `json:"status"`
+	EncKey           string    `json:"enc_key"`
+	EncEnabled       bool      `json:"enc_enabled"`
+	IPWhitelist      []string  `json:"ip_whitelist"`
+	FirstSeen        time.Time `json:"first_seen"`
+
+	// AgentVersion / AgentCommit 是 agent 在 WS 握手参数里上报的构建标识。
+	// 零值（空）表示对端没上报（老 agent），一律 omitempty，所以不需要升
+	// state schema 版本；它们只用于展示与「是否落后」的判断，不参与门控。
+	// 只在值变化时写入：每次重连都写会让 state 每 3 秒全量落盘一次。
+	AgentVersion string     `json:"agent_version,omitempty"`
+	AgentCommit  string     `json:"agent_commit,omitempty"`
+	ApprovedAt   *time.Time `json:"approved_at,omitempty"`
 
 	// 断线留痕。LastSeen 在心跳时更新（掉线后就停在这一刻），DisconnectHistory
 	// 只保留最近 deviceDisconnectHistoryLimit 条，Disconnects24h 不落盘、由 API

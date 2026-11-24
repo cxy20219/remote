@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"goremote/internal/buildinfo"
 	"goremote/internal/common"
 )
 
@@ -1258,9 +1259,14 @@ func (s *Server) handleAPIListDevices(c *gin.Context) {
 		Disconnects24h       int        `json:"disconnects_24h"`
 		LastDisconnectAt     string     `json:"last_disconnect_at,omitempty"`
 		LastDisconnectReason string     `json:"last_disconnect_reason,omitempty"`
+		// agent_version 来自握手参数，老 agent 为空；agent_outdated 每次请求
+		// 现算——服务端升级后立刻翻转，不用等 agent 重连。
+		AgentVersion  string `json:"agent_version"`
+		AgentOutdated bool   `json:"agent_outdated"`
 	}
 
 	now := time.Now()
+	serverVersion := buildinfo.String()
 	result := make([]deviceInfo, 0, len(devices))
 	for _, d := range devices {
 		_, online := s.clients.Get(d.ID)
@@ -1287,6 +1293,8 @@ func (s *Server) handleAPIListDevices(c *gin.Context) {
 			Disconnects24h:       countDisconnectsWithin(d.DisconnectHistory, now, deviceDisconnectWindow),
 			LastDisconnectAt:     lastDisconnectAt,
 			LastDisconnectReason: d.LastDisconnectReason,
+			AgentVersion:         d.AgentVersion,
+			AgentOutdated:        agentVersionOutdated(d.AgentVersion, serverVersion),
 		})
 	}
 

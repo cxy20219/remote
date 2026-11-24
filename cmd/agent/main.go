@@ -18,6 +18,7 @@ func main() {
 	insecureSkipVerify := flag.Bool("tls-insecure", false, "skip TLS certificate verification")
 	configPath := flag.String("config", "", "config file path (optional, CLI flags take precedence)")
 	identityDir := flag.String("identity-dir", "", "identity storage directory (default: $HOME/.goremote)")
+	legacyHandshake := flag.Bool("legacy-handshake", false, "connect without proto/ver/commit/caps handshake params (diagnose proxies that rewrite the WS handshake; behaves like a pre-v2.8.0 agent)")
 	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error")
 	logFile := flag.String("log-file", "", "log file path (empty writes JSON logs to stdout)")
 	logMaxSizeMB := flag.Int("log-max-size-mb", 0, "max size in MB before rotating log file")
@@ -46,6 +47,9 @@ func main() {
 	}
 	if *insecureSkipVerify {
 		agentCfg.Server.TLS.InsecureSkipVerify = true
+	}
+	if *legacyHandshake {
+		agentCfg.Server.LegacyHandshake = true
 	}
 	if *logLevel != "" {
 		agentCfg.Log.Level = *logLevel

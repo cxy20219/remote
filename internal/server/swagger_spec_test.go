@@ -60,6 +60,7 @@ func readSwaggerSpec(t *testing.T) map[string]map[string]json.RawMessage {
 // docs/ 生成后没有任何改动，所以「改了 struct 的 json tag 但没重新生成」会在
 // 那里红。不要在这条测试里再叠一层字段断言。
 func TestSwaggerCoversEveryAPIRoute(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)
 	srv := mustNewServer(t, config, web.StaticFS)
@@ -110,6 +111,7 @@ func TestSwaggerCoversEveryAPIRoute(t *testing.T) {
 // TestSwaggerExposesTunnelRateFields 钉住速率字段真的出现在公开文档里：隧道实时
 // 速率是面板状态列的唯一数据源，字段名一旦在文档里消失，接入方就看不到它。
 func TestSwaggerExposesTunnelRateFields(t *testing.T) {
+	t.Parallel()
 	doc := docs.SwaggerInfo.ReadDoc()
 	var spec struct {
 		Definitions map[string]struct {

@@ -117,6 +117,7 @@ func sessionCookieValue(rec *httptest.ResponseRecorder) string {
 }
 
 func TestInitNewDoesNotCreateAdminPassword(t *testing.T) {
+	t.Parallel()
 	store := newSetupTestStore(t)
 	if store.AdminPasswordInitialized() {
 		t.Fatal("fresh state must start uninitialized")
@@ -130,6 +131,7 @@ func TestInitNewDoesNotCreateAdminPassword(t *testing.T) {
 }
 
 func TestSetInitialAdminPasswordAtomic(t *testing.T) {
+	t.Parallel()
 	store := newSetupTestStore(t)
 	ok, err := store.SetInitialAdminPassword(setupStrongPwd)
 	if err != nil || !ok {
@@ -148,6 +150,7 @@ func TestSetInitialAdminPasswordAtomic(t *testing.T) {
 
 // 写盘失败必须回滚内存：否则进程内已初始化、磁盘仍是空 state，重启后回到向导。
 func TestSetInitialAdminPasswordRollsBackOnSaveFailure(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
@@ -186,6 +189,7 @@ func TestSetInitialAdminPasswordRollsBackOnSaveFailure(t *testing.T) {
 }
 
 func TestSetupStatusGateAndRedirects(t *testing.T) {
+	t.Parallel()
 	_, r := newSetupTestServer(t)
 
 	rec := setupHTTP(r, http.MethodGet, "/api/setup/status", "", setupRemoteAddr, "", "")
@@ -232,6 +236,7 @@ func TestSetupStatusGateAndRedirects(t *testing.T) {
 }
 
 func TestSetupRejectsNonLoopbackWithoutToken(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 	rec := setupPost(r, "/api/setup/password", `{"password":"`+setupStrongPwd+`"}`, setupRemoteAddr, "", "")
 	if rec.Code != http.StatusForbidden {
@@ -246,6 +251,7 @@ func TestSetupRejectsNonLoopbackWithoutToken(t *testing.T) {
 }
 
 func TestSetupLoopbackRejectsProxiedExternalClient(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 	// 模拟「反代与服务器同机」：RemoteAddr 是 loopback，但信任代理后 ClientIP 是外部地址。
 	if err := r.SetTrustedProxies([]string{"127.0.0.1"}); err != nil {
@@ -267,6 +273,7 @@ func TestSetupLoopbackRejectsProxiedExternalClient(t *testing.T) {
 
 // 本机反代但没配 --trusted-proxies 时，带转发头的请求不能算 loopback。
 func TestSetupLoopbackRejectsUntrustedForwardedHeader(t *testing.T) {
+	t.Parallel()
 	_, r := newSetupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/setup/password", strings.NewReader(`{"password":"`+setupStrongPwd+`"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -283,6 +290,7 @@ func TestSetupLoopbackRejectsUntrustedForwardedHeader(t *testing.T) {
 // 反代可能原样转发公网客户端的伪造头、不追加任何头、或因为信任列表配错而让
 // gin 回落成 127.0.0.1——三种情况都无法与真本机直连区分，只能一律要求令牌。
 func TestSetupLoopbackDisabledWhenTrustedProxiesConfigured(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 	srv.config = &Config{}
 	srv.config.Security.TrustedProxies = []string{"127.0.0.1"}
@@ -343,6 +351,7 @@ func TestSetupLoopbackDisabledWhenTrustedProxiesConfigured(t *testing.T) {
 }
 
 func TestSetupLoopbackAllowsInitialization(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 	oldToken := srv.setupMgr.Token()
 	if len(oldToken) != setupTokenLength {
@@ -393,6 +402,7 @@ func TestSetupLoopbackAllowsInitialization(t *testing.T) {
 }
 
 func TestSetupTokenWrongAttemptsBurn(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 	token := srv.setupMgr.Token()
 
@@ -419,6 +429,7 @@ func TestSetupTokenWrongAttemptsBurn(t *testing.T) {
 }
 
 func TestSetupTokenExpired(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 	token := srv.setupMgr.Token()
 	srv.setupMgr.mu.Lock()
@@ -432,6 +443,7 @@ func TestSetupTokenExpired(t *testing.T) {
 }
 
 func TestSetupWeakPasswordRejected(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 	rec := setupPost(r, "/api/setup/password", `{"password":"short"}`, setupLoopbackAddr, "", "")
 	if rec.Code != http.StatusBadRequest {
@@ -447,6 +459,7 @@ func TestSetupWeakPasswordRejected(t *testing.T) {
 }
 
 func TestSetupConcurrentSingleWinner(t *testing.T) {
+	t.Parallel()
 	store := newSetupTestStore(t)
 	_, r := newSetupTestServerWithStore(t, store)
 
@@ -483,6 +496,7 @@ func TestSetupConcurrentSingleWinner(t *testing.T) {
 }
 
 func TestSetupWizardTOTPAndLogin(t *testing.T) {
+	t.Parallel()
 	store := NewStateStore(filepath.Join(t.TempDir(), "server-state.json"))
 	if err := store.SetEncryptionKey("0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatal(err)
@@ -567,6 +581,7 @@ func TestSetupWizardTOTPAndLogin(t *testing.T) {
 // 登出会吊销会话，向导窗口必须同步关闭：否则拿到过 Cookie 的人还能在 10 分钟窗口内
 // 生成 TOTP secret，把管理员第二因子绑到自己验证器上。
 func TestSetupWizardEndsOnLogout(t *testing.T) {
+	t.Parallel()
 	store := NewStateStore(filepath.Join(t.TempDir(), "server-state.json"))
 	if err := store.SetEncryptionKey("0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatal(err)
@@ -601,6 +616,7 @@ func TestSetupWizardEndsOnLogout(t *testing.T) {
 }
 
 func TestSetupWizardRequiresGrant(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 
 	// 未设置密码：没有向导会话，TOTP 端点 409。
@@ -649,6 +665,7 @@ func TestSetupWizardRequiresGrant(t *testing.T) {
 }
 
 func TestSetupLegacyStateUnaffected(t *testing.T) {
+	t.Parallel()
 	store := newSetupTestStore(t)
 	if err := store.SetAdminPassword(setupStrongPwd); err != nil {
 		t.Fatal(err)
@@ -679,6 +696,7 @@ func TestSetupLegacyStateUnaffected(t *testing.T) {
 
 // 初始化接口独立限流：同一 IP 第 11 次请求必须 429，并带 Retry-After。
 func TestSetupRateLimited(t *testing.T) {
+	t.Parallel()
 	_, r := newSetupTestServer(t)
 	const ip = "203.0.113.70:47123"
 	for i := 0; i < setupRateLimit; i++ {
@@ -698,6 +716,7 @@ func TestSetupRateLimited(t *testing.T) {
 
 // 令牌本身不是凭据：正确令牌 + 不达标密码只返回 400，不发会话，也不消耗令牌。
 func TestSetupTokenAloneDoesNotIssueSession(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 	token := srv.setupMgr.Token()
 	rec := setupPost(r, "/api/setup/password", `{"password":"short"}`, setupRemoteAddr, token, "")
@@ -714,6 +733,7 @@ func TestSetupTokenAloneDoesNotIssueSession(t *testing.T) {
 
 // IPv6 loopback 与 IPv4 一样免令牌。
 func TestSetupLoopbackIPv6(t *testing.T) {
+	t.Parallel()
 	_, r := newSetupTestServer(t)
 	rec := setupHTTP(r, http.MethodGet, "/api/setup/status", "", "[::1]:47123", "", "")
 	body := decodeJSON(t, rec)
@@ -727,6 +747,7 @@ func TestSetupLoopbackIPv6(t *testing.T) {
 }
 
 func TestSetupResponsesNoStore(t *testing.T) {
+	t.Parallel()
 	srv, r := newSetupTestServer(t)
 	cookieFreePaths := []string{"/api/setup/status", "/setup.html"}
 	for _, path := range cookieFreePaths {
@@ -756,6 +777,7 @@ func TestSetupResponsesNoStore(t *testing.T) {
 
 // 匿名请求不能销毁合法向导窗口：没带 Cookie 的 409 必须无副作用。
 func TestSetupWizardSurvivesAnonymousRequest(t *testing.T) {
+	t.Parallel()
 	store := NewStateStore(filepath.Join(t.TempDir(), "server-state.json"))
 	if err := store.SetEncryptionKey("0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatal(err)

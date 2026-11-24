@@ -8,6 +8,7 @@ import (
 )
 
 func TestAdminAuthGenerateTokenUsesHighEntropyURLSafeToken(t *testing.T) {
+	t.Parallel()
 	auth := NewAdminAuth(nil)
 
 	first, err := auth.GenerateToken()
@@ -31,6 +32,7 @@ func TestAdminAuthGenerateTokenUsesHighEntropyURLSafeToken(t *testing.T) {
 }
 
 func TestAdminAuthGenerateTokenPrunesExpiredSessions(t *testing.T) {
+	t.Parallel()
 	auth := NewAdminAuth(nil)
 	auth.sessions["expired"] = &adminSession{
 		token:     "expired",
@@ -52,6 +54,7 @@ func TestAdminAuthGenerateTokenPrunesExpiredSessions(t *testing.T) {
 }
 
 func TestAdminAuthSessionLimitEvictsOldest(t *testing.T) {
+	t.Parallel()
 	auth := NewAdminAuth(nil)
 	base := time.Now().Add(-time.Hour)
 	for i := 0; i < maxAdminSessions; i++ {
@@ -80,6 +83,7 @@ func TestAdminAuthSessionLimitEvictsOldest(t *testing.T) {
 }
 
 func TestAdminAuthLocksAfterFailedLogins(t *testing.T) {
+	t.Parallel()
 	store := newTestStateStore(defaultSettings())
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatalf("SetAdminPassword: %v", err)
@@ -116,6 +120,7 @@ func TestAdminAuthLocksAfterFailedLogins(t *testing.T) {
 }
 
 func TestAdminAuthChangePasswordRevokesSessions(t *testing.T) {
+	t.Parallel()
 	store := newTestStateStore(defaultSettings())
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatalf("SetAdminPassword: %v", err)
@@ -141,6 +146,7 @@ func TestAdminAuthChangePasswordRevokesSessions(t *testing.T) {
 }
 
 func TestAdminAuthRejectsWeakPassword(t *testing.T) {
+	t.Parallel()
 	store := newTestStateStore(defaultSettings())
 	if err := store.SetAdminPassword("CorrectPassword1!"); err != nil {
 		t.Fatalf("SetAdminPassword: %v", err)

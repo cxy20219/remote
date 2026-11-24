@@ -6,6 +6,7 @@ import (
 )
 
 func TestClientWriteJSONWithNilConn(t *testing.T) {
+	t.Parallel()
 	client := &Client{}
 
 	if err := client.WriteJSON(map[string]string{"hello": "world"}); err == nil {
@@ -14,6 +15,7 @@ func TestClientWriteJSONWithNilConn(t *testing.T) {
 }
 
 func TestClientWriteMessageWithNilConn(t *testing.T) {
+	t.Parallel()
 	client := &Client{}
 
 	if err := client.WriteMessage(1, []byte("hello")); err == nil {
@@ -22,6 +24,7 @@ func TestClientWriteMessageWithNilConn(t *testing.T) {
 }
 
 func TestClientManagerStaleConnectionCannotRemoveReplacement(t *testing.T) {
+	t.Parallel()
 	m := NewClientManager()
 	oldClient := &Client{ClientID: "client-test"}
 	newClient := &Client{ClientID: "client-test"}
@@ -47,6 +50,7 @@ func TestClientManagerStaleConnectionCannotRemoveReplacement(t *testing.T) {
 }
 
 func TestClientManagerStaleActivityCannotRefreshReplacement(t *testing.T) {
+	t.Parallel()
 	m := NewClientManager()
 	oldClient := &Client{ClientID: "client-test"}
 	newClient := &Client{ClientID: "client-test"}
@@ -75,6 +79,7 @@ func TestClientManagerStaleActivityCannotRefreshReplacement(t *testing.T) {
 }
 
 func TestClientManagerActivityRefreshesCurrentClientOnly(t *testing.T) {
+	t.Parallel()
 	m := NewClientManager()
 	oldClient := &Client{ClientID: "client-test"}
 	newClient := &Client{ClientID: "client-test"}

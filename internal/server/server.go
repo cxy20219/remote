@@ -25,6 +25,7 @@ import (
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 
+	"goremote/internal/buildinfo"
 	"goremote/internal/common"
 )
 
@@ -419,6 +420,59 @@ func (s *Server) Start() error {
 	return err
 }
 
+// advertisedCaps 是服务端支持的能力位。本阶段没有按 cap 门控的可选字段，
+// 但声明本身已经有用：agent 侧能据此判断「对面是不是认识将来的可选字段」。
+func (s *Server) advertisedCaps() []string {
+	return []string{common.CapObservability}
+}
+
+// recordAgentBuild 把握手带上来的 agent 版本写进设备记录。
+//
+// 两个约束：
+//   - 只写非空值：老 agent 不带参数，不能把已经记下的版本清空（那会让面板从
+//     「v2.8.0」退回「未知」，看起来像设备降级了）；
+//   - 只在值变化时写：设备每次重连都写会让 state 每 3 秒全量落盘一次。
+func (s *Server) recordAgentBuild(client *Client) {
+	if client == nil || client.ClientID == "" {
+		return
+	}
+	version, commit := client.agentVersion, client.agentCommit
+	if version == "" && commit == "" {
+		return
+	}
+	if s.stateStore == nil {
+		return
+	}
+	device := s.stateStore.GetDeviceByID(client.ClientID)
+	if device == nil {
+		return
+	}
+	if device.AgentVersion == version && device.AgentCommit == commit {
+		return
+	}
+	s.stateStore.UpdateDevice(client.ClientID, func(device *DeviceState) {
+		if version != "" {
+			device.AgentVersion = version
+		}
+		if commit != "" {
+			device.AgentCommit = commit
+		}
+	})
+}
+
+// cleanReportedVersion 清洗对端上报的版本串；缺失或全非法时返回空串
+// （空 = 未知，不等于「很旧」，也不会被标黄）。
+func cleanReportedVersion(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	sanitized := buildinfo.Sanitize(raw)
+	if sanitized == buildinfo.Unknown {
+		return ""
+	}
+	return sanitized
+}
+
 // releaseDataLock 幂等释放 data/.lock。任何一条启动失败路径都必须走到这里，
 // 否则同一进程内重试启动会撞上自己留下的锁。
 func (s *Server) releaseDataLock() {
@@ -578,11 +632,22 @@ func (s *Server) handleConn(c *gin.Context) {
 	// 全程 v1。
 	protoVersion := parseClientProto(c.Query("proto"))
 	aadEnabled := protoVersion >= 2 && s.config != nil && s.config.Tunnel.AAD
+	// 版本与能力位只走握手参数，不进任何 JSON 消息：老端对未知 query 参数
+	// 天然忽略，对未知 JSON 字段则会直接拒收（全仓严格解码）。
+	agentVersion := cleanReportedVersion(c.Query("ver"))
+	agentCommit := cleanReportedVersion(c.Query("commit"))
+	agentCaps := common.ParseCaps(c.Query("caps"))
+	serverCaps := common.FormatCaps(s.advertisedCaps())
 	var responseHeader http.Header
 	if protoVersion >= 2 {
 		responseHeader = http.Header{"X-Goremote-Proto": []string{"2"}}
 		if aadEnabled {
 			responseHeader.Set("X-Goremote-AAD", "1")
+		}
+		// 能力位跟着 proto=2 一起下发：没声明 proto 的老 agent 收到的是与
+		// 改动前逐字节相同的 101，不新增任何它不认识的响应头。
+		if serverCaps != "" {
+			responseHeader.Set("X-Goremote-Caps", serverCaps)
 		}
 	}
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, responseHeader)
@@ -593,7 +658,13 @@ func (s *Server) handleConn(c *gin.Context) {
 	conn.SetReadLimit(common.MaxWebSocketMessageSize)
 
 	remoteAddr := c.Request.RemoteAddr
-	slog.Debug("connection opened", "remote", remoteAddr, "proto", protoVersion)
+	slog.Debug("connection opened",
+		"remote", remoteAddr,
+		"proto", protoVersion,
+		"agent_version", agentVersion,
+		"agent_commit", agentCommit,
+		"caps", common.FormatCaps(agentCaps),
+		"server_caps", serverCaps)
 
 	client := &Client{
 		Conn:         conn,
@@ -601,6 +672,9 @@ func (s *Server) handleConn(c *gin.Context) {
 		RemoteIP:     c.ClientIP(),
 		protoVersion: protoVersion,
 		aadEnabled:   aadEnabled,
+		agentVersion: agentVersion,
+		agentCommit:  agentCommit,
+		caps:         agentCaps,
 	}
 
 	for {
@@ -687,6 +761,7 @@ func (s *Server) pendingLoop(client *Client) {
 				slog.Warn("failed to send register_ok on approval", "client_id", client.ClientID, "error", err)
 			}
 			s.clients.Add(client)
+			s.recordAgentBuild(client)
 			// 审批接口可能已经拿走了发送权：CAS 失败时本次调用直接返回 nil，
 			// 但 register_ok 是否真的写成功要看写标记，不能看返回值。
 			if client.registerOKWritten.Load() {

@@ -110,6 +110,7 @@ func newTestConfigUninitialized(t *testing.T) (*Config, *StateStore) {
 }
 
 func TestNewServer_TLSEnabled(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	certPath, keyPath := generateServerCert(t, dir)
 	config, _ := newTestConfig(t)
@@ -129,6 +130,7 @@ func TestNewServer_TLSEnabled(t *testing.T) {
 }
 
 func TestNewServer_TLSDisabled(t *testing.T) {
+	t.Parallel()
 	config, _ := newTestConfig(t)
 
 	srv := mustNewServer(t, config, embed.FS{})
@@ -139,6 +141,7 @@ func TestNewServer_TLSDisabled(t *testing.T) {
 }
 
 func TestNewHTTPServerHardeningDefaults(t *testing.T) {
+	t.Parallel()
 	config, _ := newTestConfig(t)
 	srv := mustNewServer(t, config, embed.FS{})
 
@@ -173,6 +176,7 @@ func TestNewHTTPServerHardeningDefaults(t *testing.T) {
 }
 
 func TestBuildOriginCheckerRejectsBrowserOriginByDefault(t *testing.T) {
+	t.Parallel()
 	srv := &Server{}
 	check := srv.buildOriginChecker(nil)
 
@@ -187,6 +191,7 @@ func TestBuildOriginCheckerRejectsBrowserOriginByDefault(t *testing.T) {
 }
 
 func TestBuildOriginCheckerRequiresExactOrigin(t *testing.T) {
+	t.Parallel()
 	srv := &Server{}
 	check := srv.buildOriginChecker([]string{"https://admin.example:8443"})
 

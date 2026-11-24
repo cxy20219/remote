@@ -13,6 +13,7 @@ import (
 
 // IPv6 同一 /64 内的不同地址必须共用一份违规预算：换地址不能把计数清零。
 func TestBlacklistAggregatesIPv6ViolationsPer64(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(3, "")
 	defer bm.Stop()
 
@@ -39,6 +40,7 @@ func TestBlacklistAggregatesIPv6ViolationsPer64(t *testing.T) {
 
 // 手动封禁按单个地址记账，不能被 /64 聚合放大成整段封禁。
 func TestBlacklistManualEntryStaysSingleAddress(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(10, "")
 	defer bm.Stop()
 
@@ -55,6 +57,7 @@ func TestBlacklistManualEntryStaysSingleAddress(t *testing.T) {
 
 // IPv4 行为不能变：地址本身就是一个键。
 func TestBlacklistIPv4AggregationUnchanged(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(2, "")
 	defer bm.Stop()
 
@@ -72,6 +75,7 @@ func TestBlacklistIPv4AggregationUnchanged(t *testing.T) {
 
 // 公网 accept 路径：同一 /64 换地址也要共用限流预算。
 func TestExternalConnAllowedAggregatesIPv6Per64(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(1000, "")
 	defer bm.Stop()
 	rl := NewRateLimiter(2, time.Minute)
@@ -97,6 +101,7 @@ func TestExternalConnAllowedAggregatesIPv6Per64(t *testing.T) {
 
 // 黑名单条目是 /64 聚合键时，accept 路径要按整段拒绝。
 func TestExternalConnAllowedRejectsAggregatedBlacklist(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(2, "")
 	defer bm.Stop()
 	bm.AddViolation("2001:db8::1")
@@ -118,6 +123,7 @@ func TestExternalConnAllowedRejectsAggregatedBlacklist(t *testing.T) {
 
 // 全局白名单与设备白名单继续免限流（反扫描策略），这是本项必须回归的行为。
 func TestExternalConnAllowedKeepsWhitelistBypass(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(1000, "")
 	defer bm.Stop()
 	rl := NewRateLimiter(1, time.Minute)
@@ -164,6 +170,7 @@ func TestExternalConnAllowedKeepsWhitelistBypass(t *testing.T) {
 // 自动拉黑的键含 "/"（IPv6 /64），删除接口必须能处理，
 // 否则管理员从面板解除不了聚合封禁。
 func TestRemoveBlacklistAcceptsAggregatedKey(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	bm := NewBlacklistManager(1, "")
 	defer bm.Stop()

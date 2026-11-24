@@ -39,6 +39,7 @@ const deviceWhitelistedAddr = "203.0.113.7:45678"
 
 // 设备白名单只服务隧道反扫描，不能再豁免管理面登录限流。
 func TestDeviceWhitelistDoesNotBypassLoginRateLimit(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	srv, _ := newTrustDomainServer(t)
 	rl := NewRateLimiter(2, time.Minute)
@@ -62,6 +63,7 @@ func TestDeviceWhitelistDoesNotBypassLoginRateLimit(t *testing.T) {
 
 // 设备白名单同样不再豁免 WS 连接限流。
 func TestDeviceWhitelistDoesNotBypassWSRateLimit(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	srv, _ := newTrustDomainServer(t)
 	rl := NewRateLimiter(1, time.Minute)
@@ -82,6 +84,7 @@ func TestDeviceWhitelistDoesNotBypassWSRateLimit(t *testing.T) {
 
 // 全局白名单（管理员的可信来源）继续豁免管理面限流。
 func TestGlobalWhitelistStillBypassesLoginRateLimit(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	srv, _ := newTrustDomainServer(t)
 	srv.globalWhitelist.Store(newIPMatcher([]string{"198.51.100.1"}))
@@ -102,6 +105,7 @@ func TestGlobalWhitelistStillBypassesLoginRateLimit(t *testing.T) {
 
 // 黑名单优先于白名单：管理员显式封禁的地址即使命中白名单也必须被拒。
 func TestBlacklistWinsOverGlobalWhitelist(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	srv, bm := newTrustDomainServer(t)
 	srv.globalWhitelist.Store(newIPMatcher([]string{"198.51.100.1"}))

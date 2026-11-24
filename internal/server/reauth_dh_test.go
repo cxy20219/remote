@@ -70,6 +70,7 @@ func otherDHKeyHex(t *testing.T) string {
 
 // 1. 换了 DH 公钥的 reauth 必须被拒绝。
 func TestReauthRejectsChangedDHKey(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	dm := NewDeviceManager(stateStore, common.NewCryptoManager())
 	fixture := newReauthFixture(t, dm)
@@ -95,6 +96,7 @@ func TestReauthRejectsChangedDHKey(t *testing.T) {
 
 // 2. 正常重连（DH 未变）必须通过。
 func TestReauthAcceptsUnchangedDHKey(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	dm := NewDeviceManager(stateStore, common.NewCryptoManager())
 	fixture := newReauthFixture(t, dm)
@@ -121,6 +123,7 @@ func TestReauthAcceptsUnchangedDHKey(t *testing.T) {
 // 3. 记录里有公钥、payload 不带公钥：视为不一致（不能把记录里的公钥当成
 // 「无约束」）。
 func TestReauthRejectsEmptyDHWhenStoredNonEmpty(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	dm := NewDeviceManager(stateStore, common.NewCryptoManager())
 	fixture := newReauthFixture(t, dm)
@@ -143,6 +146,7 @@ func TestReauthRejectsEmptyDHWhenStoredNonEmpty(t *testing.T) {
 
 // 4. 两侧都没有公钥（旧版未加密设备）必须放行，否则老设备会被锁在门外。
 func TestReauthAllowsEmptyDHWhenStoredEmpty(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	dm := NewDeviceManager(stateStore, common.NewCryptoManager())
 
@@ -177,6 +181,7 @@ func TestReauthAllowsEmptyDHWhenStoredEmpty(t *testing.T) {
 // 5. 记录里的公钥损坏：fail closed，且与 mismatch 分开报，否则日志会把
 // 状态损坏说成「设备换了密钥」。
 func TestReauthRejectsCorruptStoredDHKey(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	dm := NewDeviceManager(stateStore, common.NewCryptoManager())
 	fixture := newReauthFixture(t, dm)
@@ -204,6 +209,7 @@ func TestReauthRejectsCorruptStoredDHKey(t *testing.T) {
 
 // 6. 被拒绝的 reauth 不能改动设备记录，也不能制造待审批设备。
 func TestReauthMismatchDoesNotMutateDevice(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	dm := NewDeviceManager(stateStore, common.NewCryptoManager())
 	fixture := newReauthFixture(t, dm)
@@ -249,6 +255,7 @@ func TestReauthMismatchDoesNotMutateDevice(t *testing.T) {
 // 7. 走真实 WS 链路：DH 不一致必须回 register_fail，且不写入 register_ok、
 // 不动设备记录、不顶掉在线连接。
 func TestHandleReconnectRejectsDHMismatchWithoutStateChange(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -314,6 +321,7 @@ func TestHandleReconnectRejectsDHMismatchWithoutStateChange(t *testing.T) {
 // 8. 正常重连下发的 EncKey 必须仍按「记录里的」DH 公钥封装：真设备能解开，
 // 换来的公钥解不开。防「只加了拒绝、把正常路径弄坏」。
 func TestHandleReconnectSealsEncKeyToStoredDH(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -395,6 +403,7 @@ func TestHandleReconnectSealsEncKeyToStoredDH(t *testing.T) {
 // 9. 待审批期间换 DH 公钥必须仍然允许刷新（Android 重装依赖它），这是本次
 // 刻意保留的行为，钉住防止以后被顺手收紧。
 func TestPendingDHRefreshStillAllowed(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	dm := NewDeviceManager(stateStore, common.NewCryptoManager())
 
@@ -433,6 +442,7 @@ func TestPendingDHRefreshStillAllowed(t *testing.T) {
 
 // 10. 校验与审批/读取并发：既不能数据竞争，也不能在锁外读到半更新状态。
 func TestReauthDHMismatchConcurrentWithApproval(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	dm := NewDeviceManager(stateStore, common.NewCryptoManager())
 	fixture := newReauthFixture(t, dm)

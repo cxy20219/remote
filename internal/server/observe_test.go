@@ -44,6 +44,7 @@ func getHealth(t *testing.T, srv *Server) map[string]any {
 }
 
 func TestHealthSummaryCountsTunnelsAndDevices(t *testing.T) {
+	t.Parallel()
 	srv := newObserveTestServer(t)
 	store := srv.stateStore
 	tm := NewTunnelManager(srv, 24000, 24100)
@@ -96,6 +97,7 @@ func TestHealthSummaryCountsTunnelsAndDevices(t *testing.T) {
 }
 
 func TestHealthDegradedWhenAllDevicesOffline(t *testing.T) {
+	t.Parallel()
 	srv := newObserveTestServer(t)
 	store := srv.stateStore
 	store.AddDevice(&DeviceState{ID: "dev-1", Status: deviceStatusAuthorized})
@@ -111,6 +113,7 @@ func TestHealthDegradedWhenAllDevicesOffline(t *testing.T) {
 }
 
 func TestHealthDegradedWhenPersistStalls(t *testing.T) {
+	t.Parallel()
 	srv := newObserveTestServer(t)
 	store := srv.stateStore
 
@@ -135,6 +138,7 @@ func TestHealthDegradedWhenPersistStalls(t *testing.T) {
 }
 
 func TestRecordDeviceDisconnectKeepsRecentHistory(t *testing.T) {
+	t.Parallel()
 	store := NewStateStore(t.TempDir() + "/server-state.json")
 	if err := store.Load(); err != nil {
 		t.Fatalf("load: %v", err)
@@ -182,6 +186,7 @@ func TestRecordDeviceDisconnectKeepsRecentHistory(t *testing.T) {
 }
 
 func TestGracefulShutdownRecordsServerShutdown(t *testing.T) {
+	t.Parallel()
 	srv := newObserveTestServer(t)
 	store := srv.stateStore
 	store.AddDevice(&DeviceState{ID: "dev-1", Status: deviceStatusAuthorized})
@@ -213,6 +218,7 @@ func TestGracefulShutdownRecordsServerShutdown(t *testing.T) {
 }
 
 func TestTunnelLastDisconnectPersists(t *testing.T) {
+	t.Parallel()
 	store := NewStateStore(t.TempDir() + "/server-state.json")
 	if err := store.Load(); err != nil {
 		t.Fatalf("load: %v", err)
@@ -424,6 +430,7 @@ func fmtAuditFingerprint(t *testing.T, fingerprint string) string {
 }
 
 func TestShutdownDisconnectIsRecordedOnce(t *testing.T) {
+	t.Parallel()
 	srv := newObserveTestServer(t)
 	store := srv.stateStore
 	store.AddDevice(&DeviceState{ID: "dev-1", Status: deviceStatusAuthorized})
@@ -450,6 +457,7 @@ func TestShutdownDisconnectIsRecordedOnce(t *testing.T) {
 }
 
 func TestHealthIgnoresPendingDevicesForOfflineCheck(t *testing.T) {
+	t.Parallel()
 	srv := newObserveTestServer(t)
 	// 只有待审批设备：还没接入，不该把新实例判成 degraded。
 	srv.stateStore.AddDevice(&DeviceState{ID: "dev-pending", Status: deviceStatusPending})
@@ -476,6 +484,7 @@ func TestAuditTruncatesLongClientIDs(t *testing.T) {
 }
 
 func TestDisconnects24hExcludesServerShutdown(t *testing.T) {
+	t.Parallel()
 	store := NewStateStore(t.TempDir() + "/server-state.json")
 	if err := store.Load(); err != nil {
 		t.Fatalf("load: %v", err)
@@ -503,6 +512,7 @@ func TestDisconnects24hExcludesServerShutdown(t *testing.T) {
 // 内存里每次都更新，但一分钟内的重复心跳不再标脏。设备一多，逐心跳落盘会把
 // 同步循环顶到 3 秒一次的上限。
 func TestTouchDeviceSeenThrottlesPersistence(t *testing.T) {
+	t.Parallel()
 	store := NewStateStore(t.TempDir() + "/server-state.json")
 	if err := store.Load(); err != nil {
 		t.Fatalf("load: %v", err)
@@ -538,6 +548,7 @@ func TestTouchDeviceSeenThrottlesPersistence(t *testing.T) {
 // TestDetachClientDoesNotPersistSynchronously 钉住断线热路径不做全量落盘：
 // 它持着 tm.mu，同步 fsync 会把所有隧道操作一起卡住。
 func TestDetachClientDoesNotPersistSynchronously(t *testing.T) {
+	t.Parallel()
 	store := NewStateStore(t.TempDir() + "/server-state.json")
 	if err := store.Load(); err != nil {
 		t.Fatalf("load: %v", err)

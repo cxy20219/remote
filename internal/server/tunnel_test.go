@@ -16,6 +16,7 @@ const (
 )
 
 func TestSetPortRange_UpdatesPortStatus(t *testing.T) {
+	t.Parallel()
 	cryptoMgr := common.NewCryptoManager()
 	_ = cryptoMgr
 	tm := NewTunnelManager(nil, 10000, 20000)
@@ -43,6 +44,7 @@ func TestSetPortRange_UpdatesPortStatus(t *testing.T) {
 }
 
 func TestSetPortRange_PortAllocationInNewRange(t *testing.T) {
+	t.Parallel()
 	// 端口段必须整体 >= 1024：CI 的 runner 是普通用户，绑定特权端口会失败。
 	// 分配器会跳过 bind 失败的端口，所以段里有几个特权端口不至于挂，但整段
 	// 都在 1024 以下时一次分配都拿不到（本地 macOS 能绑，CI 才暴露）。
@@ -75,6 +77,7 @@ func TestSetPortRange_PortAllocationInNewRange(t *testing.T) {
 }
 
 func TestSetPortRange_TracksAllocatedCount(t *testing.T) {
+	t.Parallel()
 	// 同上：段起点也要 >= 1024。1000-2000 会让分配器先去 bind 1000-1023，
 	// 在 Linux 上逐个失败后跳过——测试仍绿，但每次 CI 都刷一屏 WARN。
 	tm := NewTunnelManager(nil, 21000, 21100)
@@ -105,6 +108,7 @@ func TestSetPortRange_TracksAllocatedCount(t *testing.T) {
 }
 
 func TestNormalizeTunnelExposure(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		exposure  string
@@ -138,6 +142,7 @@ func TestNormalizeTunnelExposure(t *testing.T) {
 }
 
 func TestAllocatePortForExposure_ServerLocalBindsLoopback(t *testing.T) {
+	t.Parallel()
 	tm := NewTunnelManager(nil, 30000, 30100)
 
 	port, ln, err := tm.AllocatePortForExposure(TunnelExposureServerLocal)
@@ -153,6 +158,7 @@ func TestAllocatePortForExposure_ServerLocalBindsLoopback(t *testing.T) {
 }
 
 func TestUpdateTunnelClosesConnectionsWhenTargetChanges(t *testing.T) {
+	t.Parallel()
 	tm := NewTunnelManager(nil, 30000, 30100)
 	tm.tunnels["t1"] = &Tunnel{
 		TunnelID:   "t1",
@@ -179,6 +185,7 @@ func TestUpdateTunnelClosesConnectionsWhenTargetChanges(t *testing.T) {
 }
 
 func TestUpdateTunnel_EmptyExposurePreservesCurrentMode(t *testing.T) {
+	t.Parallel()
 	tm := NewTunnelManager(nil, 30000, 30100)
 	tm.tunnels["t1"] = &Tunnel{
 		TunnelID:   "t1",
@@ -202,6 +209,7 @@ func TestUpdateTunnel_EmptyExposurePreservesCurrentMode(t *testing.T) {
 }
 
 func TestApproveDevice_ChangesStatus(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -241,6 +249,7 @@ func TestApproveDevice_ChangesStatus(t *testing.T) {
 }
 
 func TestApproveDeviceRequiresDHPubkey(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -273,6 +282,7 @@ func TestApproveDeviceRequiresDHPubkey(t *testing.T) {
 }
 
 func TestRegisterNewClientRejectsInvalidDHPubkeySize(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -290,6 +300,7 @@ func TestRegisterNewClientRejectsInvalidDHPubkeySize(t *testing.T) {
 }
 
 func TestDenyDevice_RemovesFromStore(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -310,6 +321,7 @@ func TestDenyDevice_RemovesFromStore(t *testing.T) {
 }
 
 func TestDenyDeviceRejectsAuthorizedDevice(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -335,6 +347,7 @@ func TestDenyDeviceRejectsAuthorizedDevice(t *testing.T) {
 }
 
 func TestRegisterNewClient_ReusesExistingPendingDevice(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -369,6 +382,7 @@ func TestRegisterNewClient_ReusesExistingPendingDevice(t *testing.T) {
 }
 
 func TestPendingConnReplacementDoesNotLetOldCleanupDeleteNew(t *testing.T) {
+	t.Parallel()
 	dm := &DeviceManager{
 		pendingConns: make(map[string]*PendingConn),
 	}
@@ -408,6 +422,7 @@ func TestPendingConnReplacementDoesNotLetOldCleanupDeleteNew(t *testing.T) {
 }
 
 func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -503,6 +518,7 @@ func TestHandleReconnectRefreshesDeviceMetadata(t *testing.T) {
 }
 
 func TestHandleReconnectRejectsInvalidStoredDHPubkey(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -560,6 +576,7 @@ func TestHandleReconnectRejectsInvalidStoredDHPubkey(t *testing.T) {
 }
 
 func TestDeleteDevice_RemovesCryptoKey(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -584,6 +601,7 @@ func TestDeleteDevice_RemovesCryptoKey(t *testing.T) {
 }
 
 func TestNewDeviceManagerDoesNotLoadDisabledEncryptionKey(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	stateStore.AddDevice(&DeviceState{
 		ID:         "client-disabled",
@@ -601,6 +619,7 @@ func TestNewDeviceManagerDoesNotLoadDisabledEncryptionKey(t *testing.T) {
 }
 
 func TestReauth_VerifiesSignature(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -632,6 +651,7 @@ func TestReauth_VerifiesSignature(t *testing.T) {
 }
 
 func TestReauthRejectsSignatureReplay(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -668,6 +688,7 @@ func TestReauthRejectsSignatureReplay(t *testing.T) {
 }
 
 func TestRegenerateEncKey_ChangesCryptoKey(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -687,6 +708,7 @@ func TestRegenerateEncKey_ChangesCryptoKey(t *testing.T) {
 }
 
 func TestHandleAgentData_MissingExternalConnIsNonFatal(t *testing.T) {
+	t.Parallel()
 	tm := NewTunnelManager(nil, 10000, 20000)
 
 	if err := tm.HandleAgentData("missing-tunnel", "missing-conn", []byte("late-data"), false); err != nil {
@@ -699,6 +721,7 @@ func TestHandleAgentData_MissingExternalConnIsNonFatal(t *testing.T) {
 }
 
 func TestHandleAgentData_RejectsConnFromDifferentTunnel(t *testing.T) {
+	t.Parallel()
 	tm := NewTunnelManager(nil, 10000, 20000)
 	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a"}
 	tm.tunnels["tunnel-b"] = &Tunnel{TunnelID: "tunnel-b"}
@@ -719,6 +742,7 @@ func TestHandleAgentData_RejectsConnFromDifferentTunnel(t *testing.T) {
 }
 
 func TestHandleAgentData_EOFRemovesMatchingConn(t *testing.T) {
+	t.Parallel()
 	tm := NewTunnelManager(nil, 10000, 20000)
 	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a"}
 	serverConn, clientConn := net.Pipe()
@@ -737,6 +761,7 @@ func TestHandleAgentData_EOFRemovesMatchingConn(t *testing.T) {
 }
 
 func TestDetachClient_KeepsDefinitionsAndClosesListeners(t *testing.T) {
+	t.Parallel()
 	tm := NewTunnelManager(nil, 10000, 20000)
 	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a", ClientID: "client-1", PublicPort: 10001, Status: TunnelStatusActive}
 	tm.tunnels["tunnel-b"] = &Tunnel{TunnelID: "tunnel-b", ClientID: "client-1", PublicPort: 10002, Status: TunnelStatusActive}
@@ -801,6 +826,7 @@ func TestDetachClient_KeepsDefinitionsAndClosesListeners(t *testing.T) {
 }
 
 func TestCreateTunnelUsesRuntimeMaxTunnelsSetting(t *testing.T) {
+	t.Parallel()
 	settings := defaultSettings()
 	settings.MaxTunnelsPerClient = 1
 	stateStore := newTestStateStore(settings)
@@ -823,6 +849,7 @@ func TestCreateTunnelUsesRuntimeMaxTunnelsSetting(t *testing.T) {
 }
 
 func TestUpdateDeviceConfigTogglesEncryptionRuntimeKey(t *testing.T) {
+	t.Parallel()
 	_, stateStore := newTestConfig(t)
 	cryptoMgr := common.NewCryptoManager()
 	dm := NewDeviceManager(stateStore, cryptoMgr)
@@ -874,6 +901,7 @@ func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool
 }
 
 func TestHandleAgentDataPreservesOrder(t *testing.T) {
+	t.Parallel()
 	tm := NewTunnelManager(nil, 10000, 20000)
 	tm.tunnels["tunnel-a"] = &Tunnel{TunnelID: "tunnel-a"}
 
@@ -914,6 +942,7 @@ func externalConnPresent(tm *TunnelManager, connID string) bool {
 }
 
 func TestServerTunnelBytesRoundTripWhenEncryptionEnabled(t *testing.T) {
+	t.Parallel()
 	cryptoMgr := common.NewCryptoManager()
 	if err := cryptoMgr.SetKey("client-enc", make([]byte, 32)); err != nil {
 		t.Fatalf("SetKey: %v", err)
@@ -944,6 +973,7 @@ func TestServerTunnelBytesRoundTripWhenEncryptionEnabled(t *testing.T) {
 }
 
 func TestServerTunnelBytesAllowPlaintextWhenEncryptionDisabled(t *testing.T) {
+	t.Parallel()
 	srv := &Server{cryptoMgr: common.NewCryptoManager()}
 	client := &Client{ClientID: "client-plain"}
 	client.SetEncryptionEnabled(false)

@@ -109,6 +109,7 @@ func assertNoPanic(t *testing.T, output string) {
 // TestStartupWithoutStateKeyExitsCleanly 覆盖「只给 data/、没有 key」：
 // 必须是 exit 2 + 一句能照着做的错误，不是 panic，也不是空状态启动。
 func TestStartupWithoutStateKeyExitsCleanly(t *testing.T) {
+	t.Parallel()
 	dir := newStartupStateDir(t, startupTestKey())
 	binary := buildServerBinary(t)
 
@@ -130,6 +131,7 @@ func TestStartupWithoutStateKeyExitsCleanly(t *testing.T) {
 
 // TestStartupWithWrongStateKeyExitsCleanly：key 给了但不对，也不能 panic。
 func TestStartupWithWrongStateKeyExitsCleanly(t *testing.T) {
+	t.Parallel()
 	dir := newStartupStateDir(t, startupTestKey())
 	binary := buildServerBinary(t)
 
@@ -157,6 +159,7 @@ func TestStartupWithWrongStateKeyExitsCleanly(t *testing.T) {
 
 // TestStartupWithNewerStateSchemaExitsCleanly：状态文件比二进制新，要指向升级而不是降级。
 func TestStartupWithNewerStateSchemaExitsCleanly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "server-state.json")
 	if err := os.WriteFile(statePath, []byte(`{"schema_version":99,"devices":[]}`), 0o600); err != nil {
@@ -266,6 +269,7 @@ func freeLoopbackPort(t *testing.T) int {
 // TestReadStateKeyFileAcceptsEnvironmentFile 是上面那条回归用例的单元版本：
 // 解析结果必须是纯密钥，而不是 "GOREMOTE_STATE_KEY=..." 整行。
 func TestReadStateKeyFileAcceptsEnvironmentFile(t *testing.T) {
+	t.Parallel()
 	key := startupTestKey()
 	dir := t.TempDir()
 

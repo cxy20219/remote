@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"goremote/internal/buildinfo"
 	"goremote/internal/common"
 )
 
@@ -38,7 +39,19 @@ type Connector struct {
 	proto int
 	// aad 表示本次连接协商了 v2 帧 AAD（101 回了 X-Goremote-AAD: 1）。
 	aad bool
+	// serverCaps 是服务端在 101 里声明的能力位（X-Goremote-Caps）。
+	serverCaps []string
+	// legacyHandshake 让本连接不带任何握手参数，用来复现「老 agent × 新服务端」。
+	// 只有测试会设置它：生产路径永远带 proto/ver/commit。
+	legacyHandshake bool
 }
+
+// agentCaps 是本 agent 支持的细粒度能力位。
+//
+// 本阶段为空：还没有任何「按 cap 门控的可选字段」。留着这个变量是为了让发送
+// 路径是真的（FormatCaps 会走到），将来加第一个可选字段时只需往这里加一项，
+// 不用再改握手代码。
+var agentCaps = []string{}
 
 func NewConnector(serverAddr string, tlsEnabled bool, tlsCA string, insecureSkipVerify bool, identity *AgentIdentity) *Connector {
 	return &Connector{
@@ -58,9 +71,26 @@ func (c *Connector) Connect() error {
 	if c.tlsEnabled {
 		scheme = "wss"
 	}
-	// 声明 proto=2：新服务端据此按 v2 行为回错误（例如 clock_skew），并回
-	// X-Goremote-Proto；老服务端忽略 query，也不回头，按 v1 处理。
-	u := url.URL{Scheme: scheme, Host: c.serverAddr, Path: "/ws", RawQuery: "proto=2"}
+	// 握手参数：proto 是行为位，ver/commit 是元数据，caps 是可选特性。
+	// 老服务端忽略整个 query（也不回头），新服务端全部可读——这是唯一一条
+	// 「老端天然忽略、新端可用、且在第一条 JSON 之前就拿到」的通道，因此
+	// 不需要给任何 JSON 消息加字段。
+	query := url.Values{}
+	query.Set("proto", "2")
+	if version := buildinfo.String(); version != buildinfo.Unknown && version != "dev" {
+		query.Set("ver", version)
+	}
+	if commit := buildinfo.Commit(); commit != "dev" {
+		query.Set("commit", commit)
+	}
+	if caps := common.FormatCaps(agentCaps); caps != "" {
+		query.Set("caps", caps)
+	}
+	if c.legacyHandshake {
+		// 复现老 agent：什么参数都不带。用于兼容矩阵里「老 agent × 新服务端」。
+		query = url.Values{}
+	}
+	u := url.URL{Scheme: scheme, Host: c.serverAddr, Path: "/ws", RawQuery: query.Encode()}
 
 	slog.Info("connecting to server", "addr", c.serverAddr)
 
@@ -86,9 +116,11 @@ func (c *Connector) Connect() error {
 
 	c.proto = 1
 	c.aad = false
+	c.serverCaps = nil
 	if resp != nil {
 		c.proto = parseServerProto(resp.Header.Get("X-Goremote-Proto"))
 		c.aad = resp.Header.Get("X-Goremote-AAD") == "1"
+		c.serverCaps = common.ParseCaps(resp.Header.Get("X-Goremote-Caps"))
 	}
 
 	c.conn = conn
@@ -113,6 +145,13 @@ func (c *Connector) AADEnabled() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.aad
+}
+
+// ServerCaps 返回服务端声明的能力位（老服务端不声明，返回空）。
+func (c *Connector) ServerCaps() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.serverCaps...)
 }
 
 // parseServerProto 解析 101 响应里的 X-Goremote-Proto；缺省或非法按 1 处理。

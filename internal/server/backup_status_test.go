@@ -35,6 +35,7 @@ func getBackupStatus(t *testing.T, srv *Server) BackupStatusResponse {
 
 // TestBackupStatusEndpoint 钉住字段名与语义：前端按这个形状显示「上次备份」。
 func TestBackupStatusEndpoint(t *testing.T) {
+	t.Parallel()
 	srv := newObserveTestServer(t)
 
 	registered := false
@@ -88,6 +89,7 @@ func TestBackupStatusEndpoint(t *testing.T) {
 // TestStartHoldsDataDirLock 证明「服务在跑」这件事有一个内核级的判据，
 // 而不是靠人去猜：Start 持锁，Stop 之后锁必须能重新拿到。
 func TestStartHoldsDataDirLock(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)
 	srv := mustNewServer(t, config, embed.FS{})
@@ -124,6 +126,7 @@ func TestStartHoldsDataDirLock(t *testing.T) {
 // TestSecondServerOnSameDataDirRefusesToStart 是「服务在跑时不许恢复」的另一半：
 // 同一份 data 上起第二个实例必须当场失败，并点名 data/.lock。
 func TestSecondServerOnSameDataDirRefusesToStart(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	config, _ := newTestConfig(t)
 	first := mustNewServer(t, config, embed.FS{})

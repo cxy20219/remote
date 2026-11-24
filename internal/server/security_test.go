@@ -12,6 +12,7 @@ import (
 )
 
 func TestRateLimiterZeroLimitDisablesLimiter(t *testing.T) {
+	t.Parallel()
 	rl := NewRateLimiter(0, time.Minute)
 
 	for i := 0; i < 20; i++ {
@@ -22,6 +23,7 @@ func TestRateLimiterZeroLimitDisablesLimiter(t *testing.T) {
 }
 
 func TestRateLimiterSetLimitAppliesImmediately(t *testing.T) {
+	t.Parallel()
 	rl := NewRateLimiter(1, time.Minute)
 
 	if !rl.Allow("192.0.2.20") {
@@ -41,12 +43,14 @@ func TestRateLimiterSetLimitAppliesImmediately(t *testing.T) {
 }
 
 func TestBlacklistManagerStopIsIdempotent(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(1, "")
 	bm.Stop()
 	bm.Stop()
 }
 
 func TestBlacklistManagerRetainsRecentViolations(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(10, "")
 	bm.AddViolation("192.0.2.55")
 	bm.cleanupExpired()
@@ -57,6 +61,7 @@ func TestBlacklistManagerRetainsRecentViolations(t *testing.T) {
 }
 
 func TestBlacklistManagerAutoBlacklistExpires(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(1, "")
 	bm.mu.Lock()
 	bm.entries["192.0.2.56"] = &BlacklistEntry{
@@ -77,6 +82,7 @@ func TestBlacklistManagerAutoBlacklistExpires(t *testing.T) {
 }
 
 func TestDynamicBodySizeLimitMiddlewareUsesLatestLimit(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	maxBytes := int64(4)
@@ -109,6 +115,7 @@ func TestDynamicBodySizeLimitMiddlewareUsesLatestLimit(t *testing.T) {
 }
 
 func TestBrowserOriginGuardMiddleware(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	router := gin.New()

@@ -22,6 +22,13 @@ type Config struct {
 type ServerConfig struct {
 	Address string    `yaml:"address"`
 	TLS     TLSConfig `yaml:"tls"`
+	// LegacyHandshake 让本连接不带任何握手参数（proto/ver/commit/caps），
+	// 行为与 v2.8.0 之前的 agent 完全一致。
+	//
+	// 它不是给普通用户用的：反向代理/WAF 改写 WS 握手时会得到同样的结果，
+	// 这个开关用来复现和定位那类问题，也是兼容矩阵里「老 agent × 新服务端」
+	// 那一格的实现方式。
+	LegacyHandshake bool `yaml:"legacy_handshake"`
 }
 
 type TLSConfig struct {

@@ -1006,7 +1006,9 @@ func TestCreateTunnelReturnsOKWhenApplyFails(t *testing.T) {
 func TestRemoveDeviceRollbackSurvivesConcurrentDeletes(t *testing.T) {
 	ids := []string{"dev-1", "dev-2", "dev-3", "dev-4"}
 	for round := 0; round < 50; round++ {
-		_, store := newTestConfig(t)
+		// 这条用例只需要一个 state store；newTestConfig 会顺手做一次 bcrypt
+		// 建管理员密码，50 轮就是 20 多秒，与本用例要验证的回滚毫无关系。
+		_, store := newTestConfigUninitialized(t)
 		for _, id := range ids {
 			store.AddDevice(&DeviceState{ID: id, Name: id, Status: deviceStatusAuthorized})
 		}

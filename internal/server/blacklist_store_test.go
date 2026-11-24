@@ -91,6 +91,7 @@ func waitForFile(t *testing.T, path string, timeout time.Duration) {
 }
 
 func TestBlacklistManualEntrySurvivesRestart(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "data", "blacklist.json")
 
 	bm := NewBlacklistManager(10, path)
@@ -160,6 +161,7 @@ func TestBlacklistManualEntrySurvivesRestart(t *testing.T) {
 // 自动拉黑走 3 秒批量写盘；窗口内的多次标记必须合并成一次写入。测试注入
 // 更短的窗口，但断言的是同一套“窗口内不写、窗口后写一次”的行为。
 func TestBlacklistAutoEntriesAreFlushedInBackground(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	const delay = 400 * time.Millisecond
 	bm := newBlacklistManager(1, path, delay)
@@ -225,6 +227,7 @@ func TestBlacklistAutoEntriesAreFlushedInBackground(t *testing.T) {
 // 这条只钉默认常量；「批量落盘循环真的用了注入的窗口」由下面两条行为用例
 // 约束——只改这里的话，把 autoFlushLoop 里的 delay 写死仍然能骗过去。
 func TestBlacklistFlushWindowIsThreeSeconds(t *testing.T) {
+	t.Parallel()
 	if blacklistFlushDelay != 3*time.Second {
 		t.Fatalf("production blacklist flush window = %v, want 3s", blacklistFlushDelay)
 	}
@@ -235,6 +238,7 @@ func TestBlacklistFlushWindowIsThreeSeconds(t *testing.T) {
 // 这段时间内绝不能落盘。任何单一写死的值都会违反其中一条（写死 300ms 违反
 // 前者之外的另一条，写死 3s 违反前者），所以这条用例能锁住行为而不是常量。
 func TestBlacklistFlushHonoursInjectedWindow(t *testing.T) {
+	t.Parallel()
 	t.Run("short window flushes quickly", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "blacklist.json")
 		bm := newBlacklistManager(1, path, 50*time.Millisecond)
@@ -265,6 +269,7 @@ func TestBlacklistFlushHonoursInjectedWindow(t *testing.T) {
 }
 
 func TestBlacklistLoadDropsExpiredEntries(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	now := time.Now()
 	writeBlacklistFixture(t, path, []BlacklistEntry{
@@ -289,6 +294,7 @@ func TestBlacklistLoadDropsExpiredEntries(t *testing.T) {
 // 旧文件没有 source 字段：永久条目按手动、带过期时间按自动，保证升级后
 // 手动封禁也不会被淘汰。
 func TestBlacklistSourceBackfilledOnLoad(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	now := time.Now()
 	writeBlacklistFixture(t, path, []BlacklistEntry{
@@ -313,6 +319,7 @@ func TestBlacklistSourceBackfilledOnLoad(t *testing.T) {
 // 表满时只淘汰 auto：手动封禁即使是最早添加的也必须保留，否则攻击者用
 // 流量填满表就能把手动封禁洗掉（审计阻塞项）。
 func TestBlacklistEvictionOnlyTargetsAutoEntries(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	base := time.Now().Add(-time.Duration(blacklistMaxEntries) * time.Second)
 	entries := make([]BlacklistEntry, 0, blacklistMaxEntries)
@@ -362,6 +369,7 @@ func TestBlacklistEvictionOnlyTargetsAutoEntries(t *testing.T) {
 // 全是手动条目的满表：新增手动返回 ErrBlacklistFull、自动拉黑直接放弃，
 // 两种情况下都不淘汰任何条目，也不重写文件。
 func TestBlacklistFullOfManualEntriesRejectsInserts(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	base := time.Now().Add(-time.Duration(blacklistMaxEntries) * time.Second)
 	entries := make([]BlacklistEntry, 0, blacklistMaxEntries)
@@ -418,6 +426,7 @@ func TestBlacklistFullOfManualEntriesRejectsInserts(t *testing.T) {
 }
 
 func TestBlacklistCorruptFileIsQuarantined(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		content string
@@ -458,6 +467,7 @@ func TestBlacklistCorruptFileIsQuarantined(t *testing.T) {
 // 插入时为腾位置淘汰的 auto 条目，必须和这次写入同成同败：落盘失败时
 // 把它们放回去，内存不能比磁盘少一条。
 func TestBlacklistPersistFailureRestoresEvictedEntries(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "data")
 	path := filepath.Join(dir, "blacklist.json")
 	base := time.Now().Add(-time.Duration(blacklistMaxEntries) * time.Second)
@@ -508,6 +518,7 @@ func TestBlacklistPersistFailureRestoresEvictedEntries(t *testing.T) {
 }
 
 func TestBlacklistWriteFailureRollsBackManualChange(t *testing.T) {
+	t.Parallel()
 	// 父路径是个普通文件，MkdirAll/写盘必然失败。
 	blocker := filepath.Join(t.TempDir(), "blocked")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
@@ -540,6 +551,7 @@ func TestBlacklistWriteFailureRollsBackManualChange(t *testing.T) {
 // 回滚只在「当前值仍是本次写入」时生效：并发操作已经成功写入新值时，
 // 失败的旧操作不能把它覆盖回旧状态。
 func TestBlacklistRollbackDoesNotClobberConcurrentSuccess(t *testing.T) {
+	t.Parallel()
 	bm := NewBlacklistManager(1, "")
 	defer bm.Stop()
 
@@ -580,6 +592,7 @@ func TestBlacklistRollbackDoesNotClobberConcurrentSuccess(t *testing.T) {
 // 中间态用真实路径构造：腾位置走 makeRoomLocked，删除走 Remove（真写盘）；
 // 回滚调用的是 AddManual 失败分支里的同一个函数，不依赖调度概率。
 func TestBlacklistEvictionRollbackDoesNotResurrectConcurrentRemoval(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "data", "blacklist.json")
 	const victim = "198.18.0.0"
 	base := time.Now().Add(-time.Duration(blacklistMaxEntries) * time.Second)
@@ -634,6 +647,7 @@ func TestBlacklistEvictionRollbackDoesNotResurrectConcurrentRemoval(t *testing.T
 // 审计探针（同一类问题）：两个并发 Remove，先删的那个写盘失败、后删的成功
 // 落盘。失败方的回滚不能把这个 IP 恢复，否则等于撤销了另一个的成功。
 func TestBlacklistRemovalRollbackDoesNotUndoConcurrentSuccess(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	bm := NewBlacklistManager(1, path)
 	defer bm.Stop()
@@ -676,6 +690,7 @@ func TestBlacklistRemovalRollbackDoesNotUndoConcurrentSuccess(t *testing.T) {
 // flush——旧用例只在 Stop 之后重启校验，把 AddManual 的同步写改成交给批量
 // 协程也能骗过去（别的 worker 的 AddViolation 触发 flush 会顺手带上它）。
 func TestBlacklistConcurrentAddRemove(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	bm := newBlacklistManager(2, path, 50*time.Millisecond)
 
@@ -732,6 +747,7 @@ func TestBlacklistConcurrentAddRemove(t *testing.T) {
 // API 契约：满表且全是手动条目时新增返回 500，文案要说清怎么恢复，不能
 // 悄悄淘汰别人的封禁。
 func TestAddBlacklistAPIReportsFullManualTable(t *testing.T) {
+	t.Parallel()
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	base := time.Now().Add(-time.Duration(blacklistMaxEntries) * time.Second)
@@ -776,6 +792,7 @@ func TestAddBlacklistAPIReportsFullManualTable(t *testing.T) {
 // 这条原样写进文件（模拟「另一次成功写盘」，不经过管理器，所以序号不变量看不到
 // 它，只能靠回读磁盘兜底），随后放开，让本次写盘真的失败。
 func TestBlacklistFailedInsertNotRolledBackWhenAlreadyOnDisk(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "data")
 	path := filepath.Join(dir, "blacklist.json")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -852,6 +869,7 @@ func TestBlacklistFailedInsertNotRolledBackWhenAlreadyOnDisk(t *testing.T) {
 // 序号不变量的兜底：这次插入之后已有一次成功落盘的快照（lastDurableSeq 推进），
 // 即使回读文件不可用（EIO/权限），也必须按成功处理，不能把已经落盘的插入回滚。
 func TestBlacklistFailedInsertKeptWhenDurableSnapshotCoversIt(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blacklist.json")
 	bm := NewBlacklistManager(1, path)
 	defer bm.Stop()
@@ -942,6 +960,7 @@ func TestBlacklistRenameSuccessSurvivesDirSyncFailure(t *testing.T) {
 // rename 之前的失败必须返回错误、回滚内存，并且不能推进 lastDurableSeq：否则
 // 后续回滚会误以为这次变更已经落盘而放弃恢复。
 func TestBlacklistPrewriteFailureDoesNotAdvanceDurableSeq(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "data", "blacklist.json")
 	bm := NewBlacklistManager(1, path)
 	defer bm.Stop()

@@ -43,6 +43,14 @@ type Client struct {
 	// protoVersion 是本连接协商到的协议版本，来自 WS 升级请求的 ?proto=2。
 	// 老 agent 不声明 → 按 v1 行为处理。
 	protoVersion int
+	// agentVersion / agentCommit 来自握手参数 ?ver= / ?commit=，已清洗过；
+	// 老 agent 不带 → 空。它们只在注册成功后落进设备记录（见 recordAgentBuild），
+	// 不参与任何行为门控：版本串只是元数据，proto/caps 才是能力位。
+	agentVersion string
+	agentCommit  string
+	// caps 是 agent 在握手时声明的能力位（?caps=a,b），本阶段还没有任何
+	// 按 cap 门控的可选字段，先存下来供排障与后续能力使用。
+	caps []string
 	// aadEnabled 表示升级时协商了 v2 帧 AAD（proto=2 且服务端开关打开）。
 	// 建连后不再变化。
 	aadEnabled bool
