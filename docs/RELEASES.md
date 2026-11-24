@@ -54,6 +54,30 @@ gh workflow run release.yml --ref main -f source_ref=v2.6.0
 
 这条路径检出 `v2.6.0` 作为构建树、脚本取自 `main` 的提交，产出应与下表一致（二进制里的 `vcs.revision` 仍是 `0ae72c8`）。
 
+## v2.8.0
+
+- **发布日期**：2026-11-25
+- **tag**：`v2.8.0`（附注 tag，说明「观察面、数据安全、协议能力位、流量历史」）
+- **commit**：`78b49084d5bf6749d94191cea8a8b06352a0b6dc`（`78b4908`）
+- **Go**：`go1.27.4`
+- **构建**：CI（GitHub Actions ubuntu-latest）跑 `scripts/release.sh`，`vcs.modified=false`、`-trimpath=true`，ldflags 取自 `scripts/ldflags.sh`（含 `-X goremote/internal/buildinfo.Version=v2.8.0`）
+- **包名**：`goremote-v2.8.0-<platform>.tar.gz`（linux/darwin）、`goremote-v2.8.0-<platform>.zip`（windows）
+- **线上一致性**：`linux-amd64` 的 `goremote-server` 与生产 `/opt/goremote/server` 逐位相同（本次部署即取自该流水线同一 commit 的本地构建）
+
+### 二进制 sha256
+
+| 平台 | `goremote-server` | `goremote-agent` |
+|---|---|---|
+| linux-amd64 | `7e3f0bb4e1412ec9b14f4122026cb41b1099c0fb838f1f87d258da716a78b586` | `60ed86a6dc125c817392955cddd61ef89d8bece2a2e8ee8d3fcdd04e1111a556` |
+| linux-arm64 | `23bb89dd8723081625d6460671eaec16063cdef06e804606a70d5e2cc828bea7` | `bffaca5873e360f2569e4e9cb578a5f124196c8b363a600db17caf10109916b7` |
+| linux-armv7 | `286fff159f752ebb17741e3dfefd0846a67775efedb05ee891f877b256f93f98` | `dc4352e1433dc4dc20ffd5c21a6846f3e7be65de33493b3c54a07a3661f8dc64` |
+| darwin-amd64 | `a52dff351144ca2f752f1234b31d7d758c86d916c483cf840620712a6f201d64` | `1750ea3d5d33e76abbbf1a5f154785550b99550c50e436bd6607d385b5ddfb7d` |
+| darwin-arm64 | `506843875b1a7354631fdf487b70da51786dd99886ef32160ff4f63f0362d8c7` | `983d7e5d0ab2b7531bcbfd6ba0d30a919bae0681605ac2dfc1567e922e239ca8` |
+| windows-amd64 | `b6247ad55b6ffe5a6e549118f42430a2afcef11fac45f9f8b894d5c939d60c8f` | `8bd558bcfcfd509f041dbbefca90f98a6528e68a0222dd26b4403f4a6916aeec` |
+| windows-arm64 | `bcadf61d33d72d21846fdbd39c0697744a39f8a4712be462dadf215d71d2f551` | `bc5c4c5611d84d424bf41ae548dac5839116ecfb6138b683ca2b6932ae7928ae` |
+
+Windows 两个文件名带 `.exe`，哈希对应这两个文件。以上哈希均由下载发布资产、解包后对包内二进制逐一计算得出，不是压缩包哈希。
+
 ## v2.7.0
 
 - **发布日期**：2026-11-24
