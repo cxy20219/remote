@@ -80,9 +80,10 @@ tbody tr:hover td{background:#f8fafc}
 #tunnels code,#tunnels .mono,#tunnels .tunnel-exposure{white-space:nowrap}
 /* 设备名可能很长（默认主机名），限定列宽并省略，完整值放在 title 里，避免把操作列挤出卡片 */
 #tunnels td.tunnel-device{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* 状态列：最小 150px 防止速率串变化导致列宽跳动；数字 tabular-nums 等宽对齐 */
-#tunnels td.tunnel-status{min-width:150px}
-#tunnels .tunnel-rate{font-variant-numeric:tabular-nums;white-space:nowrap}
+/* 状态列：速率上下行分两行，正常连接用主题绿 #16a34a；数字 tabular-nums 等宽不跳 */
+#tunnels td.tunnel-status{min-width:114px}
+#tunnels .tunnel-rate{color:#16a34a}
+#tunnels .tunnel-rate-line{display:block;font-variant-numeric:tabular-nums;white-space:nowrap}
 /* 9 列 + 速率串比卡片内容区宽：左右内边距 14→10 各列共省 72px，表头不再溢出卡片 */
 #tunnels thead th,#tunnels tbody td{padding-left:10px;padding-right:10px}
 code{font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#64748b}
@@ -946,7 +947,8 @@ function fmtRate(bytesPerSec) {
 function tunnelStatusHtml(t) {
   const status = tunnelStatusValue(t);
   if (status === 'active') {
-    return '<span class="mono tunnel-rate">↑' + esc(fmtRate(t.rx_rate)) + ' ↓' + esc(fmtRate(t.tx_rate)) + '</span>';
+    return '<span class="mono tunnel-rate"><span class="tunnel-rate-line">↑ ' + esc(fmtRate(t.rx_rate)) +
+      '</span><span class="tunnel-rate-line">↓ ' + esc(fmtRate(t.tx_rate)) + '</span></span>';
   }
   const meta = TUNNEL_STATUS[status] || { label: status };
   const reason = meta.label + ((t && t.last_error) ? ' · ' + t.last_error : '');
