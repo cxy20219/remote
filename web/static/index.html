@@ -83,6 +83,8 @@ tbody tr:hover td{background:#f8fafc}
 /* 状态列：速率上下行分两行，正常连接用主题绿 #16a34a；数字 tabular-nums 等宽不跳 */
 #tunnels td.tunnel-status{min-width:116px}
 #tunnels td.tunnel-status .badge{display:flex;width:max-content}
+/* 状态格内层统一 34px 并垂直居中：从没连过的隧道没有「上次」，也不占位、不变矮 */
+#tunnels .tunnel-state{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;min-height:34px}
 #tunnels td.tunnel-status .cell-sub{margin-top:0}
 #tunnels .tunnel-rate{color:#16a34a}
 #tunnels .tunnel-rate-line{display:block;line-height:17px;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -1009,8 +1011,8 @@ function fmtRate(bytesPerSec) {
 function tunnelStatusHtml(t) {
   const status = tunnelStatusValue(t);
   if (status === 'active') {
-    return '<span class="mono tunnel-rate"><span class="tunnel-rate-line">↑ ' + esc(fmtRate(t.rx_rate)) +
-      '</span><span class="tunnel-rate-line">↓ ' + esc(fmtRate(t.tx_rate)) + '</span></span>';
+    return '<span class="tunnel-state"><span class="mono tunnel-rate"><span class="tunnel-rate-line">↑ ' + esc(fmtRate(t.rx_rate)) +
+      '</span><span class="tunnel-rate-line">↓ ' + esc(fmtRate(t.tx_rate)) + '</span></span></span>';
   }
   const meta = TUNNEL_STATUS[status] || { label: status };
   const reason = meta.label + ((t && t.last_error) ? ' · ' + t.last_error : '');
@@ -1018,7 +1020,7 @@ function tunnelStatusHtml(t) {
   const sub = lastClock
     ? '<span class="cell-sub" title="上次断开 ' + esc(fmtDate(t.last_disconnect_at)) + '">上次 ' + esc(lastClock) + '</span>'
     : '';
-  return '<span class="badge badge-err" title="' + esc(reason) + '">未连接</span>' + sub;
+  return '<span class="tunnel-state"><span class="badge badge-err" title="' + esc(reason) + '">未连接</span>' + sub + '</span>';
 }
 
 // 状态格带 tunnel_id/status，供 2 秒轮询原地更新，不重建表格。
